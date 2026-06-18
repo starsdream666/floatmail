@@ -1,0 +1,46 @@
+name: Build & Package Extension
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version variables
+        id: vars
+        run: |
+          # 从 manifest.json 提取版本号
+          VERSION=$(jq -r '.version' manifest.json)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "zip_name=floatmail-v$VERSION.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create ZIP package
+        run: |
+          zip -r "${{ steps.vars.outputs.zip_name }}" \
+            manifest.json \
+            background.js \
+            content.js content.css \
+            popup.html popup.js popup.css \
+            popup-modules/ \
+            icons/ \
+            LICENSE \
+            README.md
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: floatmail-v${{ steps.vars.outputs.version }}
+          path: floatmail-v${{ steps.vars.outputs.version }}.zip
+          retention-days: 90
+
+      - name: Create Release (tag push only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: floatmail-v${{ steps.vars.outputs.version }}.zip
+          generate_release_notes: true
