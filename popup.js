@@ -2098,9 +2098,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         const data = await res.json();
         const newAddr = data.address || `${name}@${domain}`;
-        // Add to history
+        // Add to history (permanent — expiryMs=0)
         if (typeof addHistory === 'function') {
-          addHistory(newAddr, expiryMs);
+          addHistory(newAddr, 0);
         }
         switchTab('temp-email');
         setTimeout(() => { openInboxView(newAddr); }, 500);
