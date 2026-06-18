@@ -1,0 +1,1017 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FloatMail</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body class="tab-layout-top">
+  <div class="container">
+    <div class="header">
+      <div class="header-copy">
+        <div class="header-eyebrow">Browser Extension Workspace</div>
+        <h2 id="main-title">Temp Email</h2>
+        <div id="main-subtitle" class="header-subtitle">创建临时邮箱、查看邮件并快速填写网页表单。</div>
+      </div>
+      <div>
+        <button id="back-to-home" class="icon-btn hidden" title="Back"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+      </div>
+    </div>
+
+    <!-- 选项卡栏 -->
+    <div class="tab-bar" id="tab-bar">
+      <button class="tab-btn" data-tab="fast-fill" data-title="一键填充" data-subtitle="为当前页面字段一键生成邮箱与资料并填入。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        快填
+      </button>
+      <button class="tab-btn active" data-tab="temp-email" data-title="Temp Email" data-subtitle="创建地址、维护历史记录，并快速进入收件箱。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+        Temp Email
+      </button>
+      <button class="tab-btn" data-tab="moe-mail" data-title="Moe Mail" data-subtitle="管理 MoeMail 邮箱与对应收件箱。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/></svg>
+        Moe Mail
+      </button>
+      <button class="tab-btn" data-tab="bookmarks" data-title="书签" data-subtitle="保存常用网站入口，并支持排序和快速打开。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        书签
+      </button>
+      <button class="tab-btn" data-tab="tools" data-title="工具" data-subtitle="生成资料、执行页面填充，并为当前站点配置字段规则。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+        工具
+      </button>
+      <button class="tab-btn hidden" data-tab="generated-history" data-title="生成历史" data-subtitle="查看密码、姓名、生日的生成记录，并按类型快速筛选。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v5h5"/><path d="M12 7v5l3 3"/></svg>
+        历史
+      </button>
+      <button class="tab-btn hidden" data-tab="fill-rules" data-title="字段规则" data-subtitle="按站点管理页面字段规则，并快速定位目标输入框。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v4H4z"/><path d="M4 12h16v8H4z"/><path d="m9 8 2 2 4-4"/></svg>
+        规则
+      </button>
+      <button class="tab-btn" data-tab="themes" data-title="风格" data-subtitle="选择和应用不同的视觉风格主题。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
+        风格
+      </button>
+      <button class="tab-btn" data-tab="settings" data-title="设置" data-subtitle="统一管理接口、通知、悬浮窗和站点注入策略。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        设置
+      </button>
+      <button class="tab-btn hidden" data-tab="config-io" data-title="数据管理" data-subtitle="导出或导入本地配置，进行备份与恢复。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        数据
+      </button>
+    </div>
+
+    <!-- ===================== Temp Email 页面 ===================== -->
+    <div id="temp-email-page">
+
+      <!-- Create Pane -->
+      <div id="create-pane" class="pane page-card page-hero-card">
+        <div class="form-group">
+          <label for="email-name">邮箱名前缀 (可选, 留空自动生成)</label>
+          <div class="input-row">
+              <input type="text" id="email-name" placeholder="custom-name" />
+              <span class="at-symbol">@</span>
+              <select id="domain-select" disabled>
+                  <option value="">正在加载域名...</option>
+              </select>
+              <button id="retry-domains-btn" class="icon-btn" title="重新获取域名列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+          </div>
+          <div class="tool-opt-row" style="margin-top:8px;">
+            <label>自动删除</label>
+            <select id="temp-expiry-select">
+              <option value="3600000">1 小时后</option>
+              <option value="14400000">4 小时后</option>
+              <option value="86400000" selected>1 天后</option>
+              <option value="259200000">3 天后</option>
+              <option value="604800000">7 天后</option>
+              <option value="0">永不过期</option>
+            </select>
+          </div>
+        </div>
+        <button id="create-btn" class="btn primary-btn">创建邮箱</button>
+        <div id="create-message" class="message"></div>
+        
+        <!-- Result Area -->
+        <div id="result-area" class="result-box hidden">
+          <div class="address-row">
+              <span id="created-address" class="selectable-text"></span>
+              <div class="result-action-group">
+                <button id="fill-email-btn" class="icon-btn" title="填入当前页面"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/><path d="M5 3h14"/></svg></button>
+                <button id="main-copy-btn" class="icon-btn" title="Copy Address"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+              </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- History list -->
+      <div id="history-section" class="history-section page-card">
+        <div class="history-header">
+          <h3>历史记录</h3>
+          <div class="history-header-btns">
+            <button id="temp-history-batch-toggle-btn" class="icon-btn" title="批量删除邮箱"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg></button>
+            <button id="temp-mark-all-read-btn" class="icon-btn hidden" title="全部标为已读"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></svg></button>
+            <button id="verify-all-btn" class="icon-btn" title="验证邮箱有效性"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg></button>
+          </div>
+        </div>
+        <div id="verify-status" class="message hidden"></div>
+        <ul id="history-list"></ul>
+        <div id="temp-history-batch-action" class="batch-action-bar hidden">
+          <button id="temp-history-batch-delete-btn" class="btn danger-primary-btn">删除所选</button>
+          <button id="temp-history-batch-cancel-btn" class="btn text-btn">取消</button>
+        </div>
+        <div class="history-footer-btns">
+          <button id="clean-invalid-btn" class="btn text-btn hidden">清除失效</button>
+          <button id="clear-history-btn" class="btn text-btn hidden">清空全部</button>
+        </div>
+      </div>
+
+      <!-- Inbox Pane -->
+      <div id="inbox-pane" class="pane page-card hidden">
+        <div class="inbox-header">
+          <h3 id="inbox-address-title" class="selectable-text"></h3>
+          <div class="inbox-header-btns">
+            <button id="temp-inbox-batch-toggle-btn" class="icon-btn" title="批量操作"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg></button>
+            <button id="refresh-inbox-btn" class="icon-btn" title="刷新邮件列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+            <button id="back-to-list" class="icon-btn hidden" title="返回列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+          </div>
+        </div>
+        <div id="mail-list" class="mail-list"></div>
+        <div id="temp-inbox-batch-action" class="batch-action-bar hidden">
+          <button id="temp-inbox-batch-delete-btn" class="btn danger-primary-btn">删除所选</button>
+          <button id="temp-inbox-batch-cancel-btn" class="btn text-btn">取消</button>
+        </div>
+        <div id="mail-content" class="mail-content hidden">
+          <div class="mail-reader-shell">
+            <div class="mail-reader-top">
+              <div class="mail-reader-copy">
+                <div id="mail-subject" class="mail-reader-subject"></div>
+                <div class="mail-reader-meta-stack">
+                  <div id="mail-from" class="mail-reader-meta-item"></div>
+                  <div id="mail-time" class="mail-reader-meta-item"></div>
+                </div>
+              </div>
+              <div class="mail-reader-toolbar">
+                <button id="translate-mail-btn" class="icon-btn mail-tool-btn" title="翻译邮件" aria-label="翻译邮件"></button>
+                <button id="toggle-mail-view-btn" class="icon-btn mail-tool-btn" title="切换邮件视图" aria-label="切换邮件视图"></button>
+                <button id="toggle-mail-images-btn" class="icon-btn mail-tool-btn" title="切换图片加载" aria-label="切换图片加载"></button>
+                <button id="delete-mail-btn" class="icon-btn mail-tool-btn is-danger" title="删除此邮件" aria-label="删除此邮件"></button>
+              </div>
+            </div>
+            <div id="mail-translation" class="mail-translation hidden">
+              <div class="mail-translation-header">
+                <div id="mail-translation-title" class="mail-translation-title">AI 翻译</div>
+                <div class="mail-translation-actions">
+                  <button id="retranslate-mail-btn" class="icon-btn mail-tool-btn hidden" title="重新翻译" aria-label="重新翻译"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
+                  <button id="copy-mail-translation-btn" class="icon-btn mail-tool-btn hidden" title="复制译文" aria-label="复制译文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                </div>
+              </div>
+              <div id="mail-translation-body" class="mail-translation-body"></div>
+            </div>
+            <div id="mail-insights" class="mail-insights hidden"></div>
+            <div id="mail-body" class="mail-body"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== MoeMail 页面 ===================== -->
+    <div id="moe-mail-page" class="hidden">
+
+      <!-- MoeMail Create Pane -->
+      <div id="moe-create-pane" class="pane page-card page-hero-card">
+        <div class="form-group">
+          <label>邮箱名前缀 (可选, 留空自动生成)</label>
+          <div class="input-row">
+            <input type="text" id="moe-email-name" placeholder="custom-name" />
+            <span class="at-symbol">@</span>
+            <select id="moe-domain-select" disabled>
+              <option value="">加载域名中...</option>
+            </select>
+            <button id="moe-retry-domains-btn" class="icon-btn" title="重新获取域名列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="moe-expiry-select">过期时间</label>
+          <select id="moe-expiry-select">
+            <option value="3600000">1 小时</option>
+            <option value="86400000" selected>1 天</option>
+            <option value="259200000">3 天</option>
+            <option value="0">永久</option>
+          </select>
+        </div>
+        <button id="moe-create-btn" class="btn primary-btn">创建邮箱</button>
+        <div id="moe-create-message" class="message"></div>
+      </div>
+
+      <!-- MoeMail 邮箱列表 -->
+      <div id="moe-email-list-section" class="history-section page-card">
+        <div class="moe-history-header">
+          <h3 class="moe-history-title">我的邮箱</h3>
+          <div class="history-header-btns">
+            <button id="moe-history-batch-toggle-btn" class="icon-btn" title="批量操作"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg></button>
+            <button id="moe-mark-all-read-btn" class="icon-btn hidden" title="全部标为已读"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 7 17l-5-5"/><path d="m22 10-7.5 7.5L13 16"/></svg></button>
+            <button id="moe-refresh-btn" class="icon-btn" title="刷新列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+          </div>
+        </div>
+        <div id="moe-email-list"></div>
+        <div id="moe-history-batch-action" class="batch-action-bar hidden">
+          <button id="moe-history-batch-delete-btn" class="btn danger-primary-btn">删除所选</button>
+          <button id="moe-history-batch-cancel-btn" class="btn text-btn">取消</button>
+        </div>
+      </div>
+
+      <!-- MoeMail Inbox Pane -->
+      <div id="moe-inbox-pane" class="pane page-card hidden">
+        <div class="inbox-header">
+          <h3 id="moe-inbox-title" class="selectable-text"></h3>
+          <div class="inbox-header-btns">
+            <button id="moe-refresh-inbox-btn" class="icon-btn" title="刷新邮件列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+            <button id="moe-back-to-list" class="icon-btn hidden" title="返回列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+          </div>
+        </div>
+        <div id="moe-mail-list" class="mail-list"></div>
+        <div id="moe-mail-content" class="mail-content hidden">
+          <div class="mail-reader-shell">
+            <div class="mail-reader-top">
+              <div class="mail-reader-copy">
+                <div id="moe-mail-subject" class="mail-reader-subject"></div>
+                <div class="mail-reader-meta-stack">
+                  <div id="moe-mail-from" class="mail-reader-meta-item"></div>
+                  <div id="moe-mail-time" class="mail-reader-meta-item"></div>
+                </div>
+              </div>
+              <div class="mail-reader-toolbar">
+                <button id="translate-moe-mail-btn" class="icon-btn mail-tool-btn" title="翻译邮件" aria-label="翻译邮件"></button>
+                <button id="toggle-moe-mail-view-btn" class="icon-btn mail-tool-btn" title="切换邮件视图" aria-label="切换邮件视图"></button>
+                <button id="toggle-moe-mail-images-btn" class="icon-btn mail-tool-btn" title="切换图片加载" aria-label="切换图片加载"></button>
+              </div>
+            </div>
+            <div id="moe-mail-translation" class="mail-translation hidden">
+              <div class="mail-translation-header">
+                <div id="moe-mail-translation-title" class="mail-translation-title">AI 翻译</div>
+                <div class="mail-translation-actions">
+                  <button id="retranslate-moe-mail-btn" class="icon-btn mail-tool-btn hidden" title="重新翻译" aria-label="重新翻译"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
+                  <button id="copy-moe-mail-translation-btn" class="icon-btn mail-tool-btn hidden" title="复制译文" aria-label="复制译文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                </div>
+              </div>
+              <div id="moe-mail-translation-body" class="mail-translation-body"></div>
+            </div>
+            <div id="moe-mail-insights" class="mail-insights hidden"></div>
+            <div id="moe-mail-body" class="mail-body"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 书签页面 ===================== -->
+    <div id="bookmarks-page" class="hidden">
+      <div class="form-group page-card">
+        <label>添加新书签</label>
+        <input type="text" id="bm-name-input" placeholder="名称（可选）" />
+        <input type="url" id="bm-url-input" placeholder="https://example.com" />
+        <button id="bm-add-btn" class="btn primary-btn">添加书签</button>
+        <div id="bm-message" class="message"></div>
+      </div>
+      <div class="history-section bm-history-section page-card">
+        <div class="bm-header">
+          <h3>已保存的网址</h3>
+          <select id="bm-sort-select" class="settings-select bm-sort-select" title="排序方式">
+            <option value="custom">自定义顺序</option>
+            <option value="time-desc">按时间 (新到旧)</option>
+            <option value="time-asc">按时间 (旧到新)</option>
+            <option value="name-asc">按名称 (A-Z)</option>
+          </select>
+        </div>
+        <div id="bm-list"></div>
+      </div>
+    </div>
+
+    <!-- ===================== 工具页面 ===================== -->
+    <div id="tools-page" class="hidden">
+
+      <!-- 统一生成器卡片（带子 Tab） -->
+      <div class="tool-generator-card page-card">
+        <div class="tool-gen-tabs" role="tablist" aria-label="生成器类型">
+          <button type="button" class="tool-gen-tab active" data-gen-tab="password" role="tab" aria-selected="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/></svg>
+            密码
+          </button>
+          <button type="button" class="tool-gen-tab" data-gen-tab="name" role="tab" aria-selected="false">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            姓名
+          </button>
+          <button type="button" class="tool-gen-tab" data-gen-tab="birthday" role="tab" aria-selected="false">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-8a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8"/><path d="M4 16s.5-1 2-1 2.5 2 4 2 2.5-2 4-2 2.5 2 4 2 2-1 2-1"/><path d="M2 21h20"/><path d="M7 8v2"/><path d="M12 8v2"/><path d="M17 8v2"/><path d="M7 4h.01"/><path d="M12 4h.01"/><path d="M17 4h.01"/></svg>
+            生日
+          </button>
+          <button type="button" class="tool-gen-tab" data-gen-tab="address" role="tab" aria-selected="false">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            住址
+          </button>
+        </div>
+
+        <!-- 密码面板 -->
+        <div class="tool-gen-panel active" data-gen-tab="password" role="tabpanel">
+          <div class="tool-options">
+            <div class="tool-opt-row">
+              <label>长度</label>
+              <input type="number" id="pwd-length" value="16" min="4" max="128" class="tool-num-input" />
+            </div>
+            <div class="tool-checks">
+              <label class="config-check"><input type="checkbox" id="pwd-upper" checked /> 大写 A-Z</label>
+              <label class="config-check"><input type="checkbox" id="pwd-lower" checked /> 小写 a-z</label>
+              <label class="config-check"><input type="checkbox" id="pwd-digit" checked /> 数字 0-9</label>
+              <label class="config-check"><input type="checkbox" id="pwd-special" checked /> 特殊字符</label>
+              <label class="config-check"><input type="checkbox" id="pwd-no-ambig" /> 排除易混淆字符</label>
+            </div>
+          </div>
+          <button id="gen-pwd-btn" class="btn primary-btn">生成密码</button>
+        </div>
+
+        <!-- 姓名面板 -->
+        <div class="tool-gen-panel" data-gen-tab="name" role="tabpanel">
+          <div class="tool-options">
+            <div class="tool-opt-row">
+              <label>性别</label>
+              <select id="name-gender">
+                <option value="random">随机</option>
+                <option value="male">男性</option>
+                <option value="female">女性</option>
+              </select>
+            </div>
+            <div class="tool-opt-row">
+              <label>风格</label>
+              <select id="name-region">
+                <option value="en">英文名</option>
+                <option value="zh">中文名</option>
+              </select>
+            </div>
+          </div>
+          <button id="gen-name-btn" class="btn primary-btn">生成姓名</button>
+        </div>
+
+        <!-- 生日面板 -->
+        <div class="tool-gen-panel" data-gen-tab="birthday" role="tabpanel">
+          <div class="tool-options">
+            <div class="tool-opt-row">
+              <label>填充内容</label>
+              <select id="bday-fill-mode">
+                <option value="date">出生日期</option>
+                <option value="age">年龄</option>
+              </select>
+            </div>
+            <div class="tool-opt-row">
+              <label>起始年份</label>
+              <input type="number" id="bday-min-year" value="1980" min="1900" max="2025" class="tool-num-input" />
+            </div>
+            <div class="tool-opt-row">
+              <label>结束年份</label>
+              <input type="number" id="bday-max-year" value="2005" min="1900" max="2025" class="tool-num-input" />
+            </div>
+          </div>
+          <button id="gen-bday-btn" class="btn primary-btn">生成生日/年龄</button>
+        </div>
+
+        <!-- 住址面板 -->
+        <div class="tool-gen-panel" data-gen-tab="address" role="tabpanel">
+          <div class="tool-options">
+            <div class="tool-opt-row">
+              <label>风格</label>
+              <select id="addr-region">
+                <option value="zh">中国地址</option>
+                <option value="en">美国地址</option>
+                <option value="uk">英国地址</option>
+                <option value="jp">日本地址</option>
+                <option value="kr">韩国地址</option>
+              </select>
+            </div>
+          </div>
+          <button id="gen-addr-btn" class="btn primary-btn">生成住址</button>
+        </div>
+      </div>
+
+      <!-- 最近生成 -->
+      <div class="tool-section tool-generated-summary page-card">
+        <h4 class="tool-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tool-svg"><path d="M4 12h16"/><path d="M4 6h16"/><path d="M4 18h10"/></svg> 最近生成</h4>
+        <div class="tool-generated-groups">
+          <div class="tool-generated-group">
+            <div class="tool-generated-label">密码</div>
+            <div id="pwd-result" class="tool-result hidden"></div>
+          </div>
+          <div class="tool-generated-group">
+            <div class="tool-generated-label">姓名</div>
+            <div id="name-result" class="tool-result hidden"></div>
+          </div>
+          <div class="tool-generated-group">
+            <div class="tool-generated-label">生日/年龄</div>
+            <div id="bday-result" class="tool-result hidden"></div>
+          </div>
+          <div class="tool-generated-group">
+            <div class="tool-generated-label">住址</div>
+            <div id="addr-result" class="tool-result hidden"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tool-section tool-profile-section page-card">
+        <h4 class="tool-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tool-svg"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/><path d="M5 3h14"/></svg> 页面填充</h4>
+        <button id="fill-profile-btn" class="btn primary-btn hidden">将最近生成的资料填入当前页面</button>
+        <div id="fill-profile-message" class="message"></div>
+      </div>
+
+      <div id="tools-generated-history-slot">
+        <div id="generated-history-section" class="tool-section generated-history-section page-card">
+          <div class="generated-history-header">
+            <h4 class="tool-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tool-svg"><path d="M3 12a9 9 0 1 0 9-9"/><path d="M3 3v5h5"/><path d="M12 7v5l3 3"/></svg> 生成历史</h4>
+            <button id="clear-generated-history-btn" class="btn text-btn hidden">清空</button>
+          </div>
+          <div class="tool-note">记录密码、姓名、生日/年龄、住址的生成结果，并保存生成时所在网页地址，便于回查和复制。</div>
+          <div class="generated-history-search-row">
+            <input type="search" id="generated-history-search" class="generated-history-search-input" placeholder="搜索生成内容、网址或类型" />
+          </div>
+          <div id="generated-history-filters" class="generated-history-filters" role="tablist" aria-label="生成历史筛选">
+            <button type="button" class="generated-history-filter active" data-generated-filter="all">全部</button>
+            <button type="button" class="generated-history-filter" data-generated-filter="password">密码</button>
+            <button type="button" class="generated-history-filter" data-generated-filter="name">姓名</button>
+            <button type="button" class="generated-history-filter" data-generated-filter="birthday">生日</button>
+            <button type="button" class="generated-history-filter" data-generated-filter="age">年龄</button>
+            <button type="button" class="generated-history-filter" data-generated-filter="address">住址</button>
+          </div>
+          <div id="generated-history-list" class="generated-history-list"></div>
+        </div>
+      </div>
+
+      <div id="tools-fill-rules-slot">
+        <div id="fill-rules-section" class="tool-section tool-fill-rules-section page-card">
+          <h4 class="tool-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tool-svg"><path d="M4 4h16v4H4z"/><path d="M4 12h16v8H4z"/><path d="m9 8 2 2 4-4"/></svg> 页面字段规则</h4>
+          <div id="fill-rules-site" class="tool-note">当前站点：未检测到网页</div>
+          <div class="tool-note">点击“选取输入框”后，回到网页中点击目标输入框即可保存规则，按 `Esc` 可取消。</div>
+          <div id="fill-rules-list" class="fill-rules-list"></div>
+          <div id="fill-rules-message" class="message"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ===================== 一键填充页面 ===================== -->
+    <div id="fast-fill-page" class="hidden">
+      <div class="page-card">
+        <h4 class="settings-section-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          一键填充
+        </h4>
+        <div id="fast-fill-site" class="tool-note">当前站点：未检测到网页</div>
+        <div id="fast-fill-rules-summary" class="tool-note" style="margin-top:6px;">暂无已配置的规则</div>
+      </div>
+
+      <!-- 邮箱配置 -->
+      <div class="page-card">
+        <h4 class="tool-title">邮箱配置</h4>
+        <div class="tool-options">
+          <div class="tool-opt-row">
+            <label>邮箱来源</label>
+            <select id="fast-fill-email-source">
+              <option value="temp">Temp Mail</option>
+              <option value="moe">Moe Mail</option>
+            </select>
+          </div>
+          <div class="tool-opt-row">
+            <label>域名选择</label>
+            <select id="fast-fill-domain-mode">
+              <option value="random">随机域名</option>
+              <option value="specific">指定域名</option>
+              <option value="whitelist">白名单</option>
+              <option value="blacklist">黑名单</option>
+            </select>
+          </div>
+          <div id="fast-fill-domain-specific-row" class="tool-opt-row hidden">
+            <label>指定域名</label>
+            <select id="fast-fill-domain-select">
+              <option value="">请先加载域名</option>
+            </select>
+          </div>
+          <div id="fast-fill-domain-whitelist-row" class="tool-opt-row hidden">
+            <label>白名单域名（每行一个）</label>
+            <textarea id="fast-fill-domain-whitelist" rows="3" placeholder="mail1.com&#10;mail2.com" class="hidden"></textarea>
+            <div id="fast-fill-domain-whitelist-list" class="domain-checklist"></div>
+          </div>
+          <div id="fast-fill-domain-blacklist-row" class="tool-opt-row hidden">
+            <label>黑名单域名（每行一个）</label>
+            <textarea id="fast-fill-domain-blacklist" rows="3" placeholder="blocked1.com&#10;blocked2.com" class="hidden"></textarea>
+            <div id="fast-fill-domain-blacklist-list" class="domain-checklist"></div>
+          </div>
+          <div id="fast-fill-moe-expiry-row" class="tool-opt-row hidden">
+            <label>过期时间</label>
+            <select id="fast-fill-moe-expiry">
+              <option value="3600000">1 小时</option>
+              <option value="86400000" selected>1 天</option>
+              <option value="259200000">3 天</option>
+              <option value="0">永久</option>
+            </select>
+          </div>
+          <div id="fast-fill-temp-expiry-row" class="tool-opt-row">
+            <label>自动删除</label>
+            <select id="fast-fill-temp-expiry">
+              <option value="3600000">1 小时</option>
+              <option value="14400000">4 小时</option>
+              <option value="86400000" selected>1 天</option>
+              <option value="259200000">3 天</option>
+              <option value="604800000">7 天</option>
+              <option value="0">永不过期</option>
+            </select>
+          </div>
+        </div>
+        <div id="fast-fill-domain-status" class="tool-note" style="margin-top:4px;">域名未加载</div>
+      </div>
+
+      <!-- 密码配置 -->
+      <div class="page-card">
+        <h4 class="tool-title">密码配置</h4>
+        <div class="tool-options">
+          <div class="tool-opt-row">
+            <label>长度</label>
+            <input type="number" id="ff-pwd-length" value="16" min="4" max="128" class="tool-num-input" />
+          </div>
+          <div class="tool-checks">
+            <label class="config-check"><input type="checkbox" id="ff-pwd-upper" checked /> 大写 A-Z</label>
+            <label class="config-check"><input type="checkbox" id="ff-pwd-lower" checked /> 小写 a-z</label>
+            <label class="config-check"><input type="checkbox" id="ff-pwd-digit" checked /> 数字 0-9</label>
+            <label class="config-check"><input type="checkbox" id="ff-pwd-special" checked /> 特殊字符</label>
+            <label class="config-check"><input type="checkbox" id="ff-pwd-no-ambig" /> 排除易混淆字符</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- 执行按钮 -->
+      <div class="page-card">
+        <button id="fast-fill-generate-btn" class="btn primary-btn" style="width:100%;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          一键生成并填入所有信息
+        </button>
+        <div id="fast-fill-message" class="message"></div>
+        <div id="fast-fill-result" class="fast-fill-result hidden"></div>
+      </div>
+
+      <!-- 生成历史 -->
+      <div class="page-card" id="fast-fill-history-card">
+        <h4 class="tool-title">最近生成</h4>
+        <div id="fast-fill-history-list" class="fast-fill-history-list">
+          <div class="tool-note" style="text-align:center;">暂无记录</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 生成历史页面 ===================== -->
+    <div id="generated-history-page" class="hidden">
+      <div class="page-card generated-history-intro-card">
+        <h4 class="settings-section-title">生成历史</h4>
+        <div class="tool-note">竖列模式下，可在这里集中查看已生成的密码、姓名、生日/年龄和住址记录，并按类型快速筛选。</div>
+      </div>
+      <div id="generated-history-page-slot" class="generated-history-page-slot"></div>
+    </div>
+
+    <!-- ===================== 页面字段规则页面 ===================== -->
+    <div id="fill-rules-page" class="hidden">
+      <div class="page-card fill-rules-intro-card">
+        <h4 class="settings-section-title">页面字段规则</h4>
+        <div class="tool-note">竖列模式下，这部分会拆分成独立页面，方便集中管理当前站点的输入框映射规则。</div>
+      </div>
+      <div id="fill-rules-page-slot" class="fill-rules-page-slot"></div>
+    </div>
+
+    <!-- ===================== 风格页面 ===================== -->
+    <div id="themes-page" class="hidden">
+      <div class="page-card">
+        <h4 class="settings-section-title">选择主题风格</h4>
+        <div class="tool-note">选择您喜欢的视觉风格和颜色主题，点击即可应用。当前主题会自动保存。</div>
+      </div>
+
+      <!-- 风格网格 -->
+      <div class="themes-grid">
+        
+        <!-- 新拟物风格 (默认) -->
+        <div class="theme-card" data-style="neumorphism" data-theme="ocean-blue">
+          <div class="theme-preview neumorphism-preview">
+            <div class="theme-preview-header"></div>
+            <div class="theme-preview-content">
+              <div class="theme-preview-card"></div>
+              <div class="theme-preview-card"></div>
+            </div>
+          </div>
+          <div class="theme-info">
+            <div class="theme-name">新拟物风格</div>
+            <div class="theme-description">柔和的3D效果，通过阴影营造触感</div>
+            <div class="theme-tags">
+              <span class="theme-tag">现代</span>
+              <span class="theme-tag">柔和</span>
+              <span class="theme-tag">立体</span>
+            </div>
+            <!-- 颜色变体选择器 -->
+            <div class="theme-color-picker">
+              <button class="theme-color-swatch active" data-theme="ocean-blue" style="background: linear-gradient(135deg, #1a73e8 0%, #174ea6 100%);" title="海洋蓝"></button>
+              <button class="theme-color-swatch" data-theme="sakura-pink" style="background: linear-gradient(135deg, #e84393 0%, #c2185b 100%);" title="樱花粉"></button>
+              <button class="theme-color-swatch" data-theme="emerald-green" style="background: linear-gradient(135deg, #0f9d58 0%, #0b7a45 100%);" title="翡翠绿"></button>
+              <button class="theme-color-swatch" data-theme="lavender-purple" style="background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);" title="薰衣紫"></button>
+              <button class="theme-color-swatch" data-theme="sunset-orange" style="background: linear-gradient(135deg, #e67e22 0%, #d35400 100%);" title="落日橙"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 毛玻璃风格 -->
+        <div class="theme-card" data-style="glassmorphism" data-theme="ocean-blue">
+          <div class="theme-preview glassmorphism-preview">
+            <div class="theme-preview-header"></div>
+            <div class="theme-preview-content">
+              <div class="theme-preview-card"></div>
+              <div class="theme-preview-card"></div>
+            </div>
+          </div>
+          <div class="theme-info">
+            <div class="theme-name">毛玻璃风格</div>
+            <div class="theme-description">半透明背景，模糊效果，轻盈飘逸</div>
+            <div class="theme-tags">
+              <span class="theme-tag">透明</span>
+              <span class="theme-tag">模糊</span>
+              <span class="theme-tag">轻盈</span>
+            </div>
+            <!-- 颜色变体选择器 -->
+            <div class="theme-color-picker">
+              <button class="theme-color-swatch active" data-theme="ocean-blue" style="background: linear-gradient(135deg, #1a73e8 0%, #174ea6 100%);" title="海洋蓝"></button>
+              <button class="theme-color-swatch" data-theme="sakura-pink" style="background: linear-gradient(135deg, #e84393 0%, #c2185b 100%);" title="樱花粉"></button>
+              <button class="theme-color-swatch" data-theme="arctic-ice" style="background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%);" title="极光冰蓝"></button>
+              <button class="theme-color-swatch" data-theme="rose-gold" style="background: linear-gradient(135deg, #c57b6b 0%, #a8605a 100%);" title="玫瑰金"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 极简扁平风格 -->
+        <div class="theme-card" data-style="flat-minimal" data-theme="ocean-blue">
+          <div class="theme-preview flat-minimal-preview">
+            <div class="theme-preview-header"></div>
+            <div class="theme-preview-content">
+              <div class="theme-preview-card"></div>
+              <div class="theme-preview-card"></div>
+            </div>
+          </div>
+          <div class="theme-info">
+            <div class="theme-name">极简扁平</div>
+            <div class="theme-description">纯粹的扁平设计，简洁清爽</div>
+            <div class="theme-tags">
+              <span class="theme-tag">简洁</span>
+              <span class="theme-tag">扁平</span>
+              <span class="theme-tag">清爽</span>
+            </div>
+            <!-- 颜色变体选择器 -->
+            <div class="theme-color-picker">
+              <button class="theme-color-swatch active" data-theme="ocean-blue" style="background: linear-gradient(135deg, #1a73e8 0%, #174ea6 100%);" title="海洋蓝"></button>
+              <button class="theme-color-swatch" data-theme="emerald-green" style="background: linear-gradient(135deg, #0f9d58 0%, #0b7a45 100%);" title="翡翠绿"></button>
+              <button class="theme-color-swatch" data-theme="mocha-brown" style="background: linear-gradient(135deg, #8b5e3c 0%, #6d4528 100%);" title="摩卡棕"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 卡片网格风格 -->
+        <div class="theme-card" data-style="card-grid" data-theme="ocean-blue">
+          <div class="theme-preview card-grid-preview">
+            <div class="theme-preview-header"></div>
+            <div class="theme-preview-content">
+              <div class="theme-preview-card"></div>
+              <div class="theme-preview-card"></div>
+            </div>
+          </div>
+          <div class="theme-info">
+            <div class="theme-name">卡片网格</div>
+            <div class="theme-description">规整的网格布局，清晰的边界</div>
+            <div class="theme-tags">
+              <span class="theme-tag">规整</span>
+              <span class="theme-tag">网格</span>
+              <span class="theme-tag">有序</span>
+            </div>
+            <!-- 颜色变体选择器 -->
+            <div class="theme-color-picker">
+              <button class="theme-color-swatch active" data-theme="ocean-blue" style="background: linear-gradient(135deg, #1a73e8 0%, #174ea6 100%);" title="海洋蓝"></button>
+              <button class="theme-color-swatch" data-theme="lavender-purple" style="background: linear-gradient(135deg, #7c3aed 0%, #6d28d9 100%);" title="薰衣紫"></button>
+              <button class="theme-color-swatch" data-theme="sunset-orange" style="background: linear-gradient(135deg, #e67e22 0%, #d35400 100%);" title="落日橙"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 赛博朋克风格 -->
+        <div class="theme-card" data-style="cyberpunk" data-theme="cyber-neon">
+          <div class="theme-preview cyberpunk-preview">
+            <div class="theme-preview-header"></div>
+            <div class="theme-preview-content">
+              <div class="theme-preview-card"></div>
+              <div class="theme-preview-card"></div>
+            </div>
+          </div>
+          <div class="theme-info">
+            <div class="theme-name">赛博朋克</div>
+            <div class="theme-description">霓虹色彩，科技感，未来风</div>
+            <div class="theme-tags">
+              <span class="theme-tag">科技</span>
+              <span class="theme-tag">霓虹</span>
+              <span class="theme-tag">未来</span>
+            </div>
+            <!-- 颜色变体选择器 -->
+            <div class="theme-color-picker">
+              <button class="theme-color-swatch active" data-theme="cyber-neon" style="background: linear-gradient(135deg, #00ff88 0%, #00d4ff 100%);" title="赛博霓虹"></button>
+              <button class="theme-color-swatch" data-theme="midnight-dark" style="background: linear-gradient(135deg, #818cf8 0%, #a5b4fc 100%);" title="暗夜黑"></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 柔和渐变风格 -->
+        <div class="theme-card" data-style="soft-gradient" data-theme="sakura-pink">
+          <div class="theme-preview soft-gradient-preview">
+            <div class="theme-preview-header"></div>
+            <div class="theme-preview-content">
+              <div class="theme-preview-card"></div>
+              <div class="theme-preview-card"></div>
+            </div>
+          </div>
+          <div class="theme-info">
+            <div class="theme-name">柔和渐变</div>
+            <div class="theme-description">流动的渐变色彩，温暖柔和</div>
+            <div class="theme-tags">
+              <span class="theme-tag">渐变</span>
+              <span class="theme-tag">柔和</span>
+              <span class="theme-tag">温暖</span>
+            </div>
+            <!-- 颜色变体选择器 -->
+            <div class="theme-color-picker">
+              <button class="theme-color-swatch active" data-theme="sakura-pink" style="background: linear-gradient(135deg, #e84393 0%, #c2185b 100%);" title="樱花粉"></button>
+              <button class="theme-color-swatch" data-theme="sunset-orange" style="background: linear-gradient(135deg, #e67e22 0%, #d35400 100%);" title="落日橙"></button>
+              <button class="theme-color-swatch" data-theme="rose-gold" style="background: linear-gradient(135deg, #c57b6b 0%, #a8605a 100%);" title="玫瑰金"></button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ===================== 设置页面 ===================== -->
+    <div id="settings-page" class="hidden">
+      <!-- Temp Email 配置 -->
+      <div class="settings-section page-card">
+        <h4 class="settings-section-title">Temp Email 配置</h4>
+        <div class="form-group">
+          <label for="api-url">API 地址</label>
+          <input type="url" id="api-url" placeholder="https://your-worker.workers.dev" />
+        </div>
+        <div class="form-group">
+          <label for="admin-token">Admin 认证密码 (x-admin-auth)</label>
+          <input type="password" id="admin-token" placeholder="Your Admin Password" />
+        </div>
+        <div class="settings-inline-actions">
+          <button id="test-temp-connection-btn" class="btn text-btn">测试 Temp Email 连接</button>
+        </div>
+        <div id="temp-connection-message" class="message"></div>
+      </div>
+
+      <!-- MoeMail 配置 -->
+      <div class="settings-section page-card">
+        <h4 class="settings-section-title">MoeMail 配置</h4>
+        <div class="form-group">
+          <label for="moe-api-url">API 地址</label>
+          <input type="url" id="moe-api-url" placeholder="https://your-moemail-site.com" />
+        </div>
+        <div class="form-group">
+          <label for="moe-api-key">API Key</label>
+          <input type="password" id="moe-api-key" placeholder="mk_xxxxxx..." />
+        </div>
+        <div class="settings-inline-actions">
+          <button id="test-moe-connection-btn" class="btn text-btn">测试 MoeMail 连接</button>
+        </div>
+        <div id="moe-connection-message" class="message"></div>
+      </div>
+
+      <!-- 通用设置 -->
+      <div class="settings-section page-card">
+        <h4 class="settings-section-title">通用设置</h4>
+        <div class="form-group toggle-row">
+          <label for="float-toggle">启用悬浮窗按钮</label>
+          <input type="checkbox" id="float-toggle" class="toggle-checkbox" checked />
+        </div>
+        <div class="form-group">
+          <label>悬浮窗风格</label>
+          <div id="float-window-style-toggle" class="settings-segmented-control" role="radiogroup" aria-label="悬浮窗风格">
+            <button type="button" class="settings-segment-btn" data-float-window-style="legacy" role="radio" aria-checked="false">旧风格</button>
+            <button type="button" class="settings-segment-btn active" data-float-window-style="modern" role="radio" aria-checked="true">现风格</button>
+          </div>
+          <div class="tool-note">只影响网页中的悬浮窗外观，点击后会立即热切换，无需额外保存。</div>
+        </div>
+        <div class="form-group toggle-row">
+          <label for="default-tab-select">默认打开页面</label>
+          <select id="default-tab-select" title="默认页面" class="settings-select">
+            <option value="temp-email">Temp Email</option>
+            <option value="moe-mail">Moe Mail</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>页面选择框样式</label>
+          <div id="tab-layout-toggle" class="settings-segmented-control" role="radiogroup" aria-label="页面选择框样式">
+            <button type="button" class="settings-segment-btn active" data-layout-mode="top" role="radio" aria-checked="true">顶部横向</button>
+            <button type="button" class="settings-segment-btn" data-layout-mode="sidebar" role="radio" aria-checked="false">左侧竖向</button>
+          </div>
+          <div class="tool-note">切换后立即应用到当前弹窗与悬浮窗，无需额外点击保存。</div>
+        </div>
+        <div class="form-group">
+          <label>主题风格</label>
+          <div class="tool-note">请前往"风格"页面选择您喜欢的主题风格和颜色。</div>
+        </div>
+        <div class="form-group">
+          <label for="verify-interval-select">自动验证邮箱间隔</label>
+          <div class="settings-interval-row">
+            <select id="verify-interval-select" title="自动验证间隔" class="settings-select wide-select">
+              <option value="0">关闭</option>
+              <option value="30s">每 30 秒</option>
+              <option value="1m">每 1 分钟</option>
+              <option value="5m">每 5 分钟</option>
+              <option value="15m">每 15 分钟</option>
+              <option value="30m">每 30 分钟</option>
+              <option value="1h">每 1 小时</option>
+              <option value="custom">自定义</option>
+            </select>
+            <input type="number" id="verify-interval-custom" class="settings-custom-input hidden" min="30" max="86400" step="1" placeholder="数值" />
+            <select id="verify-interval-unit" title="自动验证自定义单位" class="settings-select settings-unit-select hidden">
+              <option value="seconds">秒</option>
+              <option value="minutes">分钟</option>
+              <option value="hours">小时</option>
+            </select>
+          </div>
+          <div class="tool-note">支持秒、分钟、小时。Chrome 120+ 后台定时最短 30 秒，最长 24 小时。</div>
+        </div>
+        <div class="form-group">
+          <label for="mail-polling-interval-select">后台检查新邮件</label>
+          <div class="settings-interval-row">
+            <select id="mail-polling-interval-select" title="后台检查新邮件" class="settings-select wide-select">
+              <option value="0">关闭</option>
+              <option value="30s">每 30 秒</option>
+              <option value="1m">每 1 分钟</option>
+              <option value="5m">每 5 分钟</option>
+              <option value="10m">每 10 分钟</option>
+              <option value="30m">每 30 分钟</option>
+              <option value="1h">每 1 小时</option>
+              <option value="custom">自定义</option>
+            </select>
+            <input type="number" id="mail-polling-interval-custom" class="settings-custom-input hidden" min="30" max="86400" step="1" placeholder="数值" />
+            <select id="mail-polling-interval-unit" title="后台检查自定义单位" class="settings-select settings-unit-select hidden">
+              <option value="seconds">秒</option>
+              <option value="minutes">分钟</option>
+              <option value="hours">小时</option>
+            </select>
+          </div>
+          <div class="tool-note">后台轮询由扩展后台单实例执行，不会因为打开多个页面而重复增加定时器；Chrome 120+ 下最短支持 30 秒。</div>
+        </div>
+        <div class="form-group toggle-row">
+          <label for="notifications-toggle">新邮件通知</label>
+          <input type="checkbox" id="notifications-toggle" class="toggle-checkbox" checked />
+        </div>
+        <div class="form-group toggle-row">
+          <label for="default-remote-images-toggle">默认显示邮件图片</label>
+          <input type="checkbox" id="default-remote-images-toggle" class="toggle-checkbox" />
+        </div>
+        <div class="form-group">
+          <label>AI 邮件翻译（OpenAI 兼容）</label>
+          <input type="url" id="translation-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
+          <input type="password" id="translation-api-key" class="wide-select" placeholder="sk-..." />
+          <input type="text" id="translation-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+          <input type="text" id="translation-target-language" class="wide-select" placeholder="简体中文" />
+          <div class="tool-note">使用 OpenAI 兼容 Chat Completions 接口。仅在你点击“翻译邮件”时调用外部 API。API Key 只保存在本地扩展配置中，可随配置导入导出。</div>
+        </div>
+        <div class="form-group">
+          <label>AI 验证码/验证链接提取（OpenAI 兼容）</label>
+          <select id="mail-insight-api-mode" class="wide-select">
+            <option value="translation">直接复用翻译 API</option>
+            <option value="custom">使用独立提取 API</option>
+          </select>
+          <div id="mail-insight-custom-api-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+            <input type="url" id="mail-insight-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
+            <input type="password" id="mail-insight-api-key" class="wide-select" placeholder="sk-..." />
+            <input type="text" id="mail-insight-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+          </div>
+          <div class="tool-note">打开邮件时会自动调用外部 API 提取更高置信度的验证码与验证链接。若选择复用翻译 API，下方独立提取 API 配置可留空；若 AI 提取失败，会保留本地规则结果，并可在邮件洞察区点击重试。</div>
+        </div>
+        <div class="form-group">
+          <label for="generated-result-auto-close-seconds">生成结果自动关闭时间</label>
+          <div class="settings-inline-input-row">
+            <input type="number" id="generated-result-auto-close-seconds" class="settings-custom-input" min="1" max="3600" step="1" placeholder="30" />
+            <span class="settings-inline-suffix">秒</span>
+          </div>
+          <div class="tool-note">默认 30 秒。到时会自动关闭姓名、密码、生日/年龄结果，也可以手动点击关闭。</div>
+        </div>
+        <div class="form-group">
+          <label>默认过期时间</label>
+          <div class="settings-expiry-grid">
+            <div class="settings-expiry-item">
+              <span>快填 Temp Mail</span>
+              <select id="setting-ff-temp-expiry">
+                <option value="3600000">1 小时</option>
+                <option value="86400000" selected>1 天</option>
+                <option value="259200000">3 天</option>
+                <option value="604800000">7 天</option>
+                <option value="0">永不过期</option>
+              </select>
+            </div>
+            <div class="settings-expiry-item">
+              <span>快填 Moe Mail</span>
+              <select id="setting-ff-moe-expiry">
+                <option value="3600000">1 小时</option>
+                <option value="86400000" selected>1 天</option>
+                <option value="259200000">3 天</option>
+                <option value="0">永久</option>
+              </select>
+            </div>
+            <div class="settings-expiry-item">
+              <span>Temp Mail 页面</span>
+              <select id="setting-temp-expiry">
+                <option value="3600000">1 小时</option>
+                <option value="86400000" selected>1 天</option>
+                <option value="259200000">3 天</option>
+                <option value="604800000">7 天</option>
+                <option value="0">永不过期</option>
+              </select>
+            </div>
+            <div class="settings-expiry-item">
+              <span>Moe Mail 页面</span>
+              <select id="setting-moe-expiry">
+                <option value="3600000">1 小时</option>
+                <option value="86400000" selected>1 天</option>
+                <option value="259200000">3 天</option>
+                <option value="0">永久</option>
+              </select>
+            </div>
+          </div>
+          <div class="tool-note">设置各页面创建邮箱时的默认过期时间，可随时在对应页面手动调整。</div>
+        </div>
+        <div class="form-group">
+          <label for="site-access-mode">页面助手注入范围</label>
+          <select id="site-access-mode" title="页面助手注入范围" class="settings-select wide-select">
+            <option value="all">所有网页（可单独排除）</option>
+            <option value="whitelist">仅白名单站点</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>当前站点快捷控制</label>
+          <div class="site-control-card">
+            <div id="current-site-origin" class="site-origin">未检测到当前网页</div>
+            <div id="current-site-status" class="site-status">打开任意网页后可单独启用或禁用悬浮助手。</div>
+            <button id="current-site-toggle-btn" class="btn text-btn">当前站点不可用</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-save-bar">
+        <button id="save-settings" class="btn primary-btn">保存全部配置</button>
+        <div id="settings-message" class="message"></div>
+      </div>
+
+      <div id="settings-config-io-slot">
+        <!-- 数据管理 -->
+        <div id="config-io-section" class="config-io-section page-card">
+          <h4 class="config-io-title">数据管理</h4>
+          <div class="config-io-checks">
+            <label class="config-check"><input type="checkbox" value="tempEmail" checked /> Temp Email 配置</label>
+            <label class="config-check"><input type="checkbox" value="moemail" checked /> Moe Mail 配置</label>
+            <label class="config-check"><input type="checkbox" value="floatWindow" checked /> 悬浮窗设置</label>
+            <label class="config-check"><input type="checkbox" value="backgroundMail" checked /> 后台轮询与通知</label>
+            <label class="config-check"><input type="checkbox" value="mailDisplay" checked /> 邮件显示偏好</label>
+            <label class="config-check"><input type="checkbox" value="siteControl" checked /> 站点注入控制</label>
+            <label class="config-check"><input type="checkbox" value="pageFillRules" checked /> 页面填写规则与快填配置</label>
+            <label class="config-check"><input type="checkbox" value="generatedProfile" checked /> 最近生成资料与历史</label>
+            <label class="config-check"><input type="checkbox" value="defaultTab" checked /> 默认页面与布局</label>
+            <label class="config-check"><input type="checkbox" value="emailHistory" checked /> 邮箱历史记录</label>
+            <label class="config-check"><input type="checkbox" value="bookmarks" checked /> 书签数据</label>
+            <label class="config-check"><input type="checkbox" value="bookmarkSort" checked /> 书签排序方式</label>
+          </div>
+          <div class="config-io-btns">
+            <button id="export-config-btn" class="btn primary-btn">导出配置</button>
+            <button id="import-config-btn" class="btn text-btn">导入配置</button>
+            <button id="config-select-all-btn" class="btn text-btn" type="button">全选</button>
+            <button id="config-deselect-all-btn" class="btn text-btn" type="button">取消全选</button>
+          </div>
+          <input type="file" id="import-file-input" accept=".json" class="hidden" />
+          <div id="io-message" class="message"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 数据管理页面 ===================== -->
+    <div id="config-io-page" class="hidden">
+      <div class="page-card config-io-intro-card">
+        <h4 class="settings-section-title">数据管理</h4>
+        <div class="tool-note">竖列模式下，导入导出与备份恢复会拆分到独立页面，避免设置页过长影响操作效率。</div>
+      </div>
+      <div id="config-io-page-slot" class="config-io-page-slot"></div>
+    </div>
+
+  </div>
+  <script src="popup-modules/mail-render.js"></script>
+  <script src="popup-modules/config-io.js"></script>
+  <script src="popup-modules/tool-generators.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

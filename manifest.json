@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "FloatMail",
+  "version": "3.0",
+  "minimum_chrome_version": "120",
+  "description": "轻量级临时邮箱管理工具，支持悬浮窗、一键填表、AI 邮件洞察 — Lightweight temp email manager with floating panel, auto-fill & AI insights",
+  "permissions": [
+    "storage",
+    "tabs",
+    "alarms",
+    "notifications",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "css": ["content.css"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "popup.html",
+        "popup.css",
+        "popup.js",
+        "popup-modules/*.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

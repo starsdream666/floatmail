@@ -1,0 +1,19 @@
+# .gitignore — FloatMail
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.crx
+*.pem
+*.zip
+
+# Node (if ever added)
+node_modules/
