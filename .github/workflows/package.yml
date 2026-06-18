@@ -1,23 +1,43 @@
-name: Build & Package Extension
+name: Build, Package & Release
 
 on:
   push:
     branches: [master]
     tags: ['v*']
 
+permissions:
+  contents: write
+
 jobs:
-  package:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set version variables
         id: vars
         run: |
-          # 从 manifest.json 提取版本号
           VERSION=$(jq -r '.version' manifest.json)
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG_NAME="${{ github.ref_name }}"
+            PRERELEASE="false"
+          else
+            TAG_NAME="continuous"
+            PRERELEASE="true"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "zip_name=floatmail-v$VERSION.zip" >> "$GITHUB_OUTPUT"
+          echo "zip_name=floatmail-v${VERSION}-${SHORT_SHA}.zip" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update continuous tag
+        if: github.ref_type != 'tag'
+        run: |
+          git tag -f continuous
+          git push -f origin continuous
 
       - name: Create ZIP package
         run: |
@@ -31,16 +51,10 @@ jobs:
             LICENSE \
             README.md
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: floatmail-v${{ steps.vars.outputs.version }}
-          path: floatmail-v${{ steps.vars.outputs.version }}.zip
-          retention-days: 90
-
-      - name: Create Release (tag push only)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         with:
-          files: floatmail-v${{ steps.vars.outputs.version }}.zip
+          tag_name: ${{ steps.vars.outputs.tag_name }}
+          files: ${{ steps.vars.outputs.zip_name }}
+          prerelease: ${{ steps.vars.outputs.prerelease }}
           generate_release_notes: true
