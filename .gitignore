@@ -17,3 +17,6 @@ Thumbs.db
 
 # Node (if ever added)
 node_modules/
+
+# Review / TODO (local only)
+REVIEW.md
