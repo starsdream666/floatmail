@@ -2000,11 +2000,114 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       });
       actions.appendChild(fillBtn);
+
+      // Add inbox jump button if entry has email
+      if (entry.fields.email) {
+        const inboxBtn = document.createElement('button');
+        inboxBtn.className = 'btn text-btn';
+        inboxBtn.textContent = '收件箱';
+        inboxBtn.addEventListener('click', async () => {
+          inboxBtn.disabled = true;
+          inboxBtn.textContent = '...';
+          try {
+            await fastFillJumpToInbox(entry);
+          } finally {
+            inboxBtn.disabled = false;
+            inboxBtn.textContent = '收件箱';
+          }
+        });
+        actions.appendChild(inboxBtn);
+      }
+
       item.appendChild(header);
       item.appendChild(fields);
       item.appendChild(actions);
       fastFillHistoryList.appendChild(item);
     });
+  }
+
+  async function fastFillJumpToInbox(entry) {
+    const email = entry.fields.email;
+    if (!email) return;
+    const [name, domain] = email.split('@');
+    if (!name || !domain) return;
+    const expiryMs = entry.expiryMs || 0;
+    const source = entry.emailSource || 'temp';
+
+    if (source === 'moe') {
+      // Check if email still exists in MoeMail
+      try {
+        const res = await fetch(`${moeApiUrl}/api/emails`, {
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey }
+        });
+        if (res.ok) {
+          const list = await res.json();
+          const found = (list.emails || []).find(e => e.address === email);
+          if (found) {
+            switchTab('moe-mail');
+            setTimeout(() => { moeOpenInbox(found); }, 400);
+            return;
+          }
+        }
+      } catch { /* fall through to recreate */ }
+
+      // Recreate MoeMail email
+      try {
+        const createRes = await fetch(`${moeApiUrl}/api/emails/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey },
+          body: JSON.stringify({ name, domain, expiryTime: expiryMs || 86400000 })
+        });
+        if (!createRes.ok) {
+          const errData = await createRes.json().catch(() => ({}));
+          throw new Error(errData.error || `创建失败 (${createRes.status})`);
+        }
+        const data = await createRes.json();
+        const newAddr = data.email || email;
+        // Refresh email list then open inbox
+        await moeLoadEmails();
+        const found = currentMoeEmails.find(e => e.address === newAddr);
+        if (found) {
+          switchTab('moe-mail');
+          setTimeout(() => { moeOpenInbox(found); }, 400);
+          return;
+        }
+      } catch (e) {
+        showMessage(fastFillMessage, `重新创建失败: ${e.message}`, 'error');
+        return;
+      }
+    } else {
+      // Temp Mail
+      // Check if email still exists in history
+      if (history.includes(email)) {
+        switchTab('temp-email');
+        setTimeout(() => { openInboxView(email); }, 300);
+        return;
+      }
+
+      // Recreate Temp Mail email
+      try {
+        const res = await fetch(`${apiUrl}/admin/new_address`, {
+          method: 'POST',
+          headers: { 'x-admin-auth': adminToken, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, domain })
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `创建失败 (${res.status})`);
+        }
+        const data = await res.json();
+        const newAddr = data.address || `${name}@${domain}`;
+        // Add to history
+        if (typeof addHistory === 'function') {
+          addHistory(newAddr, expiryMs);
+        }
+        switchTab('temp-email');
+        setTimeout(() => { openInboxView(newAddr); }, 500);
+      } catch (e) {
+        showMessage(fastFillMessage, `重新创建失败: ${e.message}`, 'error');
+      }
+    }
   }
 
   function renderFastFillSite() {
@@ -2205,7 +2308,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       saveFastFillHistory({
         time: Date.now(),
         fields: generatedFields,
-        emailSource: fastFillEmailSource
+        emailSource: fastFillEmailSource,
+        expiryMs: fastFillEmailSource === 'moe'
+          ? (parseInt(fastFillMoeExpiry.value) || 86400000)
+          : (parseInt(fastFillTempExpiry.value) || 0)
       });
 
       // Render result
