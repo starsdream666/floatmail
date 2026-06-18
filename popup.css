@@ -1176,7 +1176,7 @@ body {
   bottom: 0;
   z-index: 10;
   margin-top: auto;
-  padding: 12px 0 4px;
+  padding: 8px 0 2px;
   background: linear-gradient(0deg, var(--surface) 60%, transparent 100%);
 }
 
@@ -2240,20 +2240,24 @@ input:focus, select:focus {
 .message {
   font-size: 13px;
   margin-top: 8px;
-  min-height: 18px;
-  padding: 8px 12px;
+  min-height: 0;
+  padding: 0;
   border-radius: 10px;
   word-break: break-all;
   font-weight: 500;
 }
 
 .message.error {
+  min-height: 18px;
+  padding: 6px 10px;
   color: var(--error);
   background: rgba(231, 76, 60, 0.1);
   box-shadow: var(--neumorphic-shadow-inset);
 }
 
 .message.success {
+  min-height: 18px;
+  padding: 6px 10px;
   color: var(--success);
   background: rgba(72, 201, 176, 0.1);
   box-shadow: var(--neumorphic-shadow-inset);
@@ -3240,7 +3244,7 @@ select {
 }
 
 .message {
-  min-height: 18px;
+  min-height: 0;
 }
 
 @media (max-width: 440px) {
@@ -4118,16 +4122,17 @@ body.floating-hosted ::-webkit-scrollbar-thumb {
   line-height: 1.4;
 }
 .fast-fill-result {
-  margin-top: 12px;
-  padding: 10px 12px;
+  margin-top: 6px;
+  padding: 6px 10px;
   background: var(--card-bg-secondary, #f8fafc);
   border-radius: 8px;
   border: 1px solid var(--border-color, #e0e0e0);
+  font-size: 12px;
 }
 .fast-fill-result-item {
-  padding: 8px 0;
+  padding: 4px 0;
   border-bottom: 1px solid var(--border-color-light, #eee);
-  font-size: 13px;
+  font-size: 12px;
 }
 .fast-fill-result-item:last-child {
   border-bottom: none;
