@@ -1170,6 +1170,20 @@ body {
   overflow-y: auto;
 }
 
+/* 快填页面底部操作栏 —— 始终吸附在底部 */
+#fast-fill-page .fast-fill-action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  margin-top: auto;
+  padding: 12px 0 4px;
+  background: linear-gradient(0deg, var(--surface) 60%, transparent 100%);
+}
+
+#fast-fill-page .fast-fill-action-bar .page-card {
+  margin-bottom: 0;
+}
+
 /* 创建区域不缩小，历史和收件箱区域填充剩余空间 */
 #create-pane,
 #moe-create-pane {
