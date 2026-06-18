@@ -1723,6 +1723,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const FAST_FILL_DOMAIN_WHITELIST_KEY = 'fastFillDomainWhitelist';
   const FAST_FILL_DOMAIN_BLACKLIST_KEY = 'fastFillDomainBlacklist';
   const FAST_FILL_HISTORY_KEY = 'fastFillHistory';
+  const FAST_FILL_NAME_REGION_KEY = 'fastFillNameRegion';
+  const FAST_FILL_NAME_GENDER_KEY = 'fastFillNameGender';
   let fastFillEmailSource = 'temp';
   let fastFillDomainMode = 'random';
   let fastFillDomainSpecific = '';
@@ -1733,6 +1735,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   let fastFillDomainsLoaded = false;
   let fastFillGenerating = false;
   let fastFillHistory = [];
+  let fastFillNameRegion = 'zh';
+  let fastFillNameGender = 'random';
 
   function saveFastFillConfig() {
     storageSet({
@@ -1740,7 +1744,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       [FAST_FILL_DOMAIN_MODE_KEY]: fastFillDomainMode,
       [FAST_FILL_DOMAIN_SPECIFIC_KEY]: fastFillDomainSpecific,
       [FAST_FILL_DOMAIN_WHITELIST_KEY]: fastFillDomainWhitelist,
-      [FAST_FILL_DOMAIN_BLACKLIST_KEY]: fastFillDomainBlacklist
+      [FAST_FILL_DOMAIN_BLACKLIST_KEY]: fastFillDomainBlacklist,
+      [FAST_FILL_NAME_REGION_KEY]: fastFillNameRegion,
+      [FAST_FILL_NAME_GENDER_KEY]: fastFillNameGender
     }).catch(() => {});
   }
 
@@ -2129,14 +2135,29 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Generate name if needed
       if (neededKinds.includes('name') || neededKinds.includes('firstName') || neededKinds.includes('lastName')) {
-        const zhSurnames = ['王', '李', '张', '刘', '陈', '杨', '赵', '黄', '周', '吴', '徐', '孙', '胡', '朱', '高', '林', '何', '郭', '马', '罗'];
-        const zhGiven = ['伟', '强', '磊', '洋', '勇', '军', '杰', '涛', '明', '芳', '娜', '敏', '静', '丽', '婷', '雪', '玲', '文', '华', '宇'];
-        const pickName = (list) => list[Math.floor(Math.random() * list.length)];
-        const lastName = pickName(zhSurnames);
-        const givenLen = Math.random() < 0.5 ? 2 : 1;
-        let firstName = '';
-        for (let i = 0; i < givenLen; i++) firstName += pickName(zhGiven);
-        const fullName = lastName + firstName;
+        const pick = (list) => list[Math.floor(Math.random() * list.length)];
+        const nameData = window.PopupToolGenerators?.NAME_DATA || {};
+        const region = fastFillNameRegion || 'zh';
+        const genderSelection = fastFillNameGender || 'random';
+        const gender = genderSelection === 'random'
+          ? (Math.random() < 0.5 ? 'male' : 'female')
+          : genderSelection;
+
+        let firstName, lastName, fullName;
+        if (region === 'en' && nameData.en) {
+          firstName = pick(nameData.en[gender] || nameData.en.male);
+          lastName = pick(nameData.en.last);
+          fullName = `${firstName} ${lastName}`;
+        } else {
+          const zhData = nameData.zh || { surname: ['王','李','张','刘','陈'], male: ['伟','强','磊','洋','勇'], female: ['芳','娜','敏','静','丽'] };
+          lastName = pick(zhData.surname);
+          const givenPool = zhData[gender] || zhData.male;
+          const givenLen = Math.random() < 0.5 ? 2 : 1;
+          firstName = '';
+          for (let i = 0; i < givenLen; i++) firstName += pick(givenPool);
+          fullName = lastName + firstName;
+        }
+
         generatedFields.fullName = fullName;
         generatedFields.firstName = firstName;
         generatedFields.lastName = lastName;
@@ -3202,6 +3223,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     fastFillDomainWhitelist = Array.isArray(result[FAST_FILL_DOMAIN_WHITELIST_KEY]) ? result[FAST_FILL_DOMAIN_WHITELIST_KEY] : [];
     fastFillDomainBlacklist = Array.isArray(result[FAST_FILL_DOMAIN_BLACKLIST_KEY]) ? result[FAST_FILL_DOMAIN_BLACKLIST_KEY] : [];
     fastFillHistory = Array.isArray(result[FAST_FILL_HISTORY_KEY]) ? result[FAST_FILL_HISTORY_KEY].slice(0, 3) : [];
+    fastFillNameRegion = result[FAST_FILL_NAME_REGION_KEY] || 'zh';
+    fastFillNameGender = result[FAST_FILL_NAME_GENDER_KEY] || 'random';
+    const ffNameRegionEl = document.getElementById('ff-name-region');
+    const ffNameGenderEl = document.getElementById('ff-name-gender');
+    if (ffNameRegionEl) ffNameRegionEl.value = fastFillNameRegion;
+    if (ffNameGenderEl) ffNameGenderEl.value = fastFillNameGender;
     fastFillEmailSourceEl.value = fastFillEmailSource;
     fastFillDomainModeEl.value = fastFillDomainMode;
     if (fastFillDomainSpecific) fastFillDomainSelect.value = fastFillDomainSpecific;
@@ -5894,6 +5921,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (toStore[FAST_FILL_DOMAIN_BLACKLIST_KEY] !== undefined) {
           fastFillDomainBlacklist = Array.isArray(toStore[FAST_FILL_DOMAIN_BLACKLIST_KEY]) ? toStore[FAST_FILL_DOMAIN_BLACKLIST_KEY] : [];
         }
+        if (toStore[FAST_FILL_NAME_REGION_KEY] !== undefined) {
+          fastFillNameRegion = toStore[FAST_FILL_NAME_REGION_KEY] || 'zh';
+          const ffNrEl = document.getElementById('ff-name-region');
+          if (ffNrEl) ffNrEl.value = fastFillNameRegion;
+        }
+        if (toStore[FAST_FILL_NAME_GENDER_KEY] !== undefined) {
+          fastFillNameGender = toStore[FAST_FILL_NAME_GENDER_KEY] || 'random';
+          const ffNgEl = document.getElementById('ff-name-gender');
+          if (ffNgEl) ffNgEl.value = fastFillNameGender;
+        }
         if (toStore[GENERATED_PROFILE_KEY] !== undefined) {
           generatedProfile = normalizeGeneratedProfile(toStore[GENERATED_PROFILE_KEY]);
           updateFillProfileButton();
@@ -6079,6 +6116,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     saveFastFillConfig();
     fastFillRefreshDomainModeUI();
   });
+
+  const ffNameRegionEl = document.getElementById('ff-name-region');
+  const ffNameGenderEl = document.getElementById('ff-name-gender');
+  if (ffNameRegionEl) {
+    ffNameRegionEl.addEventListener('change', () => {
+      fastFillNameRegion = ffNameRegionEl.value;
+      saveFastFillConfig();
+    });
+  }
+  if (ffNameGenderEl) {
+    ffNameGenderEl.addEventListener('change', () => {
+      fastFillNameGender = ffNameGenderEl.value;
+      saveFastFillConfig();
+    });
+  }
 
   fastFillDomainSelect.addEventListener('change', () => {
     fastFillDomainSpecific = fastFillDomainSelect.value;

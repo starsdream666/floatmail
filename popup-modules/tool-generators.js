@@ -469,6 +469,7 @@
   }
 
   window.PopupToolGenerators = {
-    initGeneratedTools
+    initGeneratedTools,
+    NAME_DATA
   };
 })();
