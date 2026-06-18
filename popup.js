@@ -1735,7 +1735,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let fastFillDomainsLoaded = false;
   let fastFillGenerating = false;
   let fastFillHistory = [];
-  let fastFillNameRegion = 'zh';
+  let fastFillNameRegion = 'en';
   let fastFillNameGender = 'random';
 
   function saveFastFillConfig() {
@@ -2137,7 +2137,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (neededKinds.includes('name') || neededKinds.includes('firstName') || neededKinds.includes('lastName')) {
         const pick = (list) => list[Math.floor(Math.random() * list.length)];
         const nameData = window.PopupToolGenerators?.NAME_DATA || {};
-        const region = fastFillNameRegion || 'zh';
+        const region = fastFillNameRegion || 'en';
         const genderSelection = fastFillNameGender || 'random';
         const gender = genderSelection === 'random'
           ? (Math.random() < 0.5 ? 'male' : 'female')
@@ -3223,7 +3223,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     fastFillDomainWhitelist = Array.isArray(result[FAST_FILL_DOMAIN_WHITELIST_KEY]) ? result[FAST_FILL_DOMAIN_WHITELIST_KEY] : [];
     fastFillDomainBlacklist = Array.isArray(result[FAST_FILL_DOMAIN_BLACKLIST_KEY]) ? result[FAST_FILL_DOMAIN_BLACKLIST_KEY] : [];
     fastFillHistory = Array.isArray(result[FAST_FILL_HISTORY_KEY]) ? result[FAST_FILL_HISTORY_KEY].slice(0, 3) : [];
-    fastFillNameRegion = result[FAST_FILL_NAME_REGION_KEY] || 'zh';
+    fastFillNameRegion = result[FAST_FILL_NAME_REGION_KEY] || 'en';
     fastFillNameGender = result[FAST_FILL_NAME_GENDER_KEY] || 'random';
     const ffNameRegionEl = document.getElementById('ff-name-region');
     const ffNameGenderEl = document.getElementById('ff-name-gender');
@@ -5922,7 +5922,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           fastFillDomainBlacklist = Array.isArray(toStore[FAST_FILL_DOMAIN_BLACKLIST_KEY]) ? toStore[FAST_FILL_DOMAIN_BLACKLIST_KEY] : [];
         }
         if (toStore[FAST_FILL_NAME_REGION_KEY] !== undefined) {
-          fastFillNameRegion = toStore[FAST_FILL_NAME_REGION_KEY] || 'zh';
+          fastFillNameRegion = toStore[FAST_FILL_NAME_REGION_KEY] || 'en';
           const ffNrEl = document.getElementById('ff-name-region');
           if (ffNrEl) ffNrEl.value = fastFillNameRegion;
         }
