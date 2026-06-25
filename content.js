@@ -1220,19 +1220,21 @@
       if (isButtonDragging) {
         const dx = event.clientX - buttonStartX;
         const dy = event.clientY - buttonStartY;
-        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+        if (!wasDragged && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
           wasDragged = true;
         }
-        const newLeft = clamp(buttonStartLeft + dx, 0, Math.max(0, window.innerWidth - button.offsetWidth));
-        const newTop = clamp(buttonStartTop + dy, 0, Math.max(0, window.innerHeight - button.offsetHeight));
-        button.style.left = `${newLeft}px`;
-        button.style.top = `${newTop}px`;
-        button.style.right = 'auto';
-        button.style.bottom = 'auto';
-        floatUi.buttonLayout = {
-          left: Math.round(newLeft),
-          top: Math.round(newTop),
-        };
+        if (wasDragged) {
+          const newLeft = clamp(buttonStartLeft + dx, 0, Math.max(0, window.innerWidth - button.offsetWidth));
+          const newTop = clamp(buttonStartTop + dy, 0, Math.max(0, window.innerHeight - button.offsetHeight));
+          button.style.left = `${newLeft}px`;
+          button.style.top = `${newTop}px`;
+          button.style.right = 'auto';
+          button.style.bottom = 'auto';
+          floatUi.buttonLayout = {
+            left: Math.round(newLeft),
+            top: Math.round(newTop),
+          };
+        }
       }
 
       if (isPanelDragging) {
