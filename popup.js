@@ -1053,7 +1053,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const openSelectLock = () => notifyFloatingHostSelectState(true);
     const closeSelectLock = () => window.setTimeout(() => notifyFloatingHostSelectState(false), 0);
 
-    document.querySelectorAll('select').forEach((selectElement) => {
+    document.querySelectorAll('select:not([data-no-scroll-lock])').forEach((selectElement) => {
       selectElement.addEventListener('pointerdown', openSelectLock);
       selectElement.addEventListener('mousedown', openSelectLock);
       selectElement.addEventListener('touchstart', openSelectLock, { passive: true });
