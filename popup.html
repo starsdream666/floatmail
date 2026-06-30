@@ -902,7 +902,11 @@
           <label>AI 邮件翻译（OpenAI 兼容）</label>
           <input type="url" id="translation-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
           <input type="password" id="translation-api-key" class="wide-select" placeholder="sk-..." />
-          <input type="text" id="translation-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+          <div class="model-fetch-row">
+            <input type="text" id="translation-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+            <button id="fetch-translation-models-btn" class="btn text-btn" type="button">获取模型</button>
+          </div>
+          <select id="translation-model-select" class="wide-select hidden"></select>
           <input type="text" id="translation-target-language" class="wide-select" placeholder="简体中文" />
           <div class="tool-note">使用 OpenAI 兼容 Chat Completions 接口。仅在你点击“翻译邮件”时调用外部 API。API Key 只保存在本地扩展配置中，可随配置导入导出。</div>
         </div>
@@ -915,7 +919,11 @@
           <div id="mail-insight-custom-api-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
             <input type="url" id="mail-insight-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
             <input type="password" id="mail-insight-api-key" class="wide-select" placeholder="sk-..." />
-            <input type="text" id="mail-insight-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+            <div class="model-fetch-row">
+              <input type="text" id="mail-insight-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+              <button id="fetch-insight-models-btn" class="btn text-btn" type="button">获取模型</button>
+            </div>
+            <select id="mail-insight-model-select" class="wide-select hidden"></select>
           </div>
           <div class="tool-note">打开邮件时会自动调用外部 API 提取更高置信度的验证码与验证链接。若选择复用翻译 API，下方独立提取 API 配置可留空；若 AI 提取失败，会保留本地规则结果，并可在邮件洞察区点击重试。</div>
         </div>

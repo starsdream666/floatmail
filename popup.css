@@ -2785,6 +2785,21 @@ ul#history-list li span {
   width: 100%;
 }
 
+.model-fetch-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.model-fetch-row .wide-select {
+  flex: 1;
+}
+
+.model-fetch-row .text-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .site-control-card {
   display: flex;
   flex-direction: column;

@@ -203,6 +203,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const mailInsightApiBaseInput = document.getElementById('mail-insight-api-base');
   const mailInsightApiKeyInput = document.getElementById('mail-insight-api-key');
   const mailInsightModelInput = document.getElementById('mail-insight-model');
+  const fetchTranslationModelsBtn = document.getElementById('fetch-translation-models-btn');
+  const translationModelSelect = document.getElementById('translation-model-select');
+  const fetchInsightModelsBtn = document.getElementById('fetch-insight-models-btn');
+  const mailInsightModelSelect = document.getElementById('mail-insight-model-select');
   const generatedResultAutoCloseSecondsInput = document.getElementById('generated-result-auto-close-seconds');
   const siteAccessModeSelect = document.getElementById('site-access-mode');
   const currentSiteOriginDiv = document.getElementById('current-site-origin');
@@ -3764,6 +3768,98 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // ===================== 获取模型列表（OpenAI 兼容） =====================
+  async function fetchModelsFromApi(apiBase, apiKey) {
+    const base = String(apiBase || '').replace(/\/$/, '');
+    if (!base || !apiKey) {
+      throw new Error('请先填写 API Base 和 API Key');
+    }
+    const response = await fetch(`${base}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    if (!response.ok) {
+      let msg = `${response.status}`;
+      try {
+        const err = await response.json();
+        msg = err?.error?.message || err?.message || msg;
+      } catch {}
+      throw new Error(`获取模型列表失败: ${msg}`);
+    }
+    const data = await response.json();
+    const models = (data?.data || []).map(m => m.id).filter(Boolean);
+    if (!models.length) {
+      throw new Error('该 API 未返回任何可用模型');
+    }
+    return models;
+  }
+
+  function populateModelSelect(selectEl, models) {
+    selectEl.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = '-- 请选择模型 --';
+    selectEl.appendChild(placeholder);
+    models.forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      selectEl.appendChild(opt);
+    });
+    selectEl.selectedIndex = 0;
+    selectEl.classList.remove('hidden');
+  }
+
+  fetchTranslationModelsBtn.addEventListener('click', async () => {
+    const base = translationApiBaseInput.value.trim();
+    const key = translationApiKeyInput.value.trim();
+    fetchTranslationModelsBtn.disabled = true;
+    try {
+      const models = await fetchModelsFromApi(base, key);
+      populateModelSelect(translationModelSelect, models);
+      if (translationModelInput.value.trim()) {
+        translationModelSelect.value = translationModelInput.value.trim();
+      }
+    } catch (error) {
+      showMessage(settingsMessage, error.message, 'error');
+      setTimeout(() => { settingsMessage.textContent = ''; }, 3000);
+    } finally {
+      fetchTranslationModelsBtn.disabled = false;
+    }
+  });
+
+  translationModelSelect.addEventListener('change', () => {
+    translationModelInput.value = translationModelSelect.value;
+  });
+
+  fetchInsightModelsBtn.addEventListener('click', async () => {
+    const mode = mailInsightApiModeSelect.value;
+    let base, key;
+    if (mode === 'custom') {
+      base = mailInsightApiBaseInput.value.trim();
+      key = mailInsightApiKeyInput.value.trim();
+    } else {
+      base = translationApiBaseInput.value.trim();
+      key = translationApiKeyInput.value.trim();
+    }
+    fetchInsightModelsBtn.disabled = true;
+    try {
+      const models = await fetchModelsFromApi(base, key);
+      populateModelSelect(mailInsightModelSelect, models);
+      if (mailInsightModelInput.value.trim()) {
+        mailInsightModelSelect.value = mailInsightModelInput.value.trim();
+      }
+    } catch (error) {
+      showMessage(settingsMessage, error.message, 'error');
+      setTimeout(() => { settingsMessage.textContent = ''; }, 3000);
+    } finally {
+      fetchInsightModelsBtn.disabled = false;
+    }
+  });
+
+  mailInsightModelSelect.addEventListener('change', () => {
+    mailInsightModelInput.value = mailInsightModelSelect.value;
+  });
+
   // ===================== Temp Email: 加载域名 =====================
   async function loadDomains() {
     try {
@@ -4152,7 +4248,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
           }
         } catch (e) {
-          console.warn(`服务端批量删除失 ${addr} 失败:`, e.message);
+          console.warn('服务端批量删除失败:', e.message);
         }
       }
     }
@@ -4216,7 +4312,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const match = (data.results || []).find(a => matchesAddressRecord(a, addr));
         return match ? 'valid' : 'invalid';
       } catch (err) {
-        console.warn(`验证 ${addr} 第 ${attempt} 次失败:`, err.message);
+        console.warn(`验证第 ${attempt} 次失败:`, err.message);
         if (attempt < VERIFY_RETRY) {
           // 指数退避等待
           await new Promise(r => setTimeout(r, 1000 * attempt));
@@ -4479,7 +4575,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (toDelete.length === 0) return;
 
-    console.log(`[TempMail] Auto-deleting ${toDelete.length} expired addresses:`, toDelete);
+    console.log('[TempMail] Auto-deleting expired addresses:', toDelete.length);
 
     for (const addr of toDelete) {
       try {
@@ -4501,7 +4597,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
       } catch (e) {
-        console.warn(`[TempMail] Server delete failed for ${addr}:`, e.message);
+        console.warn('[TempMail] Server delete failed:', e.message);
       }
       // Remove from local state regardless of server result
       history = history.filter(a => a !== addr);
@@ -4682,7 +4778,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           headers: { 'x-admin-auth': adminToken }
         });
       } catch (e) {
-        console.warn(`删除邮件 ${mailId} 失败:`, e.message);
+        console.warn('删除邮件失败:', e.message);
       }
     }
     
@@ -5233,7 +5329,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           headers: moeHeaders()
         });
       } catch (e) {
-        console.warn(`删除 MoeMail ${emailId} 失败:`, e.message);
+        console.warn('删除 MoeMail 失败:', e.message);
       }
     }
     
@@ -5575,6 +5671,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     catch (e) { console.error('复制失败', e); }
     document.body.removeChild(textarea);
   }
+
+  function normalizeBookmarkHttpUrl(rawUrl) {
+    try {
+      const raw = String(rawUrl || '').trim();
+      const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw);
+      if (hasScheme && !/^https?:\/\//i.test(raw)) {
+        return '';
+      }
+      const candidate = hasScheme ? raw : `https://${raw}`;
+      const url = new URL(candidate);
+      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function openBookmarkUrl(rawUrl, opener) {
+    const safeUrl = normalizeBookmarkHttpUrl(rawUrl);
+    if (!safeUrl) {
+      showMessage(bmMessage, '书签网址无效或协议不受支持', 'error');
+      return;
+    }
+    opener(safeUrl);
+  }
+
   // ===================== 书签功能 =====================
   bmAddBtn.addEventListener('click', () => {
     const url = bmUrlInput.value.trim();
@@ -5582,15 +5703,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       showMessage(bmMessage, '请输入网址', 'error');
       return;
     }
-    // 简单验证 URL
-    try {
-      new URL(url.startsWith('http') ? url : 'https://' + url);
-    } catch {
+    const finalUrl = normalizeBookmarkHttpUrl(url);
+    if (!finalUrl) {
       showMessage(bmMessage, '网址格式不正确', 'error');
       return;
     }
-
-    const finalUrl = url.startsWith('http') ? url : 'https://' + url;
     const name = bmNameInput.value.trim() || finalUrl;
 
     // 检查重复
@@ -5743,9 +5860,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       openCurrentBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
       openCurrentBtn.onclick = (e) => {
         e.stopPropagation();
-        // 在当前页面打开
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          if (tabs[0]) chrome.tabs.update(tabs[0].id, { url: bm.url });
+        openBookmarkUrl(bm.url, (safeUrl) => {
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0]) chrome.tabs.update(tabs[0].id, { url: safeUrl });
+          });
         });
       };
 
@@ -5756,7 +5874,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       openNewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
       openNewBtn.onclick = (e) => {
         e.stopPropagation();
-        chrome.tabs.create({ url: bm.url });
+        openBookmarkUrl(bm.url, (safeUrl) => chrome.tabs.create({ url: safeUrl }));
       };
 
       // 无痕模式打开按钮
@@ -5766,7 +5884,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       openIncognitoBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/><path d="M2 2l20 20"/></svg>';
       openIncognitoBtn.onclick = (e) => {
         e.stopPropagation();
-        chrome.windows.create({ url: bm.url, incognito: true });
+        openBookmarkUrl(bm.url, (safeUrl) => chrome.windows.create({ url: safeUrl, incognito: true }));
       };
 
       // 删除按钮
@@ -5855,14 +5973,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           alert('网址不能为空');
           return;
         }
-        try {
-          new URL(url.startsWith('http') ? url : 'https://' + url);
-        } catch {
+        const finalUrl = normalizeBookmarkHttpUrl(url);
+        if (!finalUrl) {
           alert('网址格式不正确');
           return;
         }
-
-        const finalUrl = url.startsWith('http') ? url : 'https://' + url;
         const name = editNameInput.value.trim() || finalUrl;
 
         // 更新数据并保存
