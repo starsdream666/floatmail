@@ -3812,6 +3812,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   fetchTranslationModelsBtn.addEventListener('click', async () => {
     const base = translationApiBaseInput.value.trim();
     const key = translationApiKeyInput.value.trim();
+    const originalText = fetchTranslationModelsBtn.textContent;
+    fetchTranslationModelsBtn.textContent = '获取中...';
     fetchTranslationModelsBtn.disabled = true;
     try {
       const models = await fetchModelsFromApi(base, key);
@@ -3823,6 +3825,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       showMessage(settingsMessage, error.message, 'error');
       setTimeout(() => { settingsMessage.textContent = ''; }, 3000);
     } finally {
+      fetchTranslationModelsBtn.textContent = originalText;
       fetchTranslationModelsBtn.disabled = false;
     }
   });
@@ -3841,6 +3844,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       base = translationApiBaseInput.value.trim();
       key = translationApiKeyInput.value.trim();
     }
+    const originalInsightText = fetchInsightModelsBtn.textContent;
+    fetchInsightModelsBtn.textContent = '获取中...';
     fetchInsightModelsBtn.disabled = true;
     try {
       const models = await fetchModelsFromApi(base, key);
@@ -3852,6 +3857,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       showMessage(settingsMessage, error.message, 'error');
       setTimeout(() => { settingsMessage.textContent = ''; }, 3000);
     } finally {
+      fetchInsightModelsBtn.textContent = originalInsightText;
       fetchInsightModelsBtn.disabled = false;
     }
   });
