@@ -50,6 +50,9 @@
 - 双视觉风格：**Legacy 经典** / **Modern 新拟物 Neumorphism**
 - 一键钉住 / 复位 / 关闭
 - 支持白名单 / 黑名单域名策略，精确控制注入范围
+- 最大 z-index + 内联 !important 防页面 CSS 覆盖
+- MutationObserver 自动重挂载，防止被后插入元素遮挡
+- iframe 延迟加载，避免扩展重载时多标签页请求风暴
 
 ### ⚡ 一键填表 | Fast Fill
 - 自动为页面表单生成并填入：邮箱、密码、姓名、生日、地址
@@ -208,6 +211,21 @@ content.js  ←→  background.js  (tabs.sendMessage)
 | **网络** | `fetch()` |
 | **构建** | 零依赖、零打包器，纯原生 |
 | **CSS** | `data-style` × `data-theme` 双层属性选择器主题系统 |
+
+---
+
+## 📝 更新日志 | Changelog
+
+### v3.0.3 (2025-07)
+- **修复** 扩展重载时请求风暴：iframe 改为首次点击时按需加载，消除 N 标签页 × 自动 API 请求的放大效应
+- **优化** 悬浮窗样式缓存：WeakMap 跳过重复 `setProperty`，减少无效样式重算
+- **优化** MutationObserver 防抖与自触发保护：`scheduleReattach` 延迟 0→150ms，节点移动期间断开观察器
+- **修复** 面板首次打开闪烁：加入 350ms 切换冷却锁，阻断快速重复 toggle
+- **优化** 保活定时器间隔恢复为 3 秒，降低后台 CPU 占用
+
+### v3.0.2 (2025-06)
+- **增强** 悬浮窗防覆盖：最大 z-index `2147483647` + 内联 `!important` 抵御页面全局样式
+- **增强** DOM 自动重挂载：页面动态插入元素后自动将悬浮 UI 移至 body 末尾
 
 ---
 
