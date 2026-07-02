@@ -1253,7 +1253,6 @@
     panel.appendChild(header);
 
     const iframe = document.createElement('iframe');
-    iframe.src = chrome.runtime.getURL('popup.html');
     panel.appendChild(iframe);
 
     const overlay = document.createElement('div');
@@ -1277,6 +1276,7 @@
       style: normalizeFloatWindowStyle(savedStyle),
       isPinned: Boolean(savedLayout?.pinned),
       panelVisible: false,
+      iframeLoaded: false,
       buttonLayout: null,
       panelLayout: null,
       keepAliveTimer: null,
@@ -1307,6 +1307,12 @@
     function showPanel() {
       if (!floatUi) {
         return;
+      }
+      // 延迟加载：仅在用户首次打开面板时才加载 iframe 内容，
+      // 避免标签页初始化时批量创建 iframe 导致请求风暴。
+      if (!floatUi.iframeLoaded) {
+        floatUi.iframeLoaded = true;
+        floatUi.iframe.src = chrome.runtime.getURL('popup.html');
       }
       setFloatPanelVisible(true);
     }
