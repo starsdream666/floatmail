@@ -6,7 +6,7 @@
   <title>FloatMail</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-<body class="tab-layout-top">
+<body class="tab-layout-top js-loading">
   <div class="container">
     <div class="header">
       <div class="header-copy">
@@ -993,6 +993,14 @@
             <div id="current-site-status" class="site-status">打开任意网页后可单独启用或禁用悬浮助手。</div>
             <button id="current-site-toggle-btn" class="btn text-btn">当前站点不可用</button>
           </div>
+        </div>
+        <div class="form-group">
+          <label for="site-blocklist-patterns">黑名单规则（每行一条）</label>
+          <textarea id="site-blocklist-patterns" class="site-blocklist-textarea" rows="5" placeholder="支持三种格式，每行一条：
+完整域名：https://mail.google.com
+通配符：*.example.com
+关键词：spam"></textarea>
+          <div class="tool-note">匹配规则：完整域名精确匹配 origin；通配符 <code>*.example.com</code> 匹配所有子域名；关键词匹配 hostname 中包含该词的任意域名（忽略大小写）。</div>
         </div>
       </div>
 

@@ -62,6 +62,7 @@
   let hostScrollLock = null;
   let currentFloatWindowStyle = FLOAT_WINDOW_STYLES.MODERN;
   let shouldReopenFloatPanelAfterSelection = false;
+  let lastPanelStateChangeTime = 0;
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
       allFillRules = result[PAGE_FILL_RULES_KEY] || {};
@@ -127,10 +128,21 @@
     return null;
   }
 
+  const floatStyleCache = new WeakMap();
+
   function setImportantStyle(element, property, value) {
     if (!element) {
       return;
     }
+    let cache = floatStyleCache.get(element);
+    if (!cache) {
+      cache = new Map();
+      floatStyleCache.set(element, cache);
+    }
+    if (cache.get(property) === value) {
+      return;
+    }
+    cache.set(property, value);
     element.style.setProperty(property, value, 'important');
   }
 
@@ -161,7 +173,7 @@
       return;
     }
 
-    const { button, panel } = floatUi;
+    const { button, panel, observer } = floatUi;
     const firstNode = floatUi.panelVisible ? button : panel;
     const lastNode = floatUi.panelVisible ? panel : button;
     const needsReorder = firstNode.parentNode !== document.body
@@ -170,9 +182,15 @@
       || lastNode.nextElementSibling !== null;
 
     if (needsReorder) {
-      // Keep the active UI last so equal max-z-index page overlays and sibling nodes cannot cover it.
+      // 暂停 observer 避免 appendChild 自触发
+      if (observer) {
+        observer.disconnect();
+      }
       document.body.appendChild(firstNode);
       document.body.appendChild(lastNode);
+      if (observer) {
+        observer.observe(document.body, { childList: true });
+      }
     }
 
     applyFloatTopLayerStyles();
@@ -181,6 +199,15 @@
   function setFloatPanelVisible(visible, options = {}) {
     if (!floatUi) {
       return;
+    }
+
+    // 防止短时间内反复切换导致闪烁
+    if (floatUi.panelVisible !== visible) {
+      const now = Date.now();
+      if (!options.force && now - lastPanelStateChangeTime < 350) {
+        return;
+      }
+      lastPanelStateChangeTime = now;
     }
 
     if (visible) {
@@ -212,7 +239,7 @@
       return;
     }
     window.setTimeout(() => {
-      setFloatPanelVisible(true);
+      setFloatPanelVisible(true, { force: true });
     }, 0);
   }
 
@@ -1572,7 +1599,7 @@
     };
 
     let reattachScheduled = false;
-    const scheduleReattach = (delay = 0) => {
+    const scheduleReattach = (delay = 150) => {
       if (reattachScheduled || !floatUi) {
         return;
       }
@@ -1606,7 +1633,7 @@
       }
       if (document.visibilityState === 'visible') {
         if (!floatUi.keepAliveTimer) {
-          floatUi.keepAliveTimer = window.setInterval(reattachIfMissing, 1000);
+          floatUi.keepAliveTimer = window.setInterval(reattachIfMissing, 3000);
         }
         return;
       }
@@ -1628,6 +1655,62 @@
     floatUi.cleanup.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
   }
 
+  /**
+   * 从 URL 或 origin 中提取 hostname（不含端口）
+   */
+  function extractFloatHostname(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return '';
+    try {
+      const url = new URL(rawUrl);
+      return url.hostname || '';
+    } catch {
+      const cleaned = rawUrl.trim();
+      if (cleaned.includes('://')) {
+        const afterProtocol = cleaned.split('://')[1];
+        return afterProtocol.split('/')[0].split(':')[0];
+      }
+      return cleaned.split(':')[0];
+    }
+  }
+
+  /**
+   * 判断 URL 是否匹配某条黑名单/白名单规则
+   * 支持：完整域名 (https://...)、通配符 (*.example.com)、关键词
+   */
+  function matchesFloatSitePattern(rawUrl, pattern) {
+    if (!rawUrl || !pattern) return false;
+    const p = String(pattern).trim();
+    if (!p) return false;
+
+    // 完整 origin 精确匹配
+    if (p.startsWith('http://') || p.startsWith('https://')) {
+      try {
+        const patternOrigin = new URL(p).origin;
+        let origin;
+        try { origin = new URL(rawUrl).origin; } catch { origin = rawUrl; }
+        return patternOrigin === origin;
+      } catch { return false; }
+    }
+
+    const hostname = extractFloatHostname(rawUrl);
+    if (!hostname) return false;
+
+    // 通配符匹配
+    if (p.startsWith('*.')) {
+      const suffix = p.slice(2);
+      if (!suffix) return false;
+      return hostname === suffix || hostname.endsWith('.' + suffix);
+    }
+
+    // 关键词匹配
+    return hostname.toLowerCase().includes(p.toLowerCase());
+  }
+
+  function matchesAnyFloatSitePattern(rawUrl, patterns) {
+    if (!Array.isArray(patterns) || patterns.length === 0) return false;
+    return patterns.some(p => matchesFloatSitePattern(rawUrl, p));
+  }
+
   async function maybeInitFloatWindow() {
     const result = await storageGet([
       'floatWindowEnabled', FLOAT_LAYOUT_KEY, FLOAT_WINDOW_STYLE_KEY,
@@ -1642,13 +1725,13 @@
     const origin = (window.location && window.location.origin) || '';
     if (origin) {
       const blocklist = Array.isArray(result.siteBlocklist) ? result.siteBlocklist : [];
-      if (blocklist.includes(origin)) {
+      if (matchesAnyFloatSitePattern(window.location.href, blocklist)) {
         teardownFloatWindow();
         return;
       }
       if (result.siteAccessMode === 'whitelist') {
         const allowlist = Array.isArray(result.siteAllowlist) ? result.siteAllowlist : [];
-        if (!allowlist.includes(origin)) {
+        if (!matchesAnyFloatSitePattern(window.location.href, allowlist) && !allowlist.includes(origin)) {
           teardownFloatWindow();
           return;
         }

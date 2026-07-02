@@ -1100,6 +1100,11 @@ body {
   box-sizing: border-box;
 }
 
+/* 初始化加载期间隐藏页面，避免配置加载前的闪烁 */
+body.js-loading {
+  visibility: hidden;
+}
+
 .container {
   padding: 16px;
   display: flex;
@@ -2026,6 +2031,30 @@ body {
 .settings-custom-input {
   width: 92px;
   flex: 0 0 92px;
+}
+
+.site-blocklist-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: "SF Mono", "Consolas", "Monaco", monospace;
+  line-height: 1.6;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--input-bg);
+  color: var(--text-main);
+  resize: vertical;
+  transition: border-color 0.15s;
+}
+.site-blocklist-textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(var(--primary-rgb, 99, 102, 241), 0.15);
+}
+.site-blocklist-textarea::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
 }
 
 .settings-unit-select {

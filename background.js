@@ -155,20 +155,98 @@ function normalizeOriginList(list) {
     .filter(Boolean);
 }
 
+/**
+ * 从 URL 或 origin 中提取 hostname（不含端口）
+ * 支持: 'https://example.com:8080/path' → 'example.com'
+ *       'https://example.com' → 'example.com'
+ *       'example.com' → 'example.com'
+ */
+function extractHostname(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  try {
+    const url = new URL(rawUrl);
+    return url.hostname || '';
+  } catch {
+    // 可能是纯 hostname 或 origin 不带协议
+    const cleaned = rawUrl.trim();
+    if (cleaned.includes('://')) {
+      const afterProtocol = cleaned.split('://')[1];
+      return afterProtocol.split('/')[0].split(':')[0];
+    }
+    return cleaned.split(':')[0];
+  }
+}
+
+/**
+ * 判断 URL 是否匹配某条黑名单/白名单规则
+ *
+ * 支持三种匹配模式：
+ * 1. 完整域名（origin）: 'https://mail.google.com' — 精确匹配 origin
+ * 2. 通配符: '*.example.com' — 匹配 example.com 及其所有子域名
+ * 3. 域名关键词: 'spam' — 匹配 hostname 中包含该关键词的任意域名（忽略大小写）
+ */
+function matchesSitePattern(rawUrl, pattern) {
+  if (!rawUrl || !pattern) return false;
+  const p = String(pattern).trim();
+  if (!p) return false;
+
+  // 1. 完整 origin 精确匹配 (http:// 或 https:// 开头)
+  if (p.startsWith('http://') || p.startsWith('https://')) {
+    try {
+      const patternOrigin = new URL(p).origin;
+      let origin;
+      try {
+        origin = new URL(rawUrl).origin;
+      } catch {
+        // rawUrl 可能本身就已经是 origin
+        origin = rawUrl;
+      }
+      return patternOrigin === origin;
+    } catch {
+      return false;
+    }
+  }
+
+  const hostname = extractHostname(rawUrl);
+  if (!hostname) return false;
+
+  // 2. 通配符匹配: '*.example.com'
+  if (p.startsWith('*.')) {
+    const suffix = p.slice(2); // 移除 '*.' → 'example.com'
+    if (!suffix) return false;
+    return hostname === suffix || hostname.endsWith('.' + suffix);
+  }
+
+  // 3. 关键词匹配（忽略大小写）
+  return hostname.toLowerCase().includes(p.toLowerCase());
+}
+
+/**
+ * 判断 URL 是否匹配规则列表中的任意一条
+ */
+function matchesAnySitePattern(rawUrl, patterns) {
+  if (!Array.isArray(patterns) || patterns.length === 0) return false;
+  return patterns.some(pattern => matchesSitePattern(rawUrl, pattern));
+}
+
 function shouldAllowSite(url, settings) {
   const origin = normalizeOrigin(url);
   if (!origin) {
     return false;
   }
 
-  const blocklist = new Set(normalizeOriginList(settings.siteBlocklist));
-  if (blocklist.has(origin)) {
+  // 黑名单：支持完整域名、通配符、关键词三种模式
+  const blocklist = Array.isArray(settings.siteBlocklist) ? settings.siteBlocklist : [];
+  if (matchesAnySitePattern(url, blocklist)) {
     return false;
   }
 
   if (settings.siteAccessMode === 'whitelist') {
-    const allowlist = new Set(normalizeOriginList(settings.siteAllowlist));
-    return allowlist.has(origin);
+    const allowlist = Array.isArray(settings.siteAllowlist) ? settings.siteAllowlist : [];
+    // 白名单同时也尝试模式匹配（兼容新格式），以及旧的 origin 精确匹配
+    if (matchesAnySitePattern(url, allowlist)) return true;
+    const allowlistOrigins = new Set(normalizeOriginList(allowlist));
+    return allowlistOrigins.has(origin);
   }
 
   return true;

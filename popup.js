@@ -55,6 +55,11 @@
 })();
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // 安全超时：如果初始化超过 3 秒仍未完成，强制显示页面避免白屏
+  const initSafetyTimer = setTimeout(() => {
+    document.body.classList.remove('js-loading');
+  }, 3000);
+
   const { createMailRenderer } = window.PopupMailRenderer;
   const { initConfigIO } = window.PopupConfigIO;
   const { initGeneratedTools } = window.PopupToolGenerators;
@@ -268,6 +273,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const currentSiteOriginDiv = document.getElementById('current-site-origin');
   const currentSiteStatusDiv = document.getElementById('current-site-status');
   const currentSiteToggleBtn = document.getElementById('current-site-toggle-btn');
+  const siteBlocklistTextarea = document.getElementById('site-blocklist-patterns');
 
   // ===================== 状态 =====================
   const MAX_HISTORY = 20;
@@ -1417,12 +1423,74 @@ document.addEventListener('DOMContentLoaded', async () => {
     return Boolean(normalizeOrigin(rawUrl));
   }
 
+  /**
+   * 从 URL 或 origin 中提取 hostname（不含端口）
+   */
+  function extractHostname(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== 'string') return '';
+    try {
+      const url = new URL(rawUrl);
+      return url.hostname || '';
+    } catch {
+      const cleaned = rawUrl.trim();
+      if (cleaned.includes('://')) {
+        const afterProtocol = cleaned.split('://')[1];
+        return afterProtocol.split('/')[0].split(':')[0];
+      }
+      return cleaned.split(':')[0];
+    }
+  }
+
+  /**
+   * 判断 URL 是否匹配某条黑名单/白名单规则
+   * 支持：完整域名 (https://...)、通配符 (*.example.com)、关键词
+   */
+  function matchesSitePattern(rawUrl, pattern) {
+    if (!rawUrl || !pattern) return false;
+    const p = String(pattern).trim();
+    if (!p) return false;
+
+    // 完整 origin 精确匹配
+    if (p.startsWith('http://') || p.startsWith('https://')) {
+      try {
+        const patternOrigin = new URL(p).origin;
+        let origin;
+        try { origin = new URL(rawUrl).origin; } catch { origin = rawUrl; }
+        return patternOrigin === origin;
+      } catch { return false; }
+    }
+
+    const hostname = extractHostname(rawUrl);
+    if (!hostname) return false;
+
+    // 通配符匹配
+    if (p.startsWith('*.')) {
+      const suffix = p.slice(2);
+      if (!suffix) return false;
+      return hostname === suffix || hostname.endsWith('.' + suffix);
+    }
+
+    // 关键词匹配（忽略大小写）
+    return hostname.toLowerCase().includes(p.toLowerCase());
+  }
+
+  function matchesAnySitePattern(rawUrl, patterns) {
+    if (!Array.isArray(patterns) || patterns.length === 0) return false;
+    return patterns.some(p => matchesSitePattern(rawUrl, p));
+  }
+
   function isSiteAllowed(origin) {
     if (!origin) return false;
-    const allowlist = new Set((siteAllowlist || []).map(normalizeOrigin).filter(Boolean));
-    const blocklist = new Set((siteBlocklist || []).map(normalizeOrigin).filter(Boolean));
-    if (blocklist.has(origin)) return false;
-    if (siteAccessMode === 'whitelist') return allowlist.has(origin);
+    const blocklist = Array.isArray(siteBlocklist) ? siteBlocklist : [];
+    // 黑名单支持完整域名、通配符、关键词三种模式
+    if (matchesAnySitePattern(origin, blocklist)) return false;
+    if (siteAccessMode === 'whitelist') {
+      const allowlist = Array.isArray(siteAllowlist) ? siteAllowlist : [];
+      // 支持模式匹配 + 兼容旧的 origin 精确匹配
+      if (matchesAnySitePattern(origin, allowlist)) return true;
+      const allowlistOrigins = new Set(allowlist.map(normalizeOrigin).filter(Boolean));
+      return allowlistOrigins.has(origin);
+    }
     return true;
   }
 
@@ -3230,6 +3298,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     DEFAULT_MAIL_POLL_INTERVAL
   );
 
+  /**
+   * 将 siteBlocklist 数组同步到 textarea（每行一条）
+   */
+  function syncBlocklistTextarea() {
+    if (siteBlocklistTextarea) {
+      siteBlocklistTextarea.value = Array.isArray(siteBlocklist) ? siteBlocklist.join('\n') : '';
+    }
+  }
+
+  /**
+   * 从 textarea 解析黑名单规则数组（自动去重、过滤空行/空白）
+   */
+  function parseBlocklistTextarea() {
+    if (!siteBlocklistTextarea) return siteBlocklist;
+    const lines = siteBlocklistTextarea.value.split(/\r?\n/);
+    const seen = new Set();
+    const result = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+    return result;
+  }
+
   async function refreshCurrentSiteInfo() {
     const tab = await getActiveTab().catch(() => null);
     currentSiteOrigin = normalizeOrigin(tab?.url || '');
@@ -3240,6 +3334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentSiteToggleBtn.textContent = '当前站点不可用';
       currentSiteToggleBtn.disabled = true;
       renderFillRuleManager();
+      syncBlocklistTextarea();
       return;
     }
 
@@ -3253,6 +3348,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentSiteToggleBtn.textContent = allowed ? '从白名单移除当前站点' : '加入白名单';
       renderFillRuleManager();
       if (activeTab === 'fast-fill') renderFastFillPage().catch(() => {});
+      syncBlocklistTextarea();
       return;
     }
 
@@ -3262,6 +3358,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentSiteToggleBtn.textContent = allowed ? '禁用当前站点' : '重新启用当前站点';
     renderFillRuleManager();
     if (activeTab === 'fast-fill') renderFastFillPage().catch(() => {});
+    syncBlocklistTextarea();
   }
 
   async function handleCurrentSiteToggle() {
@@ -3269,13 +3366,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    // 先同步 textarea 内容，确保基于最新编辑状态判断
+    siteBlocklist = parseBlocklistTextarea();
+
     if (siteAccessMode === 'whitelist') {
-      if (siteAllowlist.includes(currentSiteOrigin)) {
+      if (matchesAnySitePattern(currentSiteOrigin, siteAllowlist)) {
         siteAllowlist = siteAllowlist.filter(origin => origin !== currentSiteOrigin);
       } else {
         siteAllowlist = Array.from(new Set([...siteAllowlist, currentSiteOrigin]));
       }
-    } else if (siteBlocklist.includes(currentSiteOrigin)) {
+    } else if (matchesAnySitePattern(currentSiteOrigin, siteBlocklist)) {
       siteBlocklist = siteBlocklist.filter(origin => origin !== currentSiteOrigin);
     } else {
       siteBlocklist = Array.from(new Set([...siteBlocklist, currentSiteOrigin]));
@@ -3287,6 +3387,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       siteBlocklist
     });
     refreshCurrentSiteInfo();
+    syncBlocklistTextarea();
   }
 
   applyTabLayoutMode(TAB_LAYOUT_MODES.TOP);
@@ -3418,6 +3519,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     siteAccessMode = result.siteAccessMode || 'all';
     siteAllowlist = Array.isArray(result.siteAllowlist) ? result.siteAllowlist : [];
     siteBlocklist = Array.isArray(result.siteBlocklist) ? result.siteBlocklist : [];
+    syncBlocklistTextarea();
     pageFillRules = result[PAGE_FILL_RULES_KEY] || {};
     generatedProfile = normalizeGeneratedProfile(result[GENERATED_PROFILE_KEY]);
     generatedToolHistory = normalizeGeneratedToolHistory(result[GENERATED_HISTORY_KEY]);
@@ -3467,7 +3569,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         moeOpenInbox(emailObj);
       }, 200);
     }
+
+    // 初始化完成，显示页面
+    clearTimeout(initSafetyTimer);
+    document.body.classList.remove('js-loading');
   }).catch((error) => {
+    clearTimeout(initSafetyTimer);
+    document.body.classList.remove('js-loading');
     showMessage(settingsMessage, `配置加载失败: ${error.message}`, 'error');
   });
 
@@ -3546,6 +3654,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightModel = newMailInsightModel;
     generatedResultAutoCloseSeconds = newGeneratedResultAutoCloseSeconds;
     siteAccessMode = newSiteAccessMode;
+    // 从 textarea 解析黑名单规则（覆盖变量中的旧值）
+    siteBlocklist = parseBlocklistTextarea();
     defaultFfTempExpiry = newDefaultFfTempExpiry;
     defaultFfMoeExpiry = newDefaultFfMoeExpiry;
     defaultTempExpiry = newDefaultTempExpiry;
@@ -6219,6 +6329,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (toStore.siteBlocklist !== undefined) {
           siteBlocklist = Array.isArray(toStore.siteBlocklist) ? toStore.siteBlocklist : [];
+          syncBlocklistTextarea();
         }
         if (toStore[PAGE_FILL_RULES_KEY] !== undefined) {
           pageFillRules = toStore[PAGE_FILL_RULES_KEY] || {};
