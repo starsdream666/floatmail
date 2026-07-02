@@ -16,6 +16,53 @@
     bookmarkSort: ['bookmarkSort']
   };
 
+  const ARRAY_KEYS = new Set([
+    'moeEmailCache',
+    'siteAllowlist',
+    'siteBlocklist',
+    'fastFillDomainWhitelist',
+    'fastFillDomainBlacklist',
+    'generatedToolHistory',
+    'emailHistory',
+    'bookmarks'
+  ]);
+
+  const OBJECT_KEYS = new Set([
+    'tempMailMeta',
+    'floatLayout',
+    'pageFillRules',
+    'generatedProfile',
+    'verifyStatusCache',
+    'tempUnreadCounts',
+    'moeUnreadCounts'
+  ]);
+
+  function isPlainObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  function isValidHttpUrl(value) {
+    try {
+      const url = new URL(String(value || '').trim());
+      return url.protocol === 'http:' || url.protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
+  function validateImportValue(key, value) {
+    if (ARRAY_KEYS.has(key)) {
+      return Array.isArray(value);
+    }
+    if (OBJECT_KEYS.has(key)) {
+      return isPlainObject(value);
+    }
+    if (key === 'apiUrl' || key === 'moeApiUrl' || key === 'translationApiBase' || key === 'mailInsightApiBase') {
+      return typeof value === 'string' && (!value.trim() || isValidHttpUrl(value));
+    }
+    return true;
+  }
+
   function initConfigIO(options) {
     const {
       exportBtn,
@@ -94,7 +141,7 @@
       reader.onload = (loadEvent) => {
         try {
           const data = JSON.parse(loadEvent.target.result);
-          if (!data._meta || !data._meta.categories) {
+          if (!data._meta || !Array.isArray(data._meta.categories)) {
             showMessage(ioMessage, '无效的配置文件格式', 'error');
             return;
           }
@@ -114,6 +161,9 @@
             }
             CATEGORY_KEYS[category].forEach((key) => {
               if (data[category][key] !== undefined) {
+                if (!validateImportValue(key, data[category][key])) {
+                  throw new Error(`配置项 ${key} 类型或格式无效`);
+                }
                 toStore[key] = data[category][key];
               }
             });

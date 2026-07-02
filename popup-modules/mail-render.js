@@ -344,6 +344,15 @@
       return div.innerHTML;
     }
 
+    function normalizeHttpUrl(value) {
+      try {
+        const url = new URL(String(value || '').trim());
+        return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+      } catch {
+        return '';
+      }
+    }
+
     function createMailInsightCopyButton(title, onClick) {
       const button = document.createElement('button');
       button.className = 'icon-btn mail-insight-copy-btn';
@@ -360,7 +369,14 @@
       container.innerHTML = '';
       const normalizedInsights = {
         codes: Array.isArray(insights?.codes) ? insights.codes : [],
-        links: Array.isArray(insights?.links) ? insights.links : []
+        links: Array.isArray(insights?.links)
+          ? insights.links
+            .map((link) => {
+              const url = normalizeHttpUrl(link?.url);
+              return url ? { url, label: link?.label || url } : null;
+            })
+            .filter(Boolean)
+          : []
       };
       const hasCodes = normalizedInsights.codes.length > 0;
       const hasLinks = normalizedInsights.links.length > 0;

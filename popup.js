@@ -1,3 +1,59 @@
+(function installChromeStorageFallback() {
+  const chromeApi = globalThis.chrome;
+  if (!chromeApi || chromeApi.storage?.local) {
+    return;
+  }
+
+  const callStorageProxy = (message, callback, fallback) => {
+    if (!chromeApi.runtime?.sendMessage) {
+      if (typeof callback === 'function') {
+        callback(fallback);
+      }
+      return;
+    }
+
+    chromeApi.runtime.sendMessage(message, (response) => {
+      if (chromeApi.runtime.lastError || response?.ok === false) {
+        console.warn('FloatMail storage proxy failed:', chromeApi.runtime.lastError?.message || response?.error);
+        if (typeof callback === 'function') {
+          callback(fallback);
+        }
+        return;
+      }
+      if (typeof callback === 'function') {
+        callback(response?.data ?? fallback);
+      }
+    });
+  };
+
+  const local = {
+    get(keys, callback) {
+      callStorageProxy({ type: 'storage-get', keys }, callback, {});
+    },
+    set(items, callback) {
+      callStorageProxy({ type: 'storage-set', items }, () => {
+        if (typeof callback === 'function') {
+          callback();
+        }
+      }, null);
+    },
+    remove(keys, callback) {
+      callStorageProxy({ type: 'storage-remove', keys }, () => {
+        if (typeof callback === 'function') {
+          callback();
+        }
+      }, null);
+    }
+  };
+
+  chromeApi.storage = chromeApi.storage || {};
+  chromeApi.storage.local = local;
+  chromeApi.storage.onChanged = chromeApi.storage.onChanged || {
+    addListener() {},
+    removeListener() {}
+  };
+})();
+
 document.addEventListener('DOMContentLoaded', async () => {
   const { createMailRenderer } = window.PopupMailRenderer;
   const { initConfigIO } = window.PopupConfigIO;
@@ -382,8 +438,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   let isMoeHistoryBatchMode = false;
   let selectedMoeHistory = new Set();
 
-  const storageGet = (keys) => new Promise((resolve) => chrome.storage.local.get(keys, resolve));
-  const storageSet = (items) => new Promise((resolve) => chrome.storage.local.set(items, resolve));
+  const storageGet = (keys) => new Promise((resolve) => {
+    const localStorageApi = globalThis.chrome?.storage?.local;
+    if (!localStorageApi) {
+      resolve({});
+      return;
+    }
+    localStorageApi.get(keys, resolve);
+  });
+  const storageSet = (items) => new Promise((resolve) => {
+    const localStorageApi = globalThis.chrome?.storage?.local;
+    if (!localStorageApi) {
+      resolve();
+      return;
+    }
+    localStorageApi.set(items, resolve);
+  });
   const tabsQuery = (query) => new Promise((resolve) => chrome.tabs.query(query, resolve));
   let clearToolResultState = () => {};
   function splitGeneratedFullName(fullName) {
@@ -991,6 +1061,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       resolve(response);
     });
   });
+  async function proxiedFetch(url, init = {}) {
+    const response = await runtimeSendMessage({
+      type: 'proxy-fetch',
+      url,
+      init: {
+        method: init.method || 'GET',
+        headers: init.headers || {},
+        body: init.body,
+      },
+    });
+    const data = response?.data || {};
+    return {
+      ok: Boolean(data.ok),
+      status: data.status || 0,
+      statusText: data.statusText || '',
+      json: async () => data.data ?? {},
+      text: async () => data.text || '',
+    };
+  }
+  const moeFetch = (url, init = {}) => proxiedFetch(url, init);
   const tabSendMessage = (tabId, message) => new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
       if (chrome.runtime.lastError) {
@@ -1656,20 +1746,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       actions.className = 'fill-rule-actions';
 
       const pickBtn = document.createElement('button');
+      pickBtn.type = 'button';
       pickBtn.className = 'btn primary-btn fill-rule-pick-btn';
       pickBtn.textContent = rules[field.kind] ? '重新选取' : '选取输入框';
       pickBtn.disabled = !siteEnabled;
-      pickBtn.addEventListener('click', () => {
+      pickBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         armFieldSelection(field).catch((error) => {
           showMessage(fillRulesMessage, `规则创建失败: ${error.message}`, 'error');
         });
       });
 
       const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
       clearBtn.className = 'btn text-btn fill-rule-clear-btn';
       clearBtn.textContent = '清除';
       clearBtn.disabled = !rules[field.kind];
-      clearBtn.addEventListener('click', () => {
+      clearBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         clearFieldRule(field.kind).catch((error) => {
           showMessage(fillRulesMessage, `规则清除失败: ${error.message}`, 'error');
         });
@@ -1795,7 +1891,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Load moe domains
     if (moeApiUrl && moeApiKey) {
       try {
-        const res = await fetch(`${moeApiUrl}/api/config`, {
+        const res = await moeFetch(`${moeApiUrl}/api/config`, {
           headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey }
         });
         if (res.ok) {
@@ -2041,7 +2137,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (source === 'moe') {
       // Check if email still exists in MoeMail
       try {
-        const res = await fetch(`${moeApiUrl}/api/emails`, {
+        const res = await moeFetch(`${moeApiUrl}/api/emails`, {
           headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey }
         });
         if (res.ok) {
@@ -2057,7 +2153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Recreate MoeMail email
       try {
-        const createRes = await fetch(`${moeApiUrl}/api/emails/generate`, {
+        const createRes = await moeFetch(`${moeApiUrl}/api/emails/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey },
           body: JSON.stringify({ name, domain, expiryTime: expiryMs || 86400000 })
@@ -2177,7 +2273,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let emailAddr = '';
         if (fastFillEmailSource === 'moe') {
           const expiryTime = parseInt(fastFillMoeExpiry.value) || 86400000;
-          const res = await fetch(`${moeApiUrl}/api/emails/generate`, {
+          const res = await moeFetch(`${moeApiUrl}/api/emails/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey },
             body: JSON.stringify({ name, domain, expiryTime })
@@ -2349,7 +2445,7 @@ document.addEventListener('DOMContentLoaded', async () => {
               switchTab('moe-mail');
               // Load emails then open the inbox for the newly created address
               try {
-                const res = await fetch(`${moeApiUrl}/api/emails`, {
+                const res = await moeFetch(`${moeApiUrl}/api/emails`, {
                   headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey }
                 });
                 if (res.ok) {
@@ -3196,7 +3292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   applyTabLayoutMode(TAB_LAYOUT_MODES.TOP);
 
   // ===================== 初始化加载 =====================
-  chrome.storage.local.get([
+  storageGet([
     'apiUrl', 'adminToken', 'emailHistory', 'floatWindowEnabled', 'activeTab',
     'moeApiUrl', 'moeApiKey', 'moeEmailCache', 'defaultTab', 'bookmarks', 'verifyInterval', 'bookmarkSort',
     'verifyStatusCache', 'tempUnreadCounts', 'moeUnreadCounts', 'mailPollingInterval',
@@ -3208,7 +3304,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     TEMP_MAIL_META_KEY,
     DEFAULT_FF_TEMP_EXPIRY_KEY, DEFAULT_FF_MOE_EXPIRY_KEY, DEFAULT_TEMP_EXPIRY_KEY, DEFAULT_MOE_EXPIRY_KEY,
     'activeInbox'
-  ], (result) => {
+  ]).then((result) => {
     // Temp Email 配置
     apiUrlInput.value = result.apiUrl || '';
     adminTokenInput.value = result.adminToken || '';
@@ -3371,6 +3467,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         moeOpenInbox(emailObj);
       }, 200);
     }
+  }).catch((error) => {
+    showMessage(settingsMessage, `配置加载失败: ${error.message}`, 'error');
   });
 
   // ===================== 统一保存设置 =====================
@@ -3751,7 +3849,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     testMoeConnectionBtn.disabled = true;
     showMessage(moeConnectionMessage, '连接测试中...', '');
     try {
-      const res = await fetch(`${targetUrl}/api/config`, {
+      const res = await moeFetch(`${targetUrl}/api/config`, {
         headers: { 'X-API-Key': targetKey }
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -5025,7 +5123,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeDomainSelect.innerHTML = '<option value="">加载中...</option>';
       moeCreateBtn.disabled = true;
 
-      const res = await fetch(`${moeApiUrl}/api/config`, {
+      const res = await moeFetch(`${moeApiUrl}/api/config`, {
         headers: moeHeaders()
       });
       if (!res.ok) throw new Error(`${res.status}`);
@@ -5079,7 +5177,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showMessage(moeCreateMessage, '', '');
 
     try {
-      const res = await fetch(`${moeApiUrl}/api/emails/generate`, {
+      const res = await moeFetch(`${moeApiUrl}/api/emails/generate`, {
         method: 'POST',
         headers: moeHeaders(),
         body: JSON.stringify({ name, domain, expiryTime })
@@ -5108,7 +5206,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function moeLoadEmails() {
     moeEmailListDiv.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
     try {
-      const res = await fetch(`${moeApiUrl}/api/emails`, {
+      const res = await moeFetch(`${moeApiUrl}/api/emails`, {
         headers: moeHeaders()
       });
       if (!res.ok) throw new Error(`${res.status}`);
@@ -5330,7 +5428,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     for (const emailId of selectedMoeHistory) {
       try {
-        await fetch(`${moeApiUrl}/api/emails/${emailId}`, {
+        await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
           method: 'DELETE',
           headers: moeHeaders()
         });
@@ -5357,7 +5455,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function moeDeleteEmail(emailId, cardElement) {
     if (!confirm('确定要删除此邮箱及其所有邮件吗？')) return;
     try {
-      const res = await fetch(`${moeApiUrl}/api/emails/${emailId}`, {
+      const res = await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
         method: 'DELETE',
         headers: moeHeaders()
       });
@@ -5431,7 +5529,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function moeFetchMails(emailId) {
     moeMailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
     try {
-      const res = await fetch(`${moeApiUrl}/api/emails/${emailId}`, {
+      const res = await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
         headers: moeHeaders()
       });
       if (!res.ok) throw new Error(`${res.status}`);

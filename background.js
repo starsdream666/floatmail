@@ -20,6 +20,10 @@ function storageSet(items) {
   return new Promise((resolve) => chrome.storage.local.set(items, resolve));
 }
 
+function storageRemove(keys) {
+  return new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+}
+
 function clearAlarm(name) {
   return new Promise((resolve) => chrome.alarms.clear(name, resolve));
 }
@@ -229,6 +233,36 @@ async function fetchJson(url, init) {
   return response.json();
 }
 
+async function proxyFetch(url, init = {}) {
+  const parsedUrl = new URL(String(url || ''));
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    throw new Error('仅支持 HTTP/HTTPS 请求');
+  }
+
+  const response = await fetch(parsedUrl.href, {
+    method: init.method || 'GET',
+    headers: init.headers || {},
+    body: init.body,
+  });
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    statusText: response.statusText,
+    text,
+    data,
+  };
+}
+
 async function verifyAddress(apiUrl, adminToken, address) {
   const maxRetry = 3;
   const timeoutMs = 8000;
@@ -366,7 +400,7 @@ async function pollMailNow() {
     }
   }
   if (expiredAddrs.length > 0) {
-    console.log('[Background] Auto-deleting expired temp addresses:', expiredAddrs);
+    console.log('[Background] Auto-deleting expired temp addresses:', expiredAddrs.length);
     for (const addr of expiredAddrs) {
       // Try server-side deletion
       try {
@@ -439,7 +473,7 @@ async function pollMailNow() {
 
         tempKnownMailIds[address] = ids.slice(0, 50);
       } catch (error) {
-        console.warn(`Temp Email 轮询失败 (${address}):`, error.message);
+        console.warn('Temp Email 轮询失败:', error.message);
       }
     }
   }
@@ -472,7 +506,7 @@ async function pollMailNow() {
 
         moeKnownMailIds[emailId] = ids.slice(0, 50);
       } catch (error) {
-        console.warn(`MoeMail 轮询失败 (${emailId}):`, error.message);
+        console.warn('MoeMail 轮询失败:', error.message);
       }
     }
   }
@@ -561,7 +595,7 @@ async function refreshPageToolsForOpenTabs() {
       try {
         await ensurePageToolsInjected(tab.id, tab.url);
       } catch (error) {
-        console.warn(`页面工具注入失败 (${tab.url}):`, error.message);
+        console.warn('页面工具注入失败:', error.message);
       }
       continue;
     }
@@ -657,7 +691,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       return;
     }
     ensurePageToolsInjected(tabId, tab.url).catch((error) => {
-      console.warn(`自动注入失败 (${tab.url}):`, error.message);
+      console.warn('自动注入失败:', error.message);
     });
   }).catch((error) => {
     console.warn('读取页面设置失败:', error.message);
@@ -700,6 +734,28 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
+    if (message?.type === 'storage-get') {
+      sendResponse({ ok: true, data: await storageGet(message.keys) });
+      return;
+    }
+
+    if (message?.type === 'storage-set') {
+      await storageSet(message.items || {});
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'storage-remove') {
+      await storageRemove(message.keys);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'proxy-fetch') {
+      sendResponse({ ok: true, data: await proxyFetch(message.url, message.init) });
+      return;
+    }
+
     if (message?.type === 'run-verify-now') {
       await runVerifyAddressesNow();
       sendResponse({ ok: true });

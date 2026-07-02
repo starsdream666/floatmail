@@ -1,6 +1,6 @@
 /* 悬浮按钮 */
 #temp-email-float-btn {
-  position: fixed;
+  position: fixed !important;
   bottom: 30px;
   right: 30px;
   width: 54px;
@@ -18,7 +18,9 @@
     0 18px 30px rgba(37, 99, 235, 0.34),
     0 6px 16px rgba(14, 165, 233, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
-  z-index: 2147483646;
+  z-index: 2147483646 !important;
+  pointer-events: auto !important;
+  isolation: isolate;
   transition: transform 0.2s, box-shadow 0.2s;
   -webkit-user-select: none;
   user-select: none;
@@ -72,7 +74,7 @@
 
 /* 悬浮面板 */
 #temp-email-float-panel {
-  position: fixed;
+  position: fixed !important;
   bottom: 90px;
   right: 30px;
   width: 500px;
@@ -85,7 +87,9 @@
     0 32px 80px rgba(15, 23, 42, 0.24),
     0 12px 32px rgba(37, 99, 235, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.45);
-  z-index: 2147483647;
+  z-index: 2147483647 !important;
+  pointer-events: auto !important;
+  isolation: isolate;
   overflow: hidden;
   display: none;
   background:

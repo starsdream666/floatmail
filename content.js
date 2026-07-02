@@ -10,6 +10,7 @@
 
   const BUTTON_ID = 'temp-email-float-btn';
   const PANEL_ID = 'temp-email-float-panel';
+  const FLOAT_TOP_Z_INDEX = '2147483647';
   const FLOAT_LAYOUT_KEY = 'floatLayout';
   const FLOAT_WINDOW_STYLE_KEY = 'floatWindowStyle';
   const PAGE_FILL_RULES_KEY = 'pageFillRules';
@@ -27,6 +28,20 @@
     LEGACY: 'legacy',
     MODERN: 'modern',
   });
+  const FLOAT_HOST_EVENT_TYPES = [
+    'pointerdown',
+    'pointerup',
+    'pointercancel',
+    'mousedown',
+    'mouseup',
+    'click',
+    'dblclick',
+    'auxclick',
+    'contextmenu',
+    'touchstart',
+    'touchend',
+    'touchcancel',
+  ];
   const FIELD_LABELS = {
     email: '邮箱输入框',
     password: '密码输入框',
@@ -46,6 +61,7 @@
   let fieldSelection = null;
   let hostScrollLock = null;
   let currentFloatWindowStyle = FLOAT_WINDOW_STYLES.MODERN;
+  let shouldReopenFloatPanelAfterSelection = false;
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
       allFillRules = result[PAGE_FILL_RULES_KEY] || {};
@@ -54,12 +70,42 @@
       allFillRules = {};
     });
 
+  function hasChromeStorageLocal() {
+    return typeof chrome !== 'undefined' && Boolean(chrome.storage?.local);
+  }
+
+  function sendRuntimeMessage(message, fallback) {
+    return new Promise((resolve, reject) => {
+      if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage) {
+        resolve(fallback);
+        return;
+      }
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (response?.ok === false) {
+          reject(new Error(response.error || '后台请求失败'));
+          return;
+        }
+        resolve(response?.data ?? fallback);
+      });
+    });
+  }
+
   function storageGet(keys) {
-    return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+    if (hasChromeStorageLocal()) {
+      return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+    }
+    return sendRuntimeMessage({ type: 'storage-get', keys }, {});
   }
 
   function storageSet(items) {
-    return new Promise((resolve) => chrome.storage.local.set(items, resolve));
+    if (hasChromeStorageLocal()) {
+      return new Promise((resolve) => chrome.storage.local.set(items, resolve));
+    }
+    return sendRuntimeMessage({ type: 'storage-set', items }, null);
   }
 
   function clamp(value, min, max) {
@@ -79,6 +125,112 @@
       return parsePixelValue(value);
     }
     return null;
+  }
+
+  function setImportantStyle(element, property, value) {
+    if (!element) {
+      return;
+    }
+    element.style.setProperty(property, value, 'important');
+  }
+
+  function applyFloatTopLayerStyles() {
+    if (!floatUi) {
+      return;
+    }
+
+    setImportantStyle(floatUi.button, 'position', 'fixed');
+    setImportantStyle(floatUi.button, 'z-index', floatUi.panelVisible ? '2147483646' : FLOAT_TOP_Z_INDEX);
+    setImportantStyle(floatUi.button, 'pointer-events', 'auto');
+    setImportantStyle(floatUi.button, 'isolation', 'isolate');
+
+    setImportantStyle(floatUi.panel, 'position', 'fixed');
+    setImportantStyle(floatUi.panel, 'z-index', FLOAT_TOP_Z_INDEX);
+    setImportantStyle(floatUi.panel, 'pointer-events', 'auto');
+    setImportantStyle(floatUi.panel, 'isolation', 'isolate');
+
+    setImportantStyle(floatUi.button, 'display', 'flex');
+    setImportantStyle(floatUi.panel, 'display', floatUi.panelVisible ? 'flex' : 'none');
+    if (floatUi.panelVisible) {
+      setImportantStyle(floatUi.panel, 'flex-direction', 'column');
+    }
+  }
+
+  function bringFloatUiToFront() {
+    if (!floatUi || !document.body) {
+      return;
+    }
+
+    const { button, panel } = floatUi;
+    const firstNode = floatUi.panelVisible ? button : panel;
+    const lastNode = floatUi.panelVisible ? panel : button;
+    const needsReorder = firstNode.parentNode !== document.body
+      || lastNode.parentNode !== document.body
+      || firstNode.nextElementSibling !== lastNode
+      || lastNode.nextElementSibling !== null;
+
+    if (needsReorder) {
+      // Keep the active UI last so equal max-z-index page overlays and sibling nodes cannot cover it.
+      document.body.appendChild(firstNode);
+      document.body.appendChild(lastNode);
+    }
+
+    applyFloatTopLayerStyles();
+  }
+
+  function setFloatPanelVisible(visible, options = {}) {
+    if (!floatUi) {
+      return;
+    }
+
+    if (visible) {
+      if (options.reapplyLayout !== false) {
+        floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout);
+      }
+      floatUi.panelVisible = true;
+      floatUi.panel.classList.add('visible');
+    } else {
+      floatUi.panelVisible = false;
+      floatUi.panel.classList.remove('visible');
+      unlockHostPageScroll();
+    }
+
+    bringFloatUiToFront();
+  }
+
+  function hideFloatPanelForFieldSelection() {
+    shouldReopenFloatPanelAfterSelection = Boolean(floatUi?.panelVisible);
+    if (shouldReopenFloatPanelAfterSelection) {
+      setFloatPanelVisible(false);
+    }
+  }
+
+  function restoreFloatPanelAfterFieldSelection() {
+    const shouldReopen = shouldReopenFloatPanelAfterSelection;
+    shouldReopenFloatPanelAfterSelection = false;
+    if (!shouldReopen || !floatUi) {
+      return;
+    }
+    window.setTimeout(() => {
+      setFloatPanelVisible(true);
+    }, 0);
+  }
+
+  function installFloatHostEventIsolation(elements) {
+    if (!floatUi) {
+      return;
+    }
+
+    const stopHostPageEvent = (event) => {
+      event.stopPropagation();
+    };
+
+    elements.forEach((element) => {
+      FLOAT_HOST_EVENT_TYPES.forEach((type) => {
+        element.addEventListener(type, stopHostPageEvent);
+        floatUi.cleanup.push(() => element.removeEventListener(type, stopHostPageEvent));
+      });
+    });
   }
 
   function ensureFillRulesLoaded() {
@@ -618,6 +770,7 @@
 
   function finishFieldSelection(message, tone = 'success') {
     stopFieldSelection(false);
+    restoreFloatPanelAfterFieldSelection();
     showSelectionHint(message, tone);
     window.setTimeout(() => {
       if (!fieldSelection) {
@@ -628,6 +781,7 @@
 
   function startFieldSelection(kind, label) {
     stopFieldSelection();
+    shouldReopenFloatPanelAfterSelection = false;
     clearPreviewTargets();
 
     fieldSelection = {
@@ -639,6 +793,7 @@
     const labelText = label || FIELD_LABELS[kind] || '输入框';
     showSelectionHint(`正在选择${labelText}，点击目标输入框后自动保存，按 Esc 可取消。`);
     notifyFloatingFieldSelectionState(true, labelText);
+    hideFloatPanelForFieldSelection();
 
     const onMouseMove = (event) => {
       const target = getEditableTargetFromNode(event.target) || getEditableTargetFromPoint(event.clientX, event.clientY);
@@ -679,6 +834,9 @@
         })
         .catch((error) => {
           showSelectionHint(`保存失败：${error.message}`, 'error');
+        })
+        .finally(() => {
+          restoreFloatPanelAfterFieldSelection();
         });
     };
 
@@ -919,10 +1077,12 @@
     const left = clamp(preferredLeft, 0, Math.max(0, window.innerWidth - width));
     const top = clamp(preferredTop, 0, Math.max(0, window.innerHeight - height));
 
-    button.style.left = `${left}px`;
-    button.style.top = `${top}px`;
-    button.style.right = 'auto';
-    button.style.bottom = 'auto';
+    setImportantStyle(button, 'left', `${left}px`);
+    setImportantStyle(button, 'top', `${top}px`);
+    setImportantStyle(button, 'right', 'auto');
+    setImportantStyle(button, 'bottom', 'auto');
+    setImportantStyle(button, 'position', 'fixed');
+    setImportantStyle(button, 'z-index', FLOAT_TOP_Z_INDEX);
 
     return {
       left: Math.round(preferredLeft),
@@ -970,12 +1130,14 @@
       Math.max(0, window.innerHeight - height)
     );
 
-    panel.style.width = `${width}px`;
-    panel.style.height = `${height}px`;
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
+    setImportantStyle(panel, 'width', `${width}px`);
+    setImportantStyle(panel, 'height', `${height}px`);
+    setImportantStyle(panel, 'left', `${left}px`);
+    setImportantStyle(panel, 'top', `${top}px`);
+    setImportantStyle(panel, 'right', 'auto');
+    setImportantStyle(panel, 'bottom', 'auto');
+    setImportantStyle(panel, 'position', 'fixed');
+    setImportantStyle(panel, 'z-index', FLOAT_TOP_Z_INDEX);
 
     return {
       left: Math.round(preferredLeft),
@@ -1005,6 +1167,7 @@
       floatUi.buttonLayout = applyButtonLayout(floatUi.button, floatUi.buttonLayout);
       floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout, normalizedStyle, previousStyle);
     }
+    applyFloatTopLayerStyles();
 
     return normalizedStyle;
   }
@@ -1016,6 +1179,7 @@
 
     const button = document.createElement('button');
     button.id = BUTTON_ID;
+    button.type = 'button';
     button.innerHTML = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>';
     button.title = 'FloatMail';
     document.body.appendChild(button);
@@ -1035,18 +1199,21 @@
 
     const resetButton = document.createElement('button');
     resetButton.id = 'temp-email-panel-reset';
+    resetButton.type = 'button';
     resetButton.className = 'temp-email-header-btn';
     resetButton.title = '复位大小和位置';
     resetButton.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>';
 
     const pinButton = document.createElement('button');
     pinButton.id = 'temp-email-panel-pin';
+    pinButton.type = 'button';
     pinButton.className = 'temp-email-header-btn';
     pinButton.title = '固定窗口（点击外部不关闭）';
     pinButton.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76z"/></svg>';
 
     const closeButton = document.createElement('button');
     closeButton.id = 'temp-email-panel-close';
+    closeButton.type = 'button';
     closeButton.className = 'temp-email-header-btn';
     closeButton.title = '关闭';
     closeButton.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>';
@@ -1089,10 +1256,12 @@
       observer: null,
       cleanup: [],
     };
+    installFloatHostEventIsolation([button, panel]);
     pinButton.classList.toggle('pinned', floatUi.isPinned);
     applyFloatWindowStyle(floatUi.style, { reapplyLayout: false });
     floatUi.buttonLayout = applyButtonLayout(button, savedLayout?.button);
     floatUi.panelLayout = applyPanelLayout(panel, savedLayout?.panel, floatUi.style);
+    bringFloatUiToFront();
 
     const syncFloatingFieldSelectionState = () => {
       if (!floatUi) {
@@ -1112,26 +1281,22 @@
       if (!floatUi) {
         return;
       }
-      floatUi.panelLayout = applyPanelLayout(panel, floatUi.panelLayout);
-      floatUi.panelVisible = true;
-      panel.classList.add('visible');
+      setFloatPanelVisible(true);
     }
 
     function hidePanel() {
       if (!floatUi) {
         return;
       }
-      floatUi.panelVisible = false;
-      panel.classList.remove('visible');
-      unlockHostPageScroll();
+      setFloatPanelVisible(false);
     }
 
     function enableOverlay() {
-      overlay.style.display = 'block';
+      setImportantStyle(overlay, 'display', 'block');
     }
 
     function disableOverlay() {
-      overlay.style.display = 'none';
+      setImportantStyle(overlay, 'display', 'none');
     }
 
     let wasDragged = false;
@@ -1141,7 +1306,8 @@
     let buttonStartLeft = 0;
     let buttonStartTop = 0;
 
-    const onButtonClick = () => {
+    const onButtonClick = (event) => {
+      event.stopPropagation();
       if (!wasDragged) {
         floatUi.panelVisible ? hidePanel() : showPanel();
       }
@@ -1160,6 +1326,7 @@
       buttonStartTop = rect.top;
       button.classList.add('dragging');
       event.preventDefault();
+      event.stopPropagation();
     };
     button.addEventListener('mousedown', onButtonMouseDown);
     floatUi.cleanup.push(() => button.removeEventListener('mousedown', onButtonMouseDown));
@@ -1171,7 +1338,9 @@
     let panelStartTop = 0;
 
     const onHeaderMouseDown = (event) => {
+      event.stopPropagation();
       if (event.target.closest('.temp-email-header-btn')) {
+        event.preventDefault();
         return;
       }
       isPanelDragging = true;
@@ -1217,6 +1386,10 @@
     floatUi.cleanup.push(() => panel.removeEventListener('mousedown', onPanelMouseDown));
 
     const onDocumentMouseMove = (event) => {
+      if (isButtonDragging || isPanelDragging || isResizing) {
+        event.stopPropagation();
+      }
+
       if (isButtonDragging) {
         const dx = event.clientX - buttonStartX;
         const dy = event.clientY - buttonStartY;
@@ -1226,10 +1399,10 @@
         if (wasDragged) {
           const newLeft = clamp(buttonStartLeft + dx, 0, Math.max(0, window.innerWidth - button.offsetWidth));
           const newTop = clamp(buttonStartTop + dy, 0, Math.max(0, window.innerHeight - button.offsetHeight));
-          button.style.left = `${newLeft}px`;
-          button.style.top = `${newTop}px`;
-          button.style.right = 'auto';
-          button.style.bottom = 'auto';
+          setImportantStyle(button, 'left', `${newLeft}px`);
+          setImportantStyle(button, 'top', `${newTop}px`);
+          setImportantStyle(button, 'right', 'auto');
+          setImportantStyle(button, 'bottom', 'auto');
           floatUi.buttonLayout = {
             left: Math.round(newLeft),
             top: Math.round(newTop),
@@ -1242,10 +1415,10 @@
         const dy = event.clientY - panelStartY;
         const newLeft = clamp(panelStartLeft + dx, 0, Math.max(0, window.innerWidth - panel.offsetWidth));
         const newTop = clamp(panelStartTop + dy, 0, Math.max(0, window.innerHeight - panel.offsetHeight));
-        panel.style.left = `${newLeft}px`;
-        panel.style.top = `${newTop}px`;
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
+        setImportantStyle(panel, 'left', `${newLeft}px`);
+        setImportantStyle(panel, 'top', `${newTop}px`);
+        setImportantStyle(panel, 'right', 'auto');
+        setImportantStyle(panel, 'bottom', 'auto');
         floatUi.panelLayout = {
           ...(floatUi.panelLayout || {}),
           left: Math.round(newLeft),
@@ -1283,12 +1456,12 @@
         left = clamp(left, 0, Math.max(0, window.innerWidth - width));
         top = clamp(top, 0, Math.max(0, window.innerHeight - height));
 
-        panel.style.width = `${width}px`;
-        panel.style.height = `${height}px`;
-        panel.style.left = `${left}px`;
-        panel.style.top = `${top}px`;
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
+        setImportantStyle(panel, 'width', `${width}px`);
+        setImportantStyle(panel, 'height', `${height}px`);
+        setImportantStyle(panel, 'left', `${left}px`);
+        setImportantStyle(panel, 'top', `${top}px`);
+        setImportantStyle(panel, 'right', 'auto');
+        setImportantStyle(panel, 'bottom', 'auto');
         floatUi.panelLayout = {
           left: Math.round(left),
           top: Math.round(top),
@@ -1297,11 +1470,14 @@
         };
       }
     };
-    document.addEventListener('mousemove', onDocumentMouseMove);
-    floatUi.cleanup.push(() => document.removeEventListener('mousemove', onDocumentMouseMove));
+    document.addEventListener('mousemove', onDocumentMouseMove, true);
+    floatUi.cleanup.push(() => document.removeEventListener('mousemove', onDocumentMouseMove, true));
 
-    const onDocumentMouseUp = () => {
+    const onDocumentMouseUp = (event) => {
       const shouldPersist = isButtonDragging || isPanelDragging || isResizing;
+      if (shouldPersist) {
+        event.stopPropagation();
+      }
       if (isButtonDragging) {
         isButtonDragging = false;
         button.classList.remove('dragging');
@@ -1318,8 +1494,8 @@
         persistFloatLayout().catch(() => {});
       }
     };
-    document.addEventListener('mouseup', onDocumentMouseUp);
-    floatUi.cleanup.push(() => document.removeEventListener('mouseup', onDocumentMouseUp));
+    document.addEventListener('mouseup', onDocumentMouseUp, true);
+    floatUi.cleanup.push(() => document.removeEventListener('mouseup', onDocumentMouseUp, true));
 
     const onDocumentMouseDown = (event) => {
       if (floatUi.panelVisible && !floatUi.isPinned && !panel.contains(event.target) && event.target !== button) {
@@ -1329,11 +1505,15 @@
     document.addEventListener('mousedown', onDocumentMouseDown);
     floatUi.cleanup.push(() => document.removeEventListener('mousedown', onDocumentMouseDown));
 
-    const onCloseClick = () => hidePanel();
+    const onCloseClick = (event) => {
+      event.stopPropagation();
+      hidePanel();
+    };
     closeButton.addEventListener('click', onCloseClick);
     floatUi.cleanup.push(() => closeButton.removeEventListener('click', onCloseClick));
 
-    const onPinClick = () => {
+    const onPinClick = (event) => {
+      event.stopPropagation();
       floatUi.isPinned = !floatUi.isPinned;
       pinButton.classList.toggle('pinned', floatUi.isPinned);
       pinButton.title = floatUi.isPinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
@@ -1342,7 +1522,8 @@
     pinButton.addEventListener('click', onPinClick);
     floatUi.cleanup.push(() => pinButton.removeEventListener('click', onPinClick));
 
-    const onResetClick = () => {
+    const onResetClick = (event) => {
+      event.stopPropagation();
       floatUi.panelLayout = applyPanelLayout(panel, null);
       persistFloatLayout().catch(() => {});
     };
@@ -1387,19 +1568,30 @@
       if (!floatUi || !document.body) {
         return;
       }
-      if (!document.body.contains(button)) {
-        document.body.appendChild(button);
+      bringFloatUiToFront();
+    };
+
+    let reattachScheduled = false;
+    const scheduleReattach = (delay = 0) => {
+      if (reattachScheduled || !floatUi) {
+        return;
       }
-      if ((floatUi.panelVisible || document.body.contains(panel)) && !document.body.contains(panel)) {
-        document.body.appendChild(panel);
-      }
+      reattachScheduled = true;
+      window.setTimeout(() => {
+        reattachScheduled = false;
+        reattachIfMissing();
+      }, delay);
     };
 
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
+        if (mutation.addedNodes.length > 0) {
+          scheduleReattach();
+          return;
+        }
         for (const removed of mutation.removedNodes) {
           if (removed === button || removed === panel || (removed.nodeType === 1 && (removed.contains(button) || removed.contains(panel)))) {
-            setTimeout(reattachIfMissing, 100);
+            scheduleReattach(100);
             return;
           }
         }
@@ -1414,7 +1606,7 @@
       }
       if (document.visibilityState === 'visible') {
         if (!floatUi.keepAliveTimer) {
-          floatUi.keepAliveTimer = window.setInterval(reattachIfMissing, 3000);
+          floatUi.keepAliveTimer = window.setInterval(reattachIfMissing, 1000);
         }
         return;
       }
@@ -1471,46 +1663,49 @@
     }
   }, true);
 
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local') {
-      return;
-    }
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.addListener) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local') {
+        return;
+      }
 
-    if (changes[PAGE_FILL_RULES_KEY]) {
-      allFillRules = changes[PAGE_FILL_RULES_KEY].newValue || {};
-    }
+      if (changes[PAGE_FILL_RULES_KEY]) {
+        allFillRules = changes[PAGE_FILL_RULES_KEY].newValue || {};
+      }
 
-    if (changes.floatWindowEnabled) {
-      if (changes.floatWindowEnabled.newValue === false) {
-        teardownFloatWindow();
-      } else {
+      if (changes.floatWindowEnabled) {
+        if (changes.floatWindowEnabled.newValue === false) {
+          teardownFloatWindow();
+        } else {
+          maybeInitFloatWindow().catch(() => {});
+        }
+      }
+
+      if (changes.siteAccessMode || changes.siteAllowlist || changes.siteBlocklist) {
         maybeInitFloatWindow().catch(() => {});
       }
-    }
 
-    if (changes.siteAccessMode || changes.siteAllowlist || changes.siteBlocklist) {
-      maybeInitFloatWindow().catch(() => {});
-    }
-
-    if (changes[FLOAT_LAYOUT_KEY] && floatUi) {
-      const nextLayout = changes[FLOAT_LAYOUT_KEY].newValue || {};
-      floatUi.buttonLayout = applyButtonLayout(floatUi.button, nextLayout.button);
-      floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel, floatUi.style);
-      floatUi.isPinned = Boolean(nextLayout.pinned);
-      const pinButton = document.getElementById('temp-email-panel-pin');
-      if (pinButton) {
-        pinButton.classList.toggle('pinned', floatUi.isPinned);
-        pinButton.title = floatUi.isPinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
+      if (changes[FLOAT_LAYOUT_KEY] && floatUi) {
+        const nextLayout = changes[FLOAT_LAYOUT_KEY].newValue || {};
+        floatUi.buttonLayout = applyButtonLayout(floatUi.button, nextLayout.button);
+        floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel, floatUi.style);
+        floatUi.isPinned = Boolean(nextLayout.pinned);
+        const pinButton = document.getElementById('temp-email-panel-pin');
+        if (pinButton) {
+          pinButton.classList.toggle('pinned', floatUi.isPinned);
+          pinButton.title = floatUi.isPinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
+        }
       }
-    }
 
-    if (changes[FLOAT_WINDOW_STYLE_KEY]) {
-      currentFloatWindowStyle = normalizeFloatWindowStyle(changes[FLOAT_WINDOW_STYLE_KEY].newValue);
-      applyFloatWindowStyle(currentFloatWindowStyle);
-    }
-  });
+      if (changes[FLOAT_WINDOW_STYLE_KEY]) {
+        currentFloatWindowStyle = normalizeFloatWindowStyle(changes[FLOAT_WINDOW_STYLE_KEY].newValue);
+        applyFloatWindowStyle(currentFloatWindowStyle);
+      }
+    });
+  }
 
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.addListener) {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       if (message?.type === 'page-tools-ping') {
         sendResponse({ ok: true });
@@ -1570,7 +1765,8 @@
     });
 
     return true;
-  });
+    });
+  }
 
   maybeInitFloatWindow().catch(() => {});
 })();
