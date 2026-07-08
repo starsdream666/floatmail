@@ -2385,19 +2385,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         const useSpecial = document.getElementById('ff-pwd-special')?.checked;
         const noAmbig = document.getElementById('ff-pwd-no-ambig')?.checked;
 
-        const ambiguous = 'O0lI1|';
-        let chars = '';
-        if (useUpper) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        if (useLower) chars += 'abcdefghijklmnopqrstuvwxyz';
-        if (useDigit) chars += '0123456789';
-        if (useSpecial) chars += '!@#$%^&*()-_=+[]{}:;<>,.?/~';
-        if (!chars) chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-        if (noAmbig) chars = chars.split('').filter(c => !ambiguous.includes(c)).join('');
-
-        const randomValues = new Uint32Array(len);
-        crypto.getRandomValues(randomValues);
-        let password = '';
-        for (let i = 0; i < len; i++) password += chars[randomValues[i] % chars.length];
+        const genPwd = window.PopupToolGenerators?.generatePassword;
+        const password = genPwd
+          ? genPwd(len, useUpper, useLower, useDigit, useSpecial, noAmbig)
+          : (function () {
+              // Fallback inline generator (kept for robustness)
+              const ambiguous = 'O0lI1|';
+              let chars = '';
+              if (useUpper) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+              if (useLower) chars += 'abcdefghijklmnopqrstuvwxyz';
+              if (useDigit) chars += '0123456789';
+              if (useSpecial) chars += '!@#$%^&*()-_=+[]{}:;<>,.?/~';
+              if (!chars) chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+              if (noAmbig) chars = chars.split('').filter(function (c) { return ambiguous.indexOf(c) === -1; }).join('');
+              var rv = new Uint32Array(len);
+              crypto.getRandomValues(rv);
+              var pwd = '';
+              for (var i = 0; i < len; i++) pwd += chars[rv[i] % chars.length];
+              return pwd;
+            })();
         generatedFields.password = password;
         generatedFields.confirmPassword = password;
         updateGeneratedProfile({ password, confirmPassword: password });

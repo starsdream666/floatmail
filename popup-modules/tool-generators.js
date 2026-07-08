@@ -117,6 +117,80 @@
     }
   };
 
+  /**
+   * Generate a cryptographically random password that is guaranteed to include
+   * at least one character from every selected character class.
+   *
+   * @param {number} len - password length (4–128)
+   * @param {boolean} useUpper - include uppercase A-Z
+   * @param {boolean} useLower - include lowercase a-z
+   * @param {boolean} useDigit - include digits 0-9
+   * @param {boolean} useSpecial - include special characters
+   * @param {boolean} noAmbig - exclude ambiguous characters (O0lI1|)
+   * @returns {string} generated password
+   */
+  function generatePassword(len, useUpper, useLower, useDigit, useSpecial, noAmbig) {
+    const ambiguous = 'O0lI1|';
+    const upperChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lowerChars = 'abcdefghijklmnopqrstuvwxyz';
+    const digitChars = '0123456789';
+    const specialChars = '!@#$%^&*()-_=+[]{}:;<>,.?/~';
+
+    // Build per-class character sets
+    const sets = [];
+    if (useUpper) sets.push(upperChars);
+    if (useLower) sets.push(lowerChars);
+    if (useDigit) sets.push(digitChars);
+    if (useSpecial) sets.push(specialChars);
+
+    // Fallback: if nothing selected, default to lowercase + digits
+    if (sets.length === 0) {
+      sets.push(lowerChars, digitChars);
+    }
+
+    // Apply ambiguous-character filter to each set individually
+    if (noAmbig) {
+      for (let i = 0; i < sets.length; i++) {
+        sets[i] = sets[i].split('').filter(function (c) {
+          return ambiguous.indexOf(c) === -1;
+        }).join('');
+      }
+    }
+
+    // Combined pool for filling remaining slots
+    const allChars = sets.join('');
+
+    // Step 1 — guarantee: pick one random char from every selected set
+    const passwordArr = [];
+    for (let i = 0; i < sets.length; i++) {
+      var randArr = new Uint32Array(1);
+      crypto.getRandomValues(randArr);
+      passwordArr.push(sets[i][randArr[0] % sets[i].length]);
+    }
+
+    // Step 2 — fill the remaining slots from the combined pool
+    var remaining = len - passwordArr.length;
+    if (remaining > 0) {
+      var fillRand = new Uint32Array(remaining);
+      crypto.getRandomValues(fillRand);
+      for (var ri = 0; ri < remaining; ri++) {
+        passwordArr.push(allChars[fillRand[ri] % allChars.length]);
+      }
+    }
+
+    // Step 3 — Fisher-Yates shuffle with crypto randomness
+    for (var i = passwordArr.length - 1; i > 0; i--) {
+      var swapRand = new Uint32Array(1);
+      crypto.getRandomValues(swapRand);
+      var j = swapRand[0] % (i + 1);
+      var tmp = passwordArr[i];
+      passwordArr[i] = passwordArr[j];
+      passwordArr[j] = tmp;
+    }
+
+    return passwordArr.join('');
+  }
+
   function initGeneratedTools(options) {
     const {
       genPwdBtn,
@@ -283,26 +357,7 @@
       const useSpecial = document.getElementById('pwd-special').checked;
       const noAmbig = document.getElementById('pwd-no-ambig').checked;
 
-      const ambiguous = 'O0lI1|';
-      let chars = '';
-      if (useUpper) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-      if (useLower) chars += 'abcdefghijklmnopqrstuvwxyz';
-      if (useDigit) chars += '0123456789';
-      if (useSpecial) chars += '!@#$%^&*()-_=+[]{}:;<>,.?/~';
-
-      if (!chars) {
-        chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-      }
-      if (noAmbig) {
-        chars = chars.split('').filter((char) => !ambiguous.includes(char)).join('');
-      }
-
-      let password = '';
-      const randomValues = new Uint32Array(len);
-      crypto.getRandomValues(randomValues);
-      for (let i = 0; i < len; i += 1) {
-        password += chars[randomValues[i] % chars.length];
-      }
+      const password = generatePassword(len, useUpper, useLower, useDigit, useSpecial, noAmbig);
 
       updateGeneratedProfile({ password, confirmPassword: password });
       recordGeneratedHistory({ kind: 'password', value: password });
@@ -470,6 +525,7 @@
 
   window.PopupToolGenerators = {
     initGeneratedTools,
+    generatePassword,
     NAME_DATA
   };
 })();
