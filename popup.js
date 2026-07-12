@@ -430,7 +430,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let siteAccessMode = 'all';
   let siteAllowlist = [];
   let siteBlocklist = [];
-  let tabLayoutMode = TAB_LAYOUT_MODES.TOP;
+  let tabLayoutMode = TAB_LAYOUT_MODES.SIDEBAR;
   let currentSiteOrigin = '';
   let pageFillRules = {};
 
@@ -1201,7 +1201,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const MAIN_TABS = new Set(['fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools', 'generated-history', 'fill-rules', 'themes', 'settings', 'config-io']);
 
   function normalizeTabLayoutMode(mode) {
-    return mode === TAB_LAYOUT_MODES.SIDEBAR ? TAB_LAYOUT_MODES.SIDEBAR : TAB_LAYOUT_MODES.TOP;
+    return mode === TAB_LAYOUT_MODES.TOP ? TAB_LAYOUT_MODES.TOP : TAB_LAYOUT_MODES.SIDEBAR;
   }
 
   function isSidebarLayoutMode(mode = tabLayoutMode) {
@@ -3396,7 +3396,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     syncBlocklistTextarea();
   }
 
-  applyTabLayoutMode(TAB_LAYOUT_MODES.TOP);
+  applyTabLayoutMode(TAB_LAYOUT_MODES.SIDEBAR);
 
   // ===================== 初始化加载 =====================
   storageGet([

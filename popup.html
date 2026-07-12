@@ -6,7 +6,7 @@
   <title>FloatMail</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-<body class="tab-layout-top js-loading">
+<body class="tab-layout-sidebar js-loading">
   <div class="container">
     <div class="header">
       <div class="header-copy">
@@ -819,7 +819,7 @@
           <label for="float-toggle">启用悬浮窗按钮</label>
           <input type="checkbox" id="float-toggle" class="toggle-checkbox" checked />
         </div>
-        <div class="form-group">
+        <div class="form-group" style="display: none !important">
           <label>悬浮窗风格</label>
           <div id="float-window-style-toggle" class="settings-segmented-control" role="radiogroup" aria-label="悬浮窗风格">
             <button type="button" class="settings-segment-btn" data-float-window-style="legacy" role="radio" aria-checked="false">旧风格</button>
@@ -834,7 +834,7 @@
             <option value="moe-mail">Moe Mail</option>
           </select>
         </div>
-        <div class="form-group">
+        <div class="form-group" style="display: none !important">
           <label>页面选择框样式</label>
           <div id="tab-layout-toggle" class="settings-segmented-control" role="radiogroup" aria-label="页面选择框样式">
             <button type="button" class="settings-segment-btn active" data-layout-mode="top" role="radio" aria-checked="true">顶部横向</button>

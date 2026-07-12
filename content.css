@@ -113,7 +113,11 @@
 #temp-email-float-panel.visible {
   display: flex;
   flex-direction: column;
-  animation: floatPanelIn 0.2s ease-out;
+}
+
+/* 入场动画仅在主动打开时挂载，避免 DOM 重挂载/样式刷新时反复重播 */
+#temp-email-float-panel.visible.panel-enter {
+  animation: floatPanelIn 0.18s ease-out;
 }
 
 #temp-email-float-panel iframe {
@@ -328,10 +332,8 @@
 @keyframes floatPanelIn {
   from {
     opacity: 0;
-    transform: scale(0.9) translateY(10px);
   }
   to {
     opacity: 1;
-    transform: scale(1) translateY(0);
   }
 }

@@ -176,10 +176,13 @@
     const { button, panel, observer } = floatUi;
     const firstNode = floatUi.panelVisible ? button : panel;
     const lastNode = floatUi.panelVisible ? panel : button;
+    // 仅在节点脱离 body 或按钮/面板相对顺序错误时重挂。
+    // 不再因 body 末尾新增兄弟节点反复 appendChild：
+    // 填充/SPA 更新会不断改 DOM，重挂 iframe 面板会像“关闭又打开”。
+    // 置顶依赖最大 z-index，不依赖始终处于 body 最后。
     const needsReorder = firstNode.parentNode !== document.body
       || lastNode.parentNode !== document.body
-      || firstNode.nextElementSibling !== lastNode
-      || lastNode.nextElementSibling !== null;
+      || firstNode.nextElementSibling !== lastNode;
 
     if (needsReorder) {
       // 暂停 observer 避免 appendChild 自触发
@@ -196,13 +199,44 @@
     applyFloatTopLayerStyles();
   }
 
+  function clearPanelEnterAnimation() {
+    if (!floatUi?.panel) {
+      return;
+    }
+    floatUi.panel.classList.remove('panel-enter');
+  }
+
+  function playPanelEnterAnimation() {
+    if (!floatUi?.panel) {
+      return;
+    }
+
+    const panel = floatUi.panel;
+    clearPanelEnterAnimation();
+
+    // 强制重排，确保同帧内重新添加 class 时动画能可靠触发一次
+    void panel.offsetWidth;
+    panel.classList.add('panel-enter');
+
+    const onAnimationEnd = (event) => {
+      if (event.target !== panel || event.animationName !== 'floatPanelIn') {
+        return;
+      }
+      panel.classList.remove('panel-enter');
+      panel.removeEventListener('animationend', onAnimationEnd);
+    };
+    panel.addEventListener('animationend', onAnimationEnd);
+  }
+
   function setFloatPanelVisible(visible, options = {}) {
     if (!floatUi) {
       return;
     }
 
+    const alreadyVisible = floatUi.panelVisible === visible;
+
     // 防止短时间内反复切换导致闪烁
-    if (floatUi.panelVisible !== visible) {
+    if (!alreadyVisible) {
       const now = Date.now();
       if (!options.force && now - lastPanelStateChangeTime < 350) {
         return;
@@ -211,24 +245,37 @@
     }
 
     if (visible) {
-      if (options.reapplyLayout !== false) {
+      // 已打开时默认不重复套布局，避免拖拽/填充后无意义的重算
+      if (!alreadyVisible && options.reapplyLayout !== false) {
+        floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout);
+      } else if (alreadyVisible && options.reapplyLayout === true) {
         floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout);
       }
       floatUi.panelVisible = true;
       floatUi.panel.classList.add('visible');
+      if (!alreadyVisible && options.animate !== false) {
+        playPanelEnterAnimation();
+      }
     } else {
       floatUi.panelVisible = false;
+      clearPanelEnterAnimation();
       floatUi.panel.classList.remove('visible');
       unlockHostPageScroll();
     }
 
-    bringFloatUiToFront();
+    // 状态未变时不必重挂 DOM，避免填充/页面更新时触发“关再开”观感
+    if (!alreadyVisible || options.forceBringToFront) {
+      bringFloatUiToFront();
+    } else {
+      applyFloatTopLayerStyles();
+    }
   }
 
   function hideFloatPanelForFieldSelection() {
     shouldReopenFloatPanelAfterSelection = Boolean(floatUi?.panelVisible);
     if (shouldReopenFloatPanelAfterSelection) {
-      setFloatPanelVisible(false);
+      // 字段选取必须立刻收起，绕过 350ms 冷却
+      setFloatPanelVisible(false, { force: true, animate: false });
     }
   }
 
@@ -1618,15 +1665,22 @@
 
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
-        if (mutation.addedNodes.length > 0) {
-          scheduleReattach();
-          return;
-        }
+        // 忽略页面普通 DOM 更新；只在悬浮节点被移除/挪出 body 时再挂回。
+        // 填充、表单校验、SPA 渲染常会新增节点，旧逻辑会误触发重挂导致闪烁。
         for (const removed of mutation.removedNodes) {
-          if (removed === button || removed === panel || (removed.nodeType === 1 && (removed.contains(button) || removed.contains(panel)))) {
+          if (
+            removed === button
+            || removed === panel
+            || (removed.nodeType === 1 && (removed.contains?.(button) || removed.contains?.(panel)))
+          ) {
             scheduleReattach(100);
             return;
           }
+        }
+
+        if (button.parentNode !== document.body || panel.parentNode !== document.body) {
+          scheduleReattach(100);
+          return;
         }
       }
     });
