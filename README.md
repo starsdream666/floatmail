@@ -25,6 +25,7 @@
 - [📦 安装 | Installation](#-安装--installation)
 - [🚀 快速开始 | Quick Start](#-快速开始--quick-start)
 - [⚙️ 配置 | Configuration](#️-配置--configuration)
+- [⚡ 性能与网络策略 | Performance](#-性能与网络策略--performance)
 - [🏗️ 项目结构 | Project Structure](#️-项目结构--project-structure)
 - [🛠️ 技术栈 | Tech Stack](#️-技术栈--tech-stack)
 - [🤝 贡献 | Contributing](#-贡献--contributing)
@@ -51,7 +52,7 @@
 - 一键钉住 / 复位 / 关闭
 - 支持白名单 / 黑名单域名策略，精确控制注入范围
 - 最大 z-index + 内联 !important 防页面 CSS 覆盖
-- MutationObserver 自动重挂载，防止被后插入元素遮挡
+- MutationObserver 仅在悬浮节点被移除时恢复，避免普通页面更新重绘 iframe
 - iframe 延迟加载，避免扩展重载时多标签页请求风暴
 
 ### ⚡ 一键填表 | Fast Fill
@@ -165,6 +166,38 @@ FloatMail 依赖以下 API 服务（在扩展「设置」页面配置）：
 
 ---
 
+## ⚡ 性能与网络策略 | Performance
+
+FloatMail 针对 Manifest V3 Service Worker、多个 popup/悬浮窗实例以及大量邮箱地址进行了请求和渲染优化：
+
+- **按页懒加载**：只有进入 Temp Email、Moe Mail 或快填页面时，才加载对应服务数据。
+- **共享请求缓存**：远程配置由 `background.js` 统一请求，多个界面实例共享结果并合并同时发生的相同请求。
+- **跨 Worker 缓存**：缓存同时写入 `chrome.storage.local`，Service Worker 被 Chrome 回收后仍可复用。
+- **缓存时效**：Temp 域名和 Moe 配置缓存 10 分钟，Moe 邮箱列表缓存 60 秒；手动刷新会绕过缓存。
+- **请求超时**：远程请求默认 10 秒超时，避免网络异常时后台任务长期占用。
+- **轮询限流**：邮件检查最多并发 3 个请求；Temp 邮件列表使用摘要模式，减少响应体积。
+- **自适应退避**：长期无新邮件或连续失败的邮箱逐渐降低检查频率，最长退避到 1 小时；当前打开的收件箱保持基础轮询间隔。
+- **按需事件监听**：拖动、缩放和滚动相关监听器只在交互期间绑定，窗口失焦时自动清理。
+- **合并界面渲染**：storage 连续变化通过 `requestAnimationFrame` 合并，避免同一帧重复渲染列表。
+
+### 本地检查
+
+项目不需要安装依赖或执行构建。修改后可运行：
+
+```bash
+node --check content.js
+node --check popup.js
+node --check background.js
+node --check popup-modules/config-io.js
+node --check popup-modules/mail-render.js
+node --check popup-modules/tool-generators.js
+git diff --check
+```
+
+交互功能需在 `chrome://extensions/` 通过“加载已解压的扩展程序”验证，重点检查标签切换、悬浮窗拖动/缩放、站点黑白名单和后台邮件轮询。
+
+---
+
 ## 🏗️ 项目结构 | Project Structure
 
 ```
@@ -174,7 +207,7 @@ floatmail/
 ├── content.js                 # Content Script — 悬浮窗注入、填表
 ├── content.css                # 悬浮窗样式
 ├── popup.html                 # 弹出窗口 UI
-├── popup.js                   # 弹出窗口主逻辑 (~6000 行)
+├── popup.js                   # 弹出窗口主逻辑
 ├── popup.css                  # 全局样式 + 双层主题系统
 ├── popup-modules/
 │   ├── config-io.js           # 配置导入 / 导出
@@ -216,12 +249,22 @@ content.js  ←→  background.js  (tabs.sendMessage)
 
 ## 📝 更新日志 | Changelog
 
+### v3.0.4 (2026-07)
+- **优化** Temp/Moe 远程数据按标签页懒加载，避免打开设置、工具等页面时请求邮箱服务
+- **优化** 后台共享内存与持久缓存，合并相同并发请求，跨 Service Worker 回收复用数据
+- **优化** 后台邮件轮询并发限制、自适应退避、请求超时及 Temp 摘要模式
+- **优化** 过期邮箱清理集中到后台执行，避免多个 popup 实例重复删除
+- **优化** 移除 content script 定时保活与重复程序化注入，交互监听改为按需绑定
+- **修复** 普通 SPA DOM 更新触发悬浮 iframe 重挂、重绘和入场动画重播的问题
+- **修复** 配置变更期间旧请求回写新缓存、过期清理旧快照覆盖新数据的并发边界
+- **验证** 冷缓存仅产生 3 个配置/列表请求，重复切换、快填切源及原样保存均为 0 个新增请求
+
 ### v3.0.3 (2025-07)
 - **修复** 扩展重载时请求风暴：iframe 改为首次点击时按需加载，消除 N 标签页 × 自动 API 请求的放大效应
 - **优化** 悬浮窗样式缓存：WeakMap 跳过重复 `setProperty`，减少无效样式重算
-- **优化** MutationObserver 防抖与自触发保护：`scheduleReattach` 延迟 0→150ms，节点移动期间断开观察器
+- **优化** MutationObserver 防抖与自触发保护：`scheduleReattach` 延迟 0→150ms
 - **修复** 面板首次打开闪烁：加入 350ms 切换冷却锁，阻断快速重复 toggle
-- **优化** 保活定时器间隔恢复为 3 秒，降低后台 CPU 占用
+- **说明** 该版本曾使用 3 秒保活定时器；v3.0.4 已移除，改由 MV3 原生生命周期管理
 
 ### v3.0.2 (2025-06)
 - **增强** 悬浮窗防覆盖：最大 z-index `2147483647` + 内联 `!important` 抵御页面全局样式

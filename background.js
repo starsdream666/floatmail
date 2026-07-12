@@ -4,6 +4,13 @@ const MIN_ALARM_INTERVAL_SECONDS = 30;
 const MAX_INTERVAL_SECONDS = 24 * 60 * 60;
 const DISABLED_INTERVAL_SETTING = Object.freeze({ value: 0, unit: 'minutes' });
 const DEFAULT_MAIL_POLL_INTERVAL = Object.freeze({ value: 5, unit: 'minutes' });
+const REMOTE_REQUEST_TIMEOUT_MS = 10000;
+const TEMP_DOMAIN_CACHE_TTL_MS = 10 * 60 * 1000;
+const MOE_CONFIG_CACHE_TTL_MS = 10 * 60 * 1000;
+const MOE_EMAIL_LIST_CACHE_TTL_MS = 60 * 1000;
+const TEMP_DOMAIN_CACHE_STORAGE_KEY = 'remoteTempDomainCache';
+const MOE_CONFIG_CACHE_STORAGE_KEY = 'remoteMoeConfigCache';
+const MOE_EMAIL_LIST_CACHE_STORAGE_KEY = 'remoteMoeEmailListCache';
 const INTERVAL_UNIT_FACTORS = Object.freeze({
   seconds: 1,
   minutes: 60,
@@ -11,6 +18,11 @@ const INTERVAL_UNIT_FACTORS = Object.freeze({
 });
 let verifyRunPromise = null;
 let mailPollRunPromise = null;
+let cleanupExpiredPromise = null;
+let lastExpiredCleanupAt = 0;
+const remoteDataCache = new Map();
+const remoteDataRequests = new Map();
+let remoteDataCacheEpoch = 0;
 
 function storageGet(keys) {
   return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
@@ -303,12 +315,313 @@ function buildMoeMailKey(message) {
   ].join('|');
 }
 
+async function runWithConcurrency(items, concurrency, worker) {
+  const queue = [...items];
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), queue.length) },
+    async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        await worker(item);
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
+function getPollBackoffMultiplier(idleRounds, failureCount) {
+  if (failureCount > 0) {
+    return Math.min(12, 2 ** Math.min(failureCount, 4));
+  }
+  if (idleRounds >= 6) return 12;
+  if (idleRounds >= 4) return 6;
+  if (idleRounds >= 2) return 2;
+  return 1;
+}
+
+function updateAddressPollState(state, key, options) {
+  const previous = state[key] || {};
+  const idleRounds = options.hasNewMail ? 0 : (Number(previous.idleRounds) || 0) + 1;
+  const failureCount = options.failed ? (Number(previous.failureCount) || 0) + 1 : 0;
+  const multiplier = options.isActive
+    ? 1
+    : getPollBackoffMultiplier(idleRounds, failureCount);
+  const delayMs = Math.min(
+    60 * 60 * 1000,
+    Math.max(30 * 1000, options.baseIntervalMs * multiplier)
+  );
+  state[key] = {
+    idleRounds,
+    failureCount,
+    lastPollAt: options.now,
+    nextPollAt: options.now + delayMs,
+  };
+}
+
 async function fetchJson(url, init) {
   const response = await fetch(url, init);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
   return response.json();
+}
+
+async function fetchWithTimeout(url, init = {}, timeoutMs = REMOTE_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchJsonWithTimeout(url, init = {}, timeoutMs = REMOTE_REQUEST_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(url, init, timeoutMs);
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+
+function clearRemoteDataCache(prefix = '') {
+  remoteDataCacheEpoch += 1;
+  for (const key of remoteDataCache.keys()) {
+    if (!prefix || key.startsWith(prefix)) {
+      remoteDataCache.delete(key);
+    }
+  }
+  for (const key of remoteDataRequests.keys()) {
+    if (!prefix || key.startsWith(prefix)) {
+      remoteDataRequests.delete(key);
+    }
+  }
+}
+
+function hashCacheIdentity(value) {
+  let hash = 2166136261;
+  for (const char of String(value || '')) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+async function fetchCachedJson(
+  cacheKey,
+  url,
+  init,
+  ttlMs,
+  forceRefresh = false,
+  storageKey = ''
+) {
+  const now = Date.now();
+  const lookupEpoch = remoteDataCacheEpoch;
+  const cached = remoteDataCache.get(cacheKey);
+  if (!forceRefresh && cached && now - cached.fetchedAt < ttlMs) {
+    return cached.data;
+  }
+
+  if (!forceRefresh && storageKey) {
+    const stored = await storageGet([storageKey]);
+    const entry = stored[storageKey];
+    if (
+      remoteDataCacheEpoch === lookupEpoch
+      && entry?.cacheKey === cacheKey
+      && now - Number(entry.fetchedAt) < ttlMs
+    ) {
+      remoteDataCache.set(cacheKey, entry);
+      return entry.data;
+    }
+  }
+
+  const existingRequest = remoteDataRequests.get(cacheKey);
+  if (existingRequest) {
+    return existingRequest.request;
+  }
+
+  const requestEpoch = remoteDataCacheEpoch;
+  const request = fetchJsonWithTimeout(url, init)
+    .then(async (data) => {
+      if (remoteDataCacheEpoch !== requestEpoch) {
+        return data;
+      }
+      const entry = { cacheKey, data, fetchedAt: Date.now() };
+      remoteDataCache.set(cacheKey, entry);
+      if (storageKey) {
+        await storageSet({ [storageKey]: entry });
+      }
+      return data;
+    })
+    .finally(() => {
+      if (remoteDataRequests.get(cacheKey)?.request === request) {
+        remoteDataRequests.delete(cacheKey);
+      }
+    });
+  remoteDataRequests.set(cacheKey, { request, epoch: requestEpoch });
+  return request;
+}
+
+async function getTempDomains(forceRefresh = false) {
+  const { apiUrl = '' } = await storageGet(['apiUrl']);
+  const baseUrl = String(apiUrl).trim().replace(/\/$/, '');
+  if (!baseUrl) {
+    return { domains: [] };
+  }
+  return fetchCachedJson(
+    `temp-domains:${baseUrl}`,
+    `${baseUrl}/open_api/settings`,
+    {},
+    TEMP_DOMAIN_CACHE_TTL_MS,
+    forceRefresh,
+    TEMP_DOMAIN_CACHE_STORAGE_KEY
+  );
+}
+
+async function getMoeConfig(forceRefresh = false) {
+  const { moeApiUrl = '', moeApiKey = '' } = await storageGet(['moeApiUrl', 'moeApiKey']);
+  const baseUrl = String(moeApiUrl).trim().replace(/\/$/, '');
+  const apiKey = String(moeApiKey).trim();
+  if (!baseUrl || !apiKey) {
+    return { emailDomains: '' };
+  }
+  return fetchCachedJson(
+    `moe-config:${baseUrl}:${hashCacheIdentity(apiKey)}`,
+    `${baseUrl}/api/config`,
+    { headers: { 'X-API-Key': apiKey } },
+    MOE_CONFIG_CACHE_TTL_MS,
+    forceRefresh,
+    MOE_CONFIG_CACHE_STORAGE_KEY
+  );
+}
+
+async function getMoeEmailList(forceRefresh = false) {
+  const { moeApiUrl = '', moeApiKey = '' } = await storageGet(['moeApiUrl', 'moeApiKey']);
+  const baseUrl = String(moeApiUrl).trim().replace(/\/$/, '');
+  const apiKey = String(moeApiKey).trim();
+  if (!baseUrl || !apiKey) {
+    return { emails: [] };
+  }
+  return fetchCachedJson(
+    `moe-emails:${baseUrl}:${hashCacheIdentity(apiKey)}`,
+    `${baseUrl}/api/emails`,
+    { headers: { 'X-API-Key': apiKey } },
+    MOE_EMAIL_LIST_CACHE_TTL_MS,
+    forceRefresh,
+    MOE_EMAIL_LIST_CACHE_STORAGE_KEY
+  );
+}
+
+async function cleanupExpiredTempAddresses(force = false) {
+  const now = Date.now();
+  if (!force && now - lastExpiredCleanupAt < 60 * 1000) {
+    return { removed: 0 };
+  }
+
+  const settings = await storageGet([
+    'apiUrl',
+    'adminToken',
+    'emailHistory',
+    'verifyStatusCache',
+    'tempUnreadCounts',
+    'tempKnownMailIds',
+    'tempMailMeta',
+    'mailPollState',
+  ]);
+  const apiUrl = String(settings.apiUrl || '').trim().replace(/\/$/, '');
+  const adminToken = String(settings.adminToken || '').trim();
+  const history = Array.isArray(settings.emailHistory) ? settings.emailHistory : [];
+  const tempMailMeta = { ...(settings.tempMailMeta || {}) };
+  const expiredAddresses = history.filter((address) => {
+    const meta = tempMailMeta[address];
+    return meta && Number(meta.expiryMs) > 0
+      && now >= Number(meta.createdAt) + Number(meta.expiryMs);
+  });
+
+  lastExpiredCleanupAt = now;
+  if (expiredAddresses.length === 0) {
+    return { removed: 0 };
+  }
+
+  if (apiUrl && adminToken) {
+    await runWithConcurrency(expiredAddresses, 3, async (address) => {
+      try {
+        const data = await fetchJsonWithTimeout(
+          `${apiUrl}/admin/address?query=${encodeURIComponent(address)}&limit=10&offset=0`,
+          { headers: { 'x-admin-auth': adminToken } }
+        );
+        const match = (data.results || []).find((record) => matchesAddressRecord(record, address));
+        if (match?.id !== undefined && match?.id !== null) {
+          const response = await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
+            method: 'DELETE',
+            headers: { 'x-admin-auth': adminToken },
+          });
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
+        }
+      } catch (error) {
+        console.warn('过期邮箱服务端删除失败:', error.message);
+      }
+    });
+  }
+
+  // 服务端删除期间，其他 popup 可能新增邮箱或更新状态；提交前重新读取并合并，
+  // 避免用清理开始时的旧快照覆盖较新的数据。
+  const latest = await storageGet([
+    'emailHistory',
+    'verifyStatusCache',
+    'tempUnreadCounts',
+    'tempKnownMailIds',
+    'tempMailMeta',
+    'mailPollState',
+  ]);
+  const latestHistory = Array.isArray(latest.emailHistory) ? latest.emailHistory : [];
+  const latestTempMailMeta = { ...(latest.tempMailMeta || {}) };
+  const confirmedExpired = expiredAddresses.filter((address) => {
+    const before = tempMailMeta[address];
+    const current = latestTempMailMeta[address];
+    return current
+      && Number(current.createdAt) === Number(before?.createdAt)
+      && Number(current.expiryMs) === Number(before?.expiryMs)
+      && Number(current.expiryMs) > 0
+      && now >= Number(current.createdAt) + Number(current.expiryMs);
+  });
+  const expiredSet = new Set(confirmedExpired);
+  const verifyStatusCache = { ...(latest.verifyStatusCache || {}) };
+  const tempUnreadCounts = { ...(latest.tempUnreadCounts || {}) };
+  const tempKnownMailIds = { ...(latest.tempKnownMailIds || {}) };
+  const mailPollState = { ...(latest.mailPollState || {}) };
+  for (const address of confirmedExpired) {
+    delete verifyStatusCache[address];
+    delete tempUnreadCounts[address];
+    delete tempKnownMailIds[address];
+    delete latestTempMailMeta[address];
+    delete mailPollState[`temp:${address}`];
+  }
+  await storageSet({
+    emailHistory: latestHistory.filter((address) => !expiredSet.has(address)),
+    verifyStatusCache,
+    tempUnreadCounts,
+    tempKnownMailIds,
+    tempMailMeta: latestTempMailMeta,
+    mailPollState,
+  });
+  return { removed: confirmedExpired.length };
+}
+
+function runCleanupExpiredTempAddresses(force = false) {
+  if (cleanupExpiredPromise) {
+    return cleanupExpiredPromise;
+  }
+  cleanupExpiredPromise = cleanupExpiredTempAddresses(force)
+    .finally(() => {
+      cleanupExpiredPromise = null;
+    });
+  return cleanupExpiredPromise;
 }
 
 async function proxyFetch(url, init = {}) {
@@ -430,6 +743,7 @@ async function updateBadgeFromStorage() {
 }
 
 async function pollMailNow() {
+  await runCleanupExpiredTempAddresses();
   const settings = await storageGet([
     'apiUrl',
     'adminToken',
@@ -442,7 +756,9 @@ async function pollMailNow() {
     'tempUnreadCounts',
     'moeUnreadCounts',
     'notificationsEnabled',
-    'tempMailMeta',
+    'mailPollingInterval',
+    'mailPollState',
+    'activeInbox',
   ]);
 
   const apiUrl = (settings.apiUrl || '').trim().replace(/\/$/, '');
@@ -452,11 +768,17 @@ async function pollMailNow() {
   const moeApiKey = (settings.moeApiKey || '').trim();
   const moeEmailCache = Array.isArray(settings.moeEmailCache) ? settings.moeEmailCache : [];
   const notificationsEnabled = settings.notificationsEnabled !== false;
+  const basePollIntervalMs = resolveIntervalSeconds(
+    settings.mailPollingInterval,
+    DEFAULT_MAIL_POLL_INTERVAL
+  ) * 1000;
+  const activeInbox = settings.activeInbox || null;
 
   const tempKnownMailIds = { ...(settings.tempKnownMailIds || {}) };
   const moeKnownMailIds = { ...(settings.moeKnownMailIds || {}) };
   const tempUnreadCounts = { ...(settings.tempUnreadCounts || {}) };
   const moeUnreadCounts = { ...(settings.moeUnreadCounts || {}) };
+  const mailPollState = { ...(settings.mailPollState || {}) };
   const notifications = [];
 
   const activeTempAddresses = new Set(history);
@@ -464,79 +786,41 @@ async function pollMailNow() {
     if (!activeTempAddresses.has(address)) {
       delete tempKnownMailIds[address];
       delete tempUnreadCounts[address];
+      delete mailPollState[`temp:${address}`];
     }
   });
 
-  // Check for expired temp mail addresses
-  const tempMailMeta = settings.tempMailMeta || {};
   const now = Date.now();
-  const expiredAddrs = [];
-  for (const addr of history) {
-    const meta = tempMailMeta[addr];
-    if (meta && meta.expiryMs > 0 && now >= meta.createdAt + meta.expiryMs) {
-      expiredAddrs.push(addr);
-    }
-  }
-  if (expiredAddrs.length > 0) {
-    console.log('[Background] Auto-deleting expired temp addresses:', expiredAddrs.length);
-    for (const addr of expiredAddrs) {
-      // Try server-side deletion
-      try {
-        const queryRes = await fetch(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
-          headers: { 'x-admin-auth': adminToken }
-        });
-        if (queryRes.ok) {
-          const queryData = await queryRes.json();
-          const match = (queryData.results || []).find(a => {
-            const recordAddr = String(a.address || a.email || '').trim();
-            return recordAddr.toLowerCase() === addr.toLowerCase();
-          });
-          if (match) {
-            await fetch(`${apiUrl}/admin/delete_address/${match.id}`, {
-              method: 'DELETE',
-              headers: { 'x-admin-auth': adminToken }
-            });
-          }
-        }
-      } catch (e) { /* ignore */ }
-      // Remove from local state
-      activeTempAddresses.delete(addr);
-      delete tempKnownMailIds[addr];
-      delete tempUnreadCounts[addr];
-      delete tempMailMeta[addr];
-    }
-    // Update history array
-    const newHistory = history.filter(a => !expiredAddrs.includes(a));
-    await storageSet({ emailHistory: newHistory, tempMailMeta });
-    // Sync the cleaned history for subsequent polling in this run
-    history.length = 0;
-    history.push(...newHistory);
-    activeTempAddresses.clear();
-    newHistory.forEach(a => activeTempAddresses.add(a));
-  }
 
   const activeMoeIds = new Set(moeEmailCache.map((email) => String(email.id)));
   Object.keys(moeKnownMailIds).forEach((emailId) => {
     if (!activeMoeIds.has(String(emailId))) {
       delete moeKnownMailIds[emailId];
       delete moeUnreadCounts[emailId];
+      delete mailPollState[`moe:${emailId}`];
     }
   });
 
   if (apiUrl && adminToken) {
-    for (const address of history) {
+    await runWithConcurrency(history, 3, async (address) => {
+      const stateKey = `temp:${address}`;
+      const isActive = activeInbox?.type === 'temp' && activeInbox.address === address;
+      if (!isActive && Number(mailPollState[stateKey]?.nextPollAt) > now) {
+        return;
+      }
       try {
-        const data = await fetchJson(
-          `${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=20&offset=0`,
+        const data = await fetchJsonWithTimeout(
+          `${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=20&offset=0&summary_only=true`,
           { headers: { 'x-admin-auth': adminToken } }
         );
         const messages = Array.isArray(data.results) ? data.results : [];
         const ids = messages.map(buildTempMailKey);
         const previousIds = Array.isArray(tempKnownMailIds[address]) ? tempKnownMailIds[address] : null;
+        let newMessages = [];
 
         if (previousIds) {
           const previousSet = new Set(previousIds);
-          const newMessages = messages.filter((message) => !previousSet.has(buildTempMailKey(message)));
+          newMessages = messages.filter((message) => !previousSet.has(buildTempMailKey(message)));
           if (newMessages.length > 0) {
             tempUnreadCounts[address] = (tempUnreadCounts[address] || 0) + newMessages.length;
             notifications.push({
@@ -550,26 +834,47 @@ async function pollMailNow() {
         }
 
         tempKnownMailIds[address] = ids.slice(0, 50);
+        updateAddressPollState(mailPollState, stateKey, {
+          hasNewMail: newMessages.length > 0,
+          failed: false,
+          isActive,
+          baseIntervalMs: basePollIntervalMs,
+          now,
+        });
       } catch (error) {
         console.warn('Temp Email 轮询失败:', error.message);
+        updateAddressPollState(mailPollState, stateKey, {
+          hasNewMail: false,
+          failed: true,
+          isActive,
+          baseIntervalMs: basePollIntervalMs,
+          now,
+        });
       }
-    }
+    });
   }
 
   if (moeApiUrl && moeApiKey) {
-    for (const email of moeEmailCache) {
+    await runWithConcurrency(moeEmailCache, 3, async (email) => {
       const emailId = String(email.id);
+      const stateKey = `moe:${emailId}`;
+      const isActive = activeInbox?.type === 'moe'
+        && String(activeInbox.emailId) === emailId;
+      if (!isActive && Number(mailPollState[stateKey]?.nextPollAt) > now) {
+        return;
+      }
       try {
-        const data = await fetchJson(`${moeApiUrl}/api/emails/${emailId}`, {
+        const data = await fetchJsonWithTimeout(`${moeApiUrl}/api/emails/${emailId}`, {
           headers: { 'X-API-Key': moeApiKey },
         });
         const messages = Array.isArray(data.messages) ? data.messages : [];
         const ids = messages.map(buildMoeMailKey);
         const previousIds = Array.isArray(moeKnownMailIds[emailId]) ? moeKnownMailIds[emailId] : null;
+        let newMessages = [];
 
         if (previousIds) {
           const previousSet = new Set(previousIds);
-          const newMessages = messages.filter((message) => !previousSet.has(buildMoeMailKey(message)));
+          newMessages = messages.filter((message) => !previousSet.has(buildMoeMailKey(message)));
           if (newMessages.length > 0) {
             moeUnreadCounts[emailId] = (moeUnreadCounts[emailId] || 0) + newMessages.length;
             notifications.push({
@@ -583,10 +888,24 @@ async function pollMailNow() {
         }
 
         moeKnownMailIds[emailId] = ids.slice(0, 50);
+        updateAddressPollState(mailPollState, stateKey, {
+          hasNewMail: newMessages.length > 0,
+          failed: false,
+          isActive,
+          baseIntervalMs: basePollIntervalMs,
+          now,
+        });
       } catch (error) {
         console.warn('MoeMail 轮询失败:', error.message);
+        updateAddressPollState(mailPollState, stateKey, {
+          hasNewMail: false,
+          failed: true,
+          isActive,
+          baseIntervalMs: basePollIntervalMs,
+          now,
+        });
       }
-    }
+    });
   }
 
   await storageSet({
@@ -594,10 +913,9 @@ async function pollMailNow() {
     moeKnownMailIds,
     tempUnreadCounts,
     moeUnreadCounts,
+    mailPollState,
     lastMailPollAt: Date.now(),
   });
-
-  await updateBadgeFromStorage();
 
   if (!notificationsEnabled) {
     return;
@@ -751,34 +1069,21 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status !== 'loading' || !tab.url) {
-    return;
-  }
-
-  storageGet([
-    'floatWindowEnabled',
-    'siteAccessMode',
-    'siteAllowlist',
-    'siteBlocklist',
-  ]).then((settings) => {
-    if (settings.floatWindowEnabled === false) {
-      return;
-    }
-    if (!shouldAllowSite(tab.url, settings)) {
-      return;
-    }
-    ensurePageToolsInjected(tabId, tab.url).catch((error) => {
-      console.warn('自动注入失败:', error.message);
-    });
-  }).catch((error) => {
-    console.warn('读取页面设置失败:', error.message);
-  });
-});
-
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') {
     return;
+  }
+
+  if (changes.apiUrl) {
+    clearRemoteDataCache('temp-domains:');
+    storageRemove([TEMP_DOMAIN_CACHE_STORAGE_KEY]).catch(() => {});
+  }
+  if (changes.moeApiUrl || changes.moeApiKey) {
+    clearRemoteDataCache('moe-');
+    storageRemove([
+      MOE_CONFIG_CACHE_STORAGE_KEY,
+      MOE_EMAIL_LIST_CACHE_STORAGE_KEY,
+    ]).catch(() => {});
   }
 
   const alarmKeys = [
@@ -834,6 +1139,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (message?.type === 'get-temp-domains') {
+      sendResponse({ ok: true, data: await getTempDomains(message.forceRefresh === true) });
+      return;
+    }
+
+    if (message?.type === 'get-moe-config') {
+      sendResponse({ ok: true, data: await getMoeConfig(message.forceRefresh === true) });
+      return;
+    }
+
+    if (message?.type === 'get-moe-email-list') {
+      sendResponse({ ok: true, data: await getMoeEmailList(message.forceRefresh === true) });
+      return;
+    }
+
+    if (message?.type === 'invalidate-remote-data-cache') {
+      const scope = String(message.scope || '');
+      if (scope === 'temp') {
+        clearRemoteDataCache('temp-domains:');
+        await storageRemove([TEMP_DOMAIN_CACHE_STORAGE_KEY]);
+      } else if (scope === 'moe') {
+        clearRemoteDataCache('moe-');
+        await storageRemove([
+          MOE_CONFIG_CACHE_STORAGE_KEY,
+          MOE_EMAIL_LIST_CACHE_STORAGE_KEY,
+        ]);
+      } else {
+        clearRemoteDataCache();
+        await storageRemove([
+          TEMP_DOMAIN_CACHE_STORAGE_KEY,
+          MOE_CONFIG_CACHE_STORAGE_KEY,
+          MOE_EMAIL_LIST_CACHE_STORAGE_KEY,
+        ]);
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+
     if (message?.type === 'run-verify-now') {
       await runVerifyAddressesNow();
       sendResponse({ ok: true });
@@ -843,6 +1186,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'run-mail-poll-now') {
       await runPollMailNow();
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'cleanup-expired-temp-addresses') {
+      const result = await runCleanupExpiredTempAddresses(message.force === true);
+      sendResponse({ ok: true, data: result });
       return;
     }
 

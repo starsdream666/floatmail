@@ -352,6 +352,7 @@
       body.style.overscrollBehavior = 'none';
       body.style.touchAction = 'none';
     }
+    window.addEventListener('scroll', syncLockedScrollPosition, true);
     window.scrollTo(hostScrollLock.scrollX, hostScrollLock.scrollY);
   }
 
@@ -369,6 +370,7 @@
       body.style.overscrollBehavior = hostScrollLock.bodyOverscrollBehavior;
       body.style.touchAction = hostScrollLock.bodyTouchAction;
     }
+    window.removeEventListener('scroll', syncLockedScrollPosition, true);
     hostScrollLock = null;
   }
 
@@ -1114,10 +1116,6 @@
     });
     floatUi.cleanup = [];
 
-    if (floatUi.keepAliveTimer) {
-      clearInterval(floatUi.keepAliveTimer);
-      floatUi.keepAliveTimer = null;
-    }
     if (floatUi.observer) {
       floatUi.observer.disconnect();
     }
@@ -1326,7 +1324,6 @@
       iframeLoaded: false,
       buttonLayout: null,
       panelLayout: null,
-      keepAliveTimer: null,
       observer: null,
       cleanup: [],
     };
@@ -1396,7 +1393,29 @@
     button.addEventListener('click', onButtonClick);
     floatUi.cleanup.push(() => button.removeEventListener('click', onButtonClick));
 
+    let dragListenersAttached = false;
+    function attachDragListeners() {
+      if (dragListenersAttached) {
+        return;
+      }
+      dragListenersAttached = true;
+      document.addEventListener('mousemove', onDocumentMouseMove, true);
+      document.addEventListener('mouseup', onDocumentMouseUp, true);
+      window.addEventListener('blur', onWindowBlur);
+    }
+
+    function detachDragListeners() {
+      if (!dragListenersAttached) {
+        return;
+      }
+      dragListenersAttached = false;
+      document.removeEventListener('mousemove', onDocumentMouseMove, true);
+      document.removeEventListener('mouseup', onDocumentMouseUp, true);
+      window.removeEventListener('blur', onWindowBlur);
+    }
+
     const onButtonMouseDown = (event) => {
+      attachDragListeners();
       isButtonDragging = true;
       wasDragged = false;
       const rect = button.getBoundingClientRect();
@@ -1423,6 +1442,7 @@
         event.preventDefault();
         return;
       }
+      attachDragListeners();
       isPanelDragging = true;
       enableOverlay();
       const rect = panel.getBoundingClientRect();
@@ -1449,6 +1469,7 @@
       if (!handle) {
         return;
       }
+      attachDragListeners();
       isResizing = true;
       enableOverlay();
       resizeDirection = handle.dataset.dir || '';
@@ -1550,12 +1571,9 @@
         };
       }
     };
-    document.addEventListener('mousemove', onDocumentMouseMove, true);
-    floatUi.cleanup.push(() => document.removeEventListener('mousemove', onDocumentMouseMove, true));
-
     const onDocumentMouseUp = (event) => {
       const shouldPersist = isButtonDragging || isPanelDragging || isResizing;
-      if (shouldPersist) {
+      if (shouldPersist && event) {
         event.stopPropagation();
       }
       if (isButtonDragging) {
@@ -1573,9 +1591,10 @@
       if (shouldPersist) {
         persistFloatLayout().catch(() => {});
       }
+      detachDragListeners();
     };
-    document.addEventListener('mouseup', onDocumentMouseUp, true);
-    floatUi.cleanup.push(() => document.removeEventListener('mouseup', onDocumentMouseUp, true));
+    const onWindowBlur = () => onDocumentMouseUp(null);
+    floatUi.cleanup.push(detachDragListeners);
 
     const onDocumentMouseDown = (event) => {
       if (floatUi.panelVisible && !floatUi.isPinned && !panel.contains(event.target) && event.target !== button) {
@@ -1619,12 +1638,6 @@
     };
     window.addEventListener('resize', onWindowResize);
     floatUi.cleanup.push(() => window.removeEventListener('resize', onWindowResize));
-
-    const onWindowScroll = () => {
-      syncLockedScrollPosition();
-    };
-    window.addEventListener('scroll', onWindowScroll, true);
-    floatUi.cleanup.push(() => window.removeEventListener('scroll', onWindowScroll, true));
 
     const onWindowMessage = (event) => {
       if (!floatUi || event.source !== iframe.contentWindow) {
@@ -1687,29 +1700,11 @@
     observer.observe(document.body, { childList: true });
     floatUi.observer = observer;
 
-    const syncKeepAliveTimer = () => {
-      if (!floatUi) {
-        return;
-      }
-      if (document.visibilityState === 'visible') {
-        if (!floatUi.keepAliveTimer) {
-          floatUi.keepAliveTimer = window.setInterval(reattachIfMissing, 3000);
-        }
-        return;
-      }
-      if (floatUi.keepAliveTimer) {
-        clearInterval(floatUi.keepAliveTimer);
-        floatUi.keepAliveTimer = null;
-      }
-    };
-    syncKeepAliveTimer();
-
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         reattachIfMissing();
         syncLockedScrollPosition();
       }
-      syncKeepAliveTimer();
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     floatUi.cleanup.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));

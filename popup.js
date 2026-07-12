@@ -1067,6 +1067,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       resolve(response);
     });
   });
+  let tempDomainsLoaded = false;
+  let tempDomainsLoadPromise = null;
+  let moeDomainsLoaded = false;
+  let moeDomainsLoadPromise = null;
+  let moeEmailListLoaded = false;
+  let moeEmailListLoadPromise = null;
   async function proxiedFetch(url, init = {}) {
     const response = await runtimeSendMessage({
       type: 'proxy-fetch',
@@ -1401,8 +1407,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderFastFillPage().catch(() => {});
     }
 
+    ensureRemoteDataForTab(nextTab);
+
     backToHomeBtn.classList.add('hidden');
     updateHeaderForTab(nextTab);
+  }
+
+  function ensureRemoteDataForTab(tab) {
+    if (tab === 'temp-email' && apiUrl && adminToken) {
+      loadDomains().catch(() => {});
+      return;
+    }
+    if (tab === 'moe-mail' && moeApiUrl && moeApiKey) {
+      Promise.all([moeLoadDomains(), moeLoadEmails()]).catch(() => {});
+      return;
+    }
+    if (tab === 'fast-fill') {
+      fastFillLoadDomains().catch(() => {});
+    }
   }
 
   tabBtns.forEach(btn => {
@@ -1901,6 +1923,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   let fastFillTempDomains = [];
   let fastFillMoeDomains = [];
   let fastFillDomainsLoaded = false;
+  let fastFillDomainLoadPromise = null;
+  let fastFillDomainLoadSource = '';
+  const fastFillLoadedSources = new Set();
   let fastFillGenerating = false;
   let fastFillHistory = [];
   let fastFillNameRegion = 'en';
@@ -1941,37 +1966,53 @@ document.addEventListener('DOMContentLoaded', async () => {
     return available[Math.floor(Math.random() * available.length)];
   }
 
-  async function fastFillLoadDomains() {
+  async function fastFillLoadDomains(options = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    const source = fastFillEmailSource === 'moe' ? 'moe' : 'temp';
+    if (!forceRefresh && fastFillLoadedSources.has(source)) {
+      fastFillDomainsLoaded = true;
+      fastFillRefreshDomainUI();
+      return;
+    }
+    if (fastFillDomainLoadPromise) {
+      if (fastFillDomainLoadSource === source) {
+        return fastFillDomainLoadPromise;
+      }
+      await fastFillDomainLoadPromise;
+      return fastFillLoadDomains(options);
+    }
+
     fastFillDomainsLoaded = false;
     fastFillDomainStatus.textContent = '域名加载中...';
 
-    // Load temp domains
-    if (apiUrl) {
-      try {
-        const res = await fetch(`${apiUrl}/open_api/settings`);
-        if (res.ok) {
-          const data = await res.json();
-          fastFillTempDomains = data.domains || [];
-        }
-      } catch { /* ignore */ }
-    }
-
-    // Load moe domains
-    if (moeApiUrl && moeApiKey) {
-      try {
-        const res = await moeFetch(`${moeApiUrl}/api/config`, {
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey }
+    fastFillDomainLoadSource = source;
+    fastFillDomainLoadPromise = (async () => {
+      if (source === 'temp' && apiUrl) {
+        const response = await runtimeSendMessage({
+          type: 'get-temp-domains',
+          forceRefresh,
         });
-        if (res.ok) {
-          const data = await res.json();
-          const domainStr = data.emailDomains || '';
-          fastFillMoeDomains = domainStr.split(',').map(d => d.trim()).filter(Boolean);
-        }
-      } catch { /* ignore */ }
-    }
+        fastFillTempDomains = Array.isArray(response?.data?.domains) ? response.data.domains : [];
+      } else if (source === 'moe' && moeApiUrl && moeApiKey) {
+        const response = await runtimeSendMessage({
+          type: 'get-moe-config',
+          forceRefresh,
+        });
+        const domainStr = response?.data?.emailDomains || '';
+        fastFillMoeDomains = String(domainStr).split(',').map(d => d.trim()).filter(Boolean);
+      }
+      fastFillLoadedSources.add(source);
+      fastFillDomainsLoaded = true;
+      fastFillRefreshDomainUI();
+    })().catch(() => {
+      fastFillDomainsLoaded = true;
+      fastFillRefreshDomainUI();
+    }).finally(() => {
+      fastFillDomainLoadPromise = null;
+      fastFillDomainLoadSource = '';
+    });
 
-    fastFillDomainsLoaded = true;
-    fastFillRefreshDomainUI();
+    return fastFillDomainLoadPromise;
   }
 
   function fastFillRefreshDomainUI() {
@@ -2233,7 +2274,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const data = await createRes.json();
         const newAddr = data.email || email;
         // Refresh email list then open inbox
-        await moeLoadEmails();
+        await moeLoadEmails({ forceRefresh: true });
         const found = currentMoeEmails.find(e => e.address === newAddr);
         if (found) {
           switchTab('moe-mail');
@@ -2293,6 +2334,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderFastFillRulesSummary();
     renderFastFillHistory();
     fastFillRefreshDomainModeUI();
+    fastFillLoadDomains().catch(() => {});
     showMessage(fastFillMessage, '', '');
   }
 
@@ -3452,12 +3494,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Check and auto-delete expired addresses
     if (apiUrl && adminToken) {
-      checkAndDeleteExpiredTempMails().catch(() => {});
-    }
-
-    // Temp Email: 如果有配置则加载域名
-    if (apiUrl && adminToken) {
-      loadDomains();
+      runtimeSendMessage({ type: 'cleanup-expired-temp-addresses' }).catch(() => {});
     }
 
     // MoeMail 配置
@@ -3468,12 +3505,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentMoeEmails = Array.isArray(result.moeEmailCache) ? result.moeEmailCache : [];
     moeUnreadCounts = result.moeUnreadCounts || {};
     renderMoeEmails();
-
-    // MoeMail: 如果有配置则加载
-    if (moeApiUrl && moeApiKey) {
-      moeLoadDomains();
-      moeLoadEmails();
-    }
 
     // 书签
     if (result.bookmarks) {
@@ -3549,8 +3580,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     fastFillMoeExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'moe');
     fastFillTempExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'temp');
     fastFillRefreshDomainModeUI();
-    fastFillLoadDomains();
-
     siteAccessModeSelect.value = siteAccessMode;
     refreshCurrentSiteInfo();
     updateFillProfileButton();
@@ -3591,6 +3620,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newToken = adminTokenInput.value.trim();
     const newMoeUrl = moeApiUrlInput.value.trim().replace(/\/$/, "");
     const newMoeKey = moeApiKeyInput.value.trim();
+    const tempConfigChanged = newUrl !== apiUrl || newToken !== adminToken;
+    const moeConfigChanged = newMoeUrl !== moeApiUrl || newMoeKey !== moeApiKey;
     const floatEnabled = floatToggle.checked;
     const newFloatWindowStyle = currentFloatWindowStyle;
     const newDefaultTab = defaultTabSelect.value;
@@ -3647,6 +3678,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // MoeMail 配置更新
     moeApiUrl = newMoeUrl;
     moeApiKey = newMoeKey;
+    if (tempConfigChanged) {
+      tempDomainsLoaded = false;
+      fastFillLoadedSources.delete('temp');
+    }
+    if (moeConfigChanged) {
+      moeDomainsLoaded = false;
+      moeEmailListLoaded = false;
+      fastFillLoadedSources.delete('moe');
+    }
     mailPollingInterval = newMailPollingInterval;
     notificationsEnabled = newNotificationsEnabled;
     defaultRemoteImagesEnabled = newDefaultRemoteImagesEnabled;
@@ -3695,13 +3735,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       [DEFAULT_FF_MOE_EXPIRY_KEY]: defaultFfMoeExpiry,
       [DEFAULT_TEMP_EXPIRY_KEY]: defaultTempExpiry,
       [DEFAULT_MOE_EXPIRY_KEY]: defaultMoeExpiry
-    }, async () => {
+    }, () => {
       setupAutoVerify(verifyInterval);
-      await runtimeSendMessage({ type: 'run-mail-poll-now' }).catch(() => {});
       showMessage(settingsMessage, '配置已保存成功！', 'success');
-      // 重新加载域名
-      if (apiUrl && adminToken) loadDomains();
-      if (moeApiUrl && moeApiKey) { moeLoadDomains(); moeLoadEmails(); }
+      ensureRemoteDataForTab(activeTab);
       restoreGeneratedToolResults();
       refreshCurrentSiteInfo();
       setTimeout(() => { settingsMessage.textContent = ''; }, 2000);
@@ -4081,21 +4118,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ===================== Temp Email: 加载域名 =====================
-  async function loadDomains() {
-    try {
+  async function loadDomains(options = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    if (!forceRefresh && tempDomainsLoaded) {
+      return;
+    }
+    if (tempDomainsLoadPromise) {
+      return tempDomainsLoadPromise;
+    }
+
+    tempDomainsLoadPromise = (async () => {
       domainSelect.disabled = true;
       domainSelect.innerHTML = '<option value="">加载中...</option>';
       createBtn.disabled = true;
 
-      const res = await fetch(`${apiUrl}/open_api/settings`);
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      
-      const data = await res.json();
-      const domains = data.domains || [];
+      const response = await runtimeSendMessage({
+        type: 'get-temp-domains',
+        forceRefresh,
+      });
+      const domains = Array.isArray(response?.data?.domains) ? response.data.domains : [];
 
       domainSelect.innerHTML = '';
       if (domains.length === 0) {
         domainSelect.innerHTML = '<option value="">无可用域名</option>';
+        tempDomainsLoaded = true;
         return;
       }
       
@@ -4108,16 +4154,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       
       domainSelect.disabled = false;
       createBtn.disabled = false;
-    } catch (e) {
+      tempDomainsLoaded = true;
+    })().catch((e) => {
       domainSelect.innerHTML = '<option value="">加载失败</option>';
       showMessage(createMessage, `获取域名失败: ${e.message}`, 'error');
-    }
+    }).finally(() => {
+      tempDomainsLoadPromise = null;
+    });
+
+    return tempDomainsLoadPromise;
   }
 
   // 重试获取域名列表
   retryDomainsBtn.addEventListener('click', async () => {
     retryDomainsBtn.style.animation = 'spin 1s linear infinite';
-    await loadDomains();
+    await loadDomains({ forceRefresh: true });
     retryDomainsBtn.style.animation = '';
   });
 
@@ -4781,60 +4832,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => renderHistory(), 300);
   }
 
-  async function checkAndDeleteExpiredTempMails() {
-    if (!apiUrl || !adminToken) return;
-    const now = Date.now();
-    const toDelete = [];
-
-    for (const addr of history) {
-      const meta = tempMailMeta[addr];
-      if (!meta || !meta.expiryMs || meta.expiryMs <= 0) continue; // no expiry set
-      if (now < meta.createdAt + meta.expiryMs) continue; // not yet expired
-      toDelete.push(addr);
-    }
-
-    if (toDelete.length === 0) return;
-
-    console.log('[TempMail] Auto-deleting expired addresses:', toDelete.length);
-
-    for (const addr of toDelete) {
-      try {
-        // Try server-side deletion first
-        const queryRes = await fetch(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
-          headers: { 'x-admin-auth': adminToken }
-        });
-        if (queryRes.ok) {
-          const queryData = await queryRes.json();
-          const match = (queryData.results || []).find(a => {
-            const recordAddr = String(a.address || a.email || '').trim();
-            return recordAddr.toLowerCase() === addr.toLowerCase();
-          });
-          if (match) {
-            await fetch(`${apiUrl}/admin/delete_address/${match.id}`, {
-              method: 'DELETE',
-              headers: { 'x-admin-auth': adminToken }
-            });
-          }
-        }
-      } catch (e) {
-        console.warn('[TempMail] Server delete failed:', e.message);
-      }
-      // Remove from local state regardless of server result
-      history = history.filter(a => a !== addr);
-      delete verifyStatus[addr];
-      delete tempUnreadCounts[addr];
-      delete tempMailMeta[addr];
-    }
-
-    chrome.storage.local.set({
-      emailHistory: history,
-      verifyStatusCache: verifyStatus,
-      tempUnreadCounts,
-      [TEMP_MAIL_META_KEY]: tempMailMeta
-    });
-    renderHistory();
-  }
-
   async function fetchMails(address) {
     mailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
     try {
@@ -5233,25 +5230,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ===================== MoeMail: 加载域名 =====================
-  async function moeLoadDomains() {
-    try {
+  async function moeLoadDomains(options = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    if (!forceRefresh && moeDomainsLoaded) {
+      return;
+    }
+    if (moeDomainsLoadPromise) {
+      return moeDomainsLoadPromise;
+    }
+
+    moeDomainsLoadPromise = (async () => {
       moeDomainSelect.disabled = true;
       moeDomainSelect.innerHTML = '<option value="">加载中...</option>';
       moeCreateBtn.disabled = true;
 
-      const res = await moeFetch(`${moeApiUrl}/api/config`, {
-        headers: moeHeaders()
+      const response = await runtimeSendMessage({
+        type: 'get-moe-config',
+        forceRefresh,
       });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const data = await res.json();
 
       // emailDomains 是逗号分隔的字符串
-      const domainStr = data.emailDomains || '';
-      const domains = domainStr.split(',').map(d => d.trim()).filter(Boolean);
+      const domainStr = response?.data?.emailDomains || '';
+      const domains = String(domainStr).split(',').map(d => d.trim()).filter(Boolean);
 
       moeDomainSelect.innerHTML = '';
       if (domains.length === 0) {
         moeDomainSelect.innerHTML = '<option value="">无可用域名</option>';
+        moeDomainsLoaded = true;
         return;
       }
 
@@ -5264,16 +5269,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       moeDomainSelect.disabled = false;
       moeCreateBtn.disabled = false;
-    } catch (e) {
+      moeDomainsLoaded = true;
+    })().catch((e) => {
       moeDomainSelect.innerHTML = '<option value="">加载失败</option>';
       showMessage(moeCreateMessage, `获取域名失败: ${e.message}`, 'error');
-    }
+    }).finally(() => {
+      moeDomainsLoadPromise = null;
+    });
+
+    return moeDomainsLoadPromise;
   }
 
   // MoeMail 重试获取域名列表
   moeRetryDomainsBtn.addEventListener('click', async () => {
     moeRetryDomainsBtn.style.animation = 'spin 1s linear infinite';
-    await moeLoadDomains();
+    await moeLoadDomains({ forceRefresh: true });
     moeRetryDomainsBtn.style.animation = '';
   });
 
@@ -5309,7 +5319,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       updateGeneratedProfile({ email: data.email || generatedProfile.email });
       moeEmailNameInput.value = '';
       // 刷新邮箱列表
-      moeLoadEmails();
+      moeLoadEmails({ forceRefresh: true });
     } catch (e) {
       showMessage(moeCreateMessage, `创建失败: ${e.message}`, 'error');
     } finally {
@@ -5319,26 +5329,45 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ===================== MoeMail: 加载邮箱列表 =====================
-  async function moeLoadEmails() {
-    moeEmailListDiv.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
-    try {
-      const res = await moeFetch(`${moeApiUrl}/api/emails`, {
-        headers: moeHeaders()
-      });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const data = await res.json();
-      currentMoeEmails = data.emails || [];
-      chrome.storage.local.set({
-        moeEmailCache: currentMoeEmails.map(email => ({
-          id: email.id,
-          address: email.address,
-          expiresAt: email.expiresAt
-        }))
-      });
-      renderMoeEmails();
-    } catch (e) {
-      moeEmailListDiv.innerHTML = `<div style="padding:12px; text-align:center; color:var(--error);">加载失败: ${e.message}</div>`;
+  async function moeLoadEmails(options = {}) {
+    const forceRefresh = options.forceRefresh === true;
+    if (!forceRefresh && moeEmailListLoaded) {
+      return;
     }
+    if (moeEmailListLoadPromise) {
+      return moeEmailListLoadPromise;
+    }
+
+    moeEmailListDiv.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
+    moeEmailListLoadPromise = (async () => {
+      const previousCache = currentMoeEmails.map(email => ({
+        id: email.id,
+        address: email.address,
+        expiresAt: email.expiresAt
+      }));
+      const response = await runtimeSendMessage({
+        type: 'get-moe-email-list',
+        forceRefresh,
+      });
+      const data = response?.data || {};
+      currentMoeEmails = data.emails || [];
+      const nextCache = currentMoeEmails.map(email => ({
+        id: email.id,
+        address: email.address,
+        expiresAt: email.expiresAt
+      }));
+      if (JSON.stringify(previousCache) !== JSON.stringify(nextCache)) {
+        chrome.storage.local.set({ moeEmailCache: nextCache });
+      }
+      moeEmailListLoaded = true;
+      renderMoeEmails();
+    })().catch((e) => {
+      moeEmailListDiv.innerHTML = `<div style="padding:12px; text-align:center; color:var(--error);">加载失败: ${e.message}</div>`;
+    }).finally(() => {
+      moeEmailListLoadPromise = null;
+    });
+
+    return moeEmailListLoadPromise;
   }
 
   function renderMoeEmails() {
@@ -5562,10 +5591,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     chrome.storage.local.set({ moeUnreadCounts });
     selectedMoeHistory.clear();
-    moeLoadEmails();
+    moeLoadEmails({ forceRefresh: true });
   });
 
-  moeRefreshBtn.addEventListener('click', () => moeLoadEmails());
+  moeRefreshBtn.addEventListener('click', () => moeLoadEmails({ forceRefresh: true }));
 
   // ===================== MoeMail: 删除邮箱 =====================
   async function moeDeleteEmail(emailId, cardElement) {
@@ -5584,7 +5613,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       cardElement.style.transition = 'opacity 0.3s, transform 0.3s';
       cardElement.style.opacity = '0';
       cardElement.style.transform = 'translateX(20px)';
-      setTimeout(() => moeLoadEmails(), 300);
+      setTimeout(() => moeLoadEmails({ forceRefresh: true }), 300);
     } catch (e) {
       alert('删除失败: ' + e.message);
     }
@@ -6443,11 +6472,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           renderBookmarks();
         }
 
-        if (apiUrl && adminToken) loadDomains();
-        if (moeApiUrl && moeApiKey) {
-          moeLoadDomains();
-          moeLoadEmails();
-        }
+        tempDomainsLoaded = false;
+        moeDomainsLoaded = false;
+        moeEmailListLoaded = false;
+        fastFillLoadedSources.clear();
+        ensureRemoteDataForTab(activeTab);
         refreshCurrentSiteInfo();
       }, 500);
     }
@@ -6551,6 +6580,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     fastFillTempExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'temp');
     saveFastFillConfig();
     fastFillRefreshDomainUI();
+    fastFillLoadDomains().catch(() => {});
   });
 
   fastFillDomainModeEl.addEventListener('change', () => {
@@ -6585,6 +6615,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ===================== 跨实例数据同步 =====================
+  const scheduledStorageRenders = new Set();
+  let storageRenderFrame = null;
+  function scheduleStorageRender(kind) {
+    scheduledStorageRenders.add(kind);
+    if (storageRenderFrame !== null) {
+      return;
+    }
+    storageRenderFrame = requestAnimationFrame(() => {
+      storageRenderFrame = null;
+      const pending = new Set(scheduledStorageRenders);
+      scheduledStorageRenders.clear();
+      if (pending.has('history')) renderHistory();
+      if (pending.has('moe')) renderMoeEmails();
+      if (pending.has('bookmarks')) renderBookmarks();
+    });
+  }
+
   // 当另一个 popup 实例（如悬浮窗 iframe 或弹窗）修改了 storage，
   // 本实例自动刷新对应的数据和 UI
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -6593,58 +6640,68 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 邮箱历史记录变动
     if (changes.emailHistory) {
       history = changes.emailHistory.newValue || [];
-      renderHistory();
+      scheduleStorageRender('history');
     }
     if (changes.verifyStatusCache) {
       verifyStatus = changes.verifyStatusCache.newValue || {};
-      renderHistory();
+      scheduleStorageRender('history');
     }
     if (changes.tempUnreadCounts) {
       tempUnreadCounts = changes.tempUnreadCounts.newValue || {};
-      renderHistory();
+      scheduleStorageRender('history');
     }
     if (changes.moeUnreadCounts) {
       moeUnreadCounts = changes.moeUnreadCounts.newValue || {};
-      renderMoeEmails();
+      scheduleStorageRender('moe');
     }
 
     // 书签变动
     if (changes.bookmarks) {
       bookmarks = changes.bookmarks.newValue || [];
-      renderBookmarks();
+      scheduleStorageRender('bookmarks');
     }
     if (changes.bookmarkSort) {
       bookmarkSort = changes.bookmarkSort.newValue || 'custom';
       bmSortSelect.value = bookmarkSort;
-      renderBookmarks();
+      scheduleStorageRender('bookmarks');
     }
     if (changes.moeEmailCache) {
       currentMoeEmails = Array.isArray(changes.moeEmailCache.newValue) ? changes.moeEmailCache.newValue : [];
-      renderMoeEmails();
+      scheduleStorageRender('moe');
     }
 
     // Temp Email 配置变动
+    const tempConfigChanged = Boolean(changes.apiUrl || changes.adminToken);
     if (changes.apiUrl) {
       apiUrl = changes.apiUrl.newValue || '';
       apiUrlInput.value = apiUrl;
-      if (apiUrl && adminToken) loadDomains();
     }
     if (changes.adminToken) {
       adminToken = changes.adminToken.newValue || '';
       adminTokenInput.value = adminToken;
-      if (apiUrl && adminToken) loadDomains();
+    }
+    if (tempConfigChanged) {
+      tempDomainsLoaded = false;
+      fastFillLoadedSources.delete('temp');
     }
 
     // MoeMail 配置变动
+    const moeConfigChanged = Boolean(changes.moeApiUrl || changes.moeApiKey);
     if (changes.moeApiUrl) {
       moeApiUrl = changes.moeApiUrl.newValue || '';
       moeApiUrlInput.value = moeApiUrl;
-      if (moeApiUrl && moeApiKey) { moeLoadDomains(); moeLoadEmails(); }
     }
     if (changes.moeApiKey) {
       moeApiKey = changes.moeApiKey.newValue || '';
       moeApiKeyInput.value = moeApiKey;
-      if (moeApiUrl && moeApiKey) { moeLoadDomains(); moeLoadEmails(); }
+    }
+    if (moeConfigChanged) {
+      moeDomainsLoaded = false;
+      moeEmailListLoaded = false;
+      fastFillLoadedSources.delete('moe');
+    }
+    if (tempConfigChanged || moeConfigChanged) {
+      ensureRemoteDataForTab(activeTab);
     }
 
     // 通用设置变动
@@ -6752,11 +6809,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes.siteBlocklist) {
       siteBlocklist = Array.isArray(changes.siteBlocklist.newValue) ? changes.siteBlocklist.newValue : [];
       refreshCurrentSiteInfo();
-    }
-    if (changes.bookmarkSort) {
-      bookmarkSort = changes.bookmarkSort.newValue || 'custom';
-      bmSortSelect.value = bookmarkSort;
-      renderBookmarks();
     }
   });
 });
