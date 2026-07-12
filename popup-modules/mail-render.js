@@ -13,6 +13,8 @@
     const MAX_MAIL_RAW_FALLBACK_CHARS = 200000;
     const MAX_MAIL_HTML_TO_TEXT_CHARS = 300000;
     const MAX_MAIL_HTML_RENDER_CHARS = 500000;
+    const MIN_MAIL_IFRAME_HEIGHT = 480;
+    const FALLBACK_MAIL_IFRAME_HEIGHT = 720;
     const MAX_MAIL_IFRAME_HEIGHT = 2400;
     const MAX_DOM_ELEMENTS = 1500;
     const MAX_STYLE_BLOCK_CHARS = 50000;
@@ -171,8 +173,12 @@
             node.removeAttribute(attr.name);
             return;
           }
-          const isRemoteUrl = /^https?:\/\//i.test(value);
-          if (name === 'srcset' && isRemoteUrl && node.tagName === 'IMG') {
+          const isRemoteUrl = /^(?:https?:)?\/\//i.test(value);
+          const tagName = String(node.tagName || '').toUpperCase();
+          const isImageLikeTag = tagName === 'IMG' || tagName === 'SOURCE' || tagName === 'IMAGE';
+          const srcsetHasRemoteUrl = name === 'srcset'
+            && value.split(',').some((candidate) => /^(?:https?:)?\/\//i.test(candidate.trim().split(/\s+/)[0] || ''));
+          if (srcsetHasRemoteUrl && tagName === 'IMG') {
             remoteImageCount += 1;
             if (!allowRemoteImages) {
               node.setAttribute('data-blocked-srcset', value);
@@ -181,20 +187,20 @@
             }
             return;
           }
-          if ((name === 'src' || name === 'poster' || name === 'background') && isRemoteUrl) {
-            const imageLikeTag = node.tagName === 'IMG' || node.tagName === 'SOURCE';
-            if (imageLikeTag) {
+          const isSvgImageHref = tagName === 'IMAGE' && (name === 'href' || name === 'xlink:href');
+          if ((name === 'src' || name === 'poster' || name === 'background' || isSvgImageHref) && isRemoteUrl) {
+            if (isImageLikeTag) {
               remoteImageCount += 1;
             }
-            if (!allowRemoteImages || !imageLikeTag || name !== 'src') {
+            if (!allowRemoteImages || !isImageLikeTag || (name !== 'src' && !isSvgImageHref)) {
               node.setAttribute(`data-blocked-${name}`, value);
               node.removeAttribute(attr.name);
-              if (node.tagName === 'IMG') {
+              if (tagName === 'IMG') {
                 node.setAttribute('alt', `${node.getAttribute('alt') || '图片'}（已阻止远程加载）`);
               }
             }
           }
-          if (node.tagName === 'A' && name === 'href' && /^https?:\/\//i.test(value)) {
+          if (tagName === 'A' && name === 'href' && /^(?:https?:)?\/\//i.test(value)) {
             node.setAttribute('target', '_blank');
             node.setAttribute('rel', 'noopener noreferrer nofollow');
           }
@@ -244,9 +250,15 @@
       }
 
       const iframe = document.createElement('iframe');
+      const minimumIframeHeight = Math.max(
+        360,
+        Math.min(MIN_MAIL_IFRAME_HEIGHT, Number(window.innerHeight || 680) - 160)
+      );
       iframe.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox allow-same-origin');
       iframe.setAttribute('referrerpolicy', 'no-referrer');
       iframe.className = 'mail-html-frame';
+      iframe.style.height = `${minimumIframeHeight}px`;
+      iframe.style.minHeight = `${minimumIframeHeight}px`;
       iframe.style.maxHeight = `${MAX_MAIL_IFRAME_HEIGHT}px`;
       iframe.style.background = '#ffffff';
       iframe.srcdoc = sanitized.html;
@@ -263,7 +275,7 @@
               img { max-width: 100% !important; height: auto !important; }
               table { border-collapse: collapse; }
               td, th { word-break: break-word; }
-              ${extraStyles}
+              ${extraCss}
             `;
             doc.head.appendChild(style);
 
@@ -278,15 +290,41 @@
             }
             doc.body.appendChild(scrollWrapper);
             doc.body.style.overflowX = 'auto';
-            const measuredHeight = Math.max(
-              Number(doc.documentElement?.scrollHeight || 0),
-              Number(doc.body?.scrollHeight || 0),
-              400
-            );
-            iframe.style.height = `${Math.min(measuredHeight, MAX_MAIL_IFRAME_HEIGHT)}px`;
+            const syncIframeHeight = () => {
+              if (!iframe.isConnected) {
+                return false;
+              }
+              const measuredHeight = Math.max(
+                Number(scrollWrapper.scrollHeight || 0),
+                Number(scrollWrapper.getBoundingClientRect?.().height || 0),
+                Number(doc.documentElement?.scrollHeight || 0),
+                Number(doc.body?.scrollHeight || 0),
+                minimumIframeHeight
+              );
+              const nextHeight = Math.min(
+                Math.max(Math.ceil(measuredHeight) + 4, minimumIframeHeight),
+                MAX_MAIL_IFRAME_HEIGHT
+              );
+              iframe.style.height = `${nextHeight}px`;
+              return true;
+            };
+
+            syncIframeHeight();
+            window.requestAnimationFrame(syncIframeHeight);
+            [120, 400, 1000].forEach((delay) => window.setTimeout(syncIframeHeight, delay));
+
+            if (typeof ResizeObserver === 'function') {
+              const resizeObserver = new ResizeObserver(() => {
+                if (!syncIframeHeight()) {
+                  resizeObserver.disconnect();
+                }
+              });
+              resizeObserver.observe(scrollWrapper);
+              window.setTimeout(() => resizeObserver.disconnect(), 10000);
+            }
           }
         } catch (error) {
-          iframe.style.height = '600px';
+          iframe.style.height = `${Math.max(minimumIframeHeight, FALLBACK_MAIL_IFRAME_HEIGHT)}px`;
         }
       });
 
