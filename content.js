@@ -332,26 +332,15 @@
       return;
     }
 
-    const docEl = document.documentElement;
-    const body = document.body;
     hostScrollLock = {
       locked: true,
       scrollX: window.scrollX,
       scrollY: window.scrollY,
-      htmlOverflow: docEl.style.overflow,
-      htmlOverscrollBehavior: docEl.style.overscrollBehavior,
-      bodyOverflow: body ? body.style.overflow : '',
-      bodyOverscrollBehavior: body ? body.style.overscrollBehavior : '',
-      bodyTouchAction: body ? body.style.touchAction : '',
     };
 
-    docEl.style.overflow = 'hidden';
-    docEl.style.overscrollBehavior = 'none';
-    if (body) {
-      body.style.overflow = 'hidden';
-      body.style.overscrollBehavior = 'none';
-      body.style.touchAction = 'none';
-    }
+    // 下拉框展开时只固定当前位置，不修改宿主页面的 overflow。
+    // GitHub 等使用占位滚动条的页面在 overflow:hidden 时会直接移除滚动滑块，
+    // 同时改变视口宽度并造成阅读进度与页面布局跳动。
     window.addEventListener('scroll', syncLockedScrollPosition, true);
     window.scrollTo(hostScrollLock.scrollX, hostScrollLock.scrollY);
   }
@@ -361,15 +350,6 @@
       return;
     }
 
-    const docEl = document.documentElement;
-    const body = document.body;
-    docEl.style.overflow = hostScrollLock.htmlOverflow;
-    docEl.style.overscrollBehavior = hostScrollLock.htmlOverscrollBehavior;
-    if (body) {
-      body.style.overflow = hostScrollLock.bodyOverflow;
-      body.style.overscrollBehavior = hostScrollLock.bodyOverscrollBehavior;
-      body.style.touchAction = hostScrollLock.bodyTouchAction;
-    }
     window.removeEventListener('scroll', syncLockedScrollPosition, true);
     hostScrollLock = null;
   }
