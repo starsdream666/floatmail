@@ -11,6 +11,7 @@ const MOE_EMAIL_LIST_CACHE_TTL_MS = 60 * 1000;
 const TEMP_DOMAIN_CACHE_STORAGE_KEY = 'remoteTempDomainCache';
 const MOE_CONFIG_CACHE_STORAGE_KEY = 'remoteMoeConfigCache';
 const MOE_EMAIL_LIST_CACHE_STORAGE_KEY = 'remoteMoeEmailListCache';
+const MAIL_NOTIFICATION_TARGETS_KEY = 'mailNotificationTargets';
 const INTERVAL_UNIT_FACTORS = Object.freeze({
   seconds: 1,
   minutes: 60,
@@ -359,7 +360,7 @@ function updateAddressPollState(state, key, options) {
 }
 
 async function fetchJson(url, init) {
-  const response = await fetch(url, init);
+  const response = await fetchWithTimeout(url, init);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
@@ -374,6 +375,11 @@ async function fetchWithTimeout(url, init = {}, timeoutMs = REMOTE_REQUEST_TIMEO
       ...init,
       signal: controller.signal,
     });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -630,7 +636,7 @@ async function proxyFetch(url, init = {}) {
     throw new Error('仅支持 HTTP/HTTPS 请求');
   }
 
-  const response = await fetch(parsedUrl.href, {
+  const response = await fetchWithTimeout(parsedUrl.href, {
     method: init.method || 'GET',
     headers: init.headers || {},
     body: init.body,
@@ -827,6 +833,7 @@ async function pollMailNow() {
               source: address,
               count: newMessages.length,
               subject: newMessages[0]?.subject || '(无主题)',
+              inbox: { type: 'temp', address },
             });
           }
         } else {
@@ -881,6 +888,7 @@ async function pollMailNow() {
               source: email.address || `MoeMail #${emailId}`,
               count: newMessages.length,
               subject: newMessages[0]?.subject || '(无主题)',
+              inbox: { type: 'moe', emailId, address: email.address || '' },
             });
           }
         } else {
@@ -920,15 +928,33 @@ async function pollMailNow() {
   if (!notificationsEnabled) {
     return;
   }
+  if (notifications.length === 0) {
+    return;
+  }
+
+  const storedTargets = await storageGet([MAIL_NOTIFICATION_TARGETS_KEY]);
+  const notificationTargets = { ...(storedTargets[MAIL_NOTIFICATION_TARGETS_KEY] || {}) };
+  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000;
+  Object.keys(notificationTargets).forEach((id) => {
+    if (Number(notificationTargets[id]?.createdAt) < recentCutoff) {
+      delete notificationTargets[id];
+    }
+  });
 
   for (const notification of notifications.slice(0, 5)) {
-    await createNotification(`mail-${Date.now()}-${Math.random()}`, {
+    const notificationId = `mail-${Date.now()}-${Math.random()}`;
+    notificationTargets[notificationId] = {
+      inbox: notification.inbox,
+      createdAt: Date.now(),
+    };
+    await createNotification(notificationId, {
       type: 'basic',
       iconUrl: 'icons/icon128.png',
       title: `收到 ${notification.count} 封新邮件`,
       message: `${notification.source}\n最新主题: ${notification.subject}`,
     });
   }
+  await storageSet({ [MAIL_NOTIFICATION_TARGETS_KEY]: notificationTargets });
 }
 
 function runPollMailNow() {
@@ -1067,6 +1093,35 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === MAIL_ALARM_NAME) {
     runPollMailNow().catch((error) => console.warn('后台轮询失败:', error.message));
   }
+});
+
+chrome.notifications.onClicked.addListener((notificationId) => {
+  (async () => {
+    const stored = await storageGet([MAIL_NOTIFICATION_TARGETS_KEY]);
+    const targets = { ...(stored[MAIL_NOTIFICATION_TARGETS_KEY] || {}) };
+    const target = targets[notificationId];
+    if (!target?.inbox) {
+      return;
+    }
+
+    delete targets[notificationId];
+    await storageSet({
+      activeInbox: target.inbox,
+      activeTab: target.inbox.type === 'moe' ? 'moe-mail' : 'temp-email',
+      [MAIL_NOTIFICATION_TARGETS_KEY]: targets,
+    });
+    chrome.notifications.clear(notificationId);
+
+    if (typeof chrome.action.openPopup === 'function') {
+      try {
+        await chrome.action.openPopup();
+        return;
+      } catch {
+        // 某些 Chrome 版本或窗口状态不允许直接打开 popup，回退到扩展页。
+      }
+    }
+    chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') });
+  })().catch((error) => console.warn('打开通知对应收件箱失败:', error.message));
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

@@ -63,6 +63,7 @@
   let currentFloatWindowStyle = FLOAT_WINDOW_STYLES.MODERN;
   let shouldReopenFloatPanelAfterSelection = false;
   let lastPanelStateChangeTime = 0;
+  const targetHighlightState = new WeakMap();
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
       allFillRules = result[PAGE_FILL_RULES_KEY] || {};
@@ -193,6 +194,7 @@
       document.body.appendChild(lastNode);
       if (observer) {
         observer.observe(document.body, { childList: true });
+        floatUi.observedBody = document.body;
       }
     }
 
@@ -219,7 +221,7 @@
     panel.classList.add('panel-enter');
 
     const onAnimationEnd = (event) => {
-      if (event.target !== panel || event.animationName !== 'floatPanelIn') {
+      if (event.target !== panel || event.animationName !== 'floatmailFloatPanelIn') {
         return;
       }
       panel.classList.remove('panel-enter');
@@ -386,16 +388,17 @@
   }
 
   function isEditableElement(element) {
-    if (!element || !(element instanceof HTMLElement)) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
       return false;
     }
     if (element.isContentEditable) {
       return true;
     }
-    if (element instanceof HTMLTextAreaElement) {
+    const tagName = String(element.tagName || '').toLowerCase();
+    if (tagName === 'textarea') {
       return !element.disabled && !element.readOnly;
     }
-    if (element instanceof HTMLInputElement) {
+    if (tagName === 'input') {
       const blockedTypes = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
       return !element.disabled && !element.readOnly && !blockedTypes.has(element.type);
     }
@@ -403,19 +406,69 @@
   }
 
   function isElementVisible(element) {
-    if (!element || !(element instanceof HTMLElement)) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
       return false;
     }
     const rect = element.getBoundingClientRect();
-    const style = window.getComputedStyle(element);
+    const ownerWindow = element.ownerDocument?.defaultView || window;
+    const style = ownerWindow.getComputedStyle(element);
     return rect.width > 0
       && rect.height > 0
       && style.visibility !== 'hidden'
       && style.display !== 'none';
   }
 
+  function collectSearchRoots(root, roots, visitedDocuments) {
+    if (!root) {
+      return;
+    }
+    roots.push(root);
+
+    let elements = [];
+    try {
+      elements = Array.from(root.querySelectorAll('*'));
+    } catch {
+      return;
+    }
+
+    elements.forEach((element) => {
+      if (element.shadowRoot) {
+        collectSearchRoots(element.shadowRoot, roots, visitedDocuments);
+      }
+      if (String(element.tagName || '').toLowerCase() === 'iframe') {
+        try {
+          const childDocument = element.contentDocument;
+          if (childDocument && !visitedDocuments.has(childDocument)) {
+            visitedDocuments.add(childDocument);
+            collectSearchRoots(childDocument, roots, visitedDocuments);
+          }
+        } catch {
+          // 跨域 iframe 无法访问，按浏览器安全边界跳过。
+        }
+      }
+    });
+  }
+
+  function getSearchRoots() {
+    const roots = [];
+    collectSearchRoots(document, roots, new Set([document]));
+    return roots;
+  }
+
+  function getAccessibleDocuments() {
+    return getSearchRoots().filter((root) => root.nodeType === Node.DOCUMENT_NODE);
+  }
+
   function getEditableCandidates() {
-    return Array.from(document.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"]'))
+    const candidates = [];
+    getSearchRoots().forEach((root) => {
+      try {
+        candidates.push(...root.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"]'));
+      } catch {
+        // 已失效或不可访问的 root 直接跳过。
+      }
+    });
+    return Array.from(new Set(candidates))
       .filter(isEditableElement)
       .filter(isElementVisible);
   }
@@ -431,14 +484,14 @@
       element.getAttribute('data-testid'),
       element.getAttribute('data-field'),
     ];
-    if (element instanceof HTMLElement && element.labels) {
+    if (element?.labels) {
       parts.push(...Array.from(element.labels).map((label) => label.textContent));
     }
     return parts.filter(Boolean).join(' ').toLowerCase();
   }
 
   function getElementLabelText(element) {
-    const labels = element instanceof HTMLElement && element.labels
+    const labels = element?.labels
       ? Array.from(element.labels).map((label) => label.textContent?.trim()).filter(Boolean)
       : [];
     return labels[0]
@@ -534,20 +587,55 @@
     return score;
   }
 
-  function queryEditableElement(selector) {
+  function resolveRuleContext(contextPath) {
+    let root = document;
+    for (const step of Array.isArray(contextPath) ? contextPath : []) {
+      let host = null;
+      try {
+        host = root.querySelector(step.selector);
+      } catch {
+        return null;
+      }
+      if (!host) {
+        return null;
+      }
+      if (step.type === 'shadow') {
+        root = host.shadowRoot;
+      } else if (step.type === 'frame') {
+        try {
+          root = host.contentDocument;
+        } catch {
+          root = null;
+        }
+      } else {
+        return null;
+      }
+      if (!root) {
+        return null;
+      }
+    }
+    return root;
+  }
+
+  function queryEditableElement(selector, contextPath = null) {
     if (!selector) {
       return null;
     }
 
-    try {
-      const element = document.querySelector(selector);
-      if (!element) {
-        return null;
+    const roots = Array.isArray(contextPath) && contextPath.length > 0
+      ? [resolveRuleContext(contextPath)].filter(Boolean)
+      : getSearchRoots();
+    for (const root of roots) {
+      try {
+        const element = root.querySelector(selector);
+        if (element && isEditableElement(element) && isElementVisible(element)) {
+          return element;
+        }
+      } catch {
+        // 当前 root 不支持或 selector 已失效时继续尝试其他 root。
       }
-      return isEditableElement(element) && isElementVisible(element) ? element : null;
-    } catch {
-      return null;
     }
+    return null;
   }
 
   function resolveRuleTarget(kind) {
@@ -555,7 +643,7 @@
     if (!rule?.selector) {
       return null;
     }
-    return queryEditableElement(rule.selector);
+    return queryEditableElement(rule.selector, rule.contextPath);
   }
 
   function resolveFillTarget(kind, options = {}) {
@@ -589,9 +677,14 @@
     return bestScore > 0 ? bestElement : null;
   }
 
-  function isUniqueSelector(selector, expectedElement) {
+  function getElementQueryRoot(element) {
+    const root = element?.getRootNode?.();
+    return root?.querySelectorAll ? root : element?.ownerDocument || document;
+  }
+
+  function isUniqueSelector(selector, expectedElement, root = getElementQueryRoot(expectedElement)) {
     try {
-      const matches = document.querySelectorAll(selector);
+      const matches = root.querySelectorAll(selector);
       return matches.length === 1 && matches[0] === expectedElement;
     } catch {
       return false;
@@ -601,8 +694,10 @@
   function buildPathSelector(element) {
     const segments = [];
     let current = element;
+    const root = getElementQueryRoot(element);
+    const stopElement = root?.nodeType === Node.DOCUMENT_NODE ? root.body : null;
 
-    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.body) {
+    while (current && current.nodeType === Node.ELEMENT_NODE && current !== stopElement) {
       if (current.id) {
         const idSelector = `#${escapeSelectorToken(current.id)}`;
         if (isUniqueSelector(idSelector, element)) {
@@ -624,13 +719,47 @@
       current = current.parentElement;
     }
 
-    return segments.length > 0 ? `body > ${segments.join(' > ')}` : '';
+    if (segments.length === 0) {
+      return '';
+    }
+    return stopElement ? `body > ${segments.join(' > ')}` : segments.join(' > ');
+  }
+
+  function buildElementContextPath(element) {
+    const reversed = [];
+    let currentElement = element;
+
+    while (currentElement) {
+      const root = currentElement.getRootNode?.();
+      if (root?.host) {
+        reversed.push({ type: 'shadow', selector: createRuleSelector(root.host) });
+        currentElement = root.host;
+        continue;
+      }
+
+      const ownerWindow = currentElement.ownerDocument?.defaultView;
+      let frameElement = null;
+      try {
+        frameElement = ownerWindow?.frameElement || null;
+      } catch {
+        frameElement = null;
+      }
+      if (frameElement) {
+        reversed.push({ type: 'frame', selector: createRuleSelector(frameElement) });
+        currentElement = frameElement;
+        continue;
+      }
+      break;
+    }
+
+    return reversed.reverse().filter((step) => step.selector);
   }
 
   function createRuleSelector(element) {
+    const root = getElementQueryRoot(element);
     if (element.id) {
       const idSelector = `#${escapeSelectorToken(element.id)}`;
-      if (isUniqueSelector(idSelector, element)) {
+      if (isUniqueSelector(idSelector, element, root)) {
         return idSelector;
       }
     }
@@ -649,14 +778,14 @@
         continue;
       }
       const selector = `${tag}[${attribute}="${escapeAttributeValue(value)}"]`;
-      if (isUniqueSelector(selector, element)) {
+      if (isUniqueSelector(selector, element, root)) {
         return selector;
       }
     }
 
     if (element.name && element.type) {
       const selector = `${tag}[name="${escapeAttributeValue(element.name)}"][type="${escapeAttributeValue(element.type)}"]`;
-      if (isUniqueSelector(selector, element)) {
+      if (isUniqueSelector(selector, element, root)) {
         return selector;
       }
     }
@@ -693,6 +822,7 @@
       ...(allFillRules[window.location.origin] || {}),
       [kind]: {
         selector,
+        contextPath: buildElementContextPath(element),
         description: describeRuleElement(element),
         updatedAt: Date.now(),
       },
@@ -723,26 +853,66 @@
         continue;
       }
       const root = current.getRootNode?.();
-      current = root instanceof ShadowRoot ? root.host : null;
+      current = root?.host || null;
     }
 
     return null;
   }
 
-  function getEditableTargetFromPoint(x, y) {
-    const element = document.elementFromPoint(x, y);
+  function getEditableTargetFromPoint(x, y, ownerDocument = document) {
+    const element = ownerDocument.elementFromPoint(x, y);
     return getEditableTargetFromNode(element);
   }
 
   function clearPreviewTargets() {
-    previewTargets.forEach((element) => element.classList.remove(PREVIEW_TARGET_CLASS));
+    previewTargets.forEach((element) => clearTargetHighlight(element, PREVIEW_TARGET_CLASS));
     previewTargets = [];
+  }
+
+  function applyTargetHighlight(element, className, styles) {
+    if (!element) {
+      return;
+    }
+    if (!targetHighlightState.has(element)) {
+      targetHighlightState.set(element, ['outline', 'outline-offset', 'box-shadow'].map((property) => ({
+        property,
+        value: element.style.getPropertyValue(property),
+        priority: element.style.getPropertyPriority(property),
+      })));
+    }
+    element.classList.add(className);
+    Object.entries(styles).forEach(([property, value]) => {
+      element.style.setProperty(property, value, 'important');
+    });
+  }
+
+  function clearTargetHighlight(element, className) {
+    if (!element) {
+      return;
+    }
+    element.classList.remove(className);
+    const savedStyles = targetHighlightState.get(element);
+    if (!savedStyles) {
+      return;
+    }
+    savedStyles.forEach(({ property, value, priority }) => {
+      if (value) {
+        element.style.setProperty(property, value, priority);
+      } else {
+        element.style.removeProperty(property);
+      }
+    });
+    targetHighlightState.delete(element);
   }
 
   function setPreviewTargets(targets) {
     clearPreviewTargets();
     previewTargets = Array.from(new Set(targets.filter(Boolean)));
-    previewTargets.forEach((element) => element.classList.add(PREVIEW_TARGET_CLASS));
+    previewTargets.forEach((element) => applyTargetHighlight(element, PREVIEW_TARGET_CLASS, {
+      outline: '3px solid #1a73e8',
+      'outline-offset': '2px',
+      'box-shadow': '0 0 0 4px rgba(26, 115, 232, 0.22)',
+    }));
   }
 
   function removeSelectionHint() {
@@ -767,7 +937,7 @@
     if (!fieldSelection?.hoverTarget) {
       return;
     }
-    fieldSelection.hoverTarget.classList.remove(SELECT_TARGET_CLASS);
+    clearTargetHighlight(fieldSelection.hoverTarget, SELECT_TARGET_CLASS);
     fieldSelection.hoverTarget = null;
   }
 
@@ -777,7 +947,11 @@
     }
     clearSelectionHover();
     if (target) {
-      target.classList.add(SELECT_TARGET_CLASS);
+      applyTargetHighlight(target, SELECT_TARGET_CLASS, {
+        outline: '3px solid #f9ab00',
+        'outline-offset': '2px',
+        'box-shadow': '0 0 0 4px rgba(249, 171, 0, 0.24)',
+      });
       fieldSelection.hoverTarget = target;
     }
   }
@@ -852,7 +1026,9 @@
     hideFloatPanelForFieldSelection();
 
     const onMouseMove = (event) => {
-      const target = getEditableTargetFromNode(event.target) || getEditableTargetFromPoint(event.clientX, event.clientY);
+      const eventTarget = event.composedPath?.()[0] || event.target;
+      const target = getEditableTargetFromNode(eventTarget)
+        || getEditableTargetFromPoint(event.clientX, event.clientY, event.currentTarget || document);
       setSelectionHover(target);
     };
 
@@ -867,8 +1043,9 @@
       event.stopPropagation();
       event.stopImmediatePropagation?.();
 
-      const target = getEditableTargetFromNode(event.target)
-        || getEditableTargetFromPoint(event.clientX, event.clientY)
+      const eventTarget = event.composedPath?.()[0] || event.target;
+      const target = getEditableTargetFromNode(eventTarget)
+        || getEditableTargetFromPoint(event.clientX, event.clientY, event.currentTarget || document)
         || fieldSelection?.hoverTarget
         || null;
 
@@ -904,15 +1081,20 @@
       finishFieldSelection('已取消字段选择。', 'info');
     };
 
-    document.addEventListener('mousemove', onMouseMove, true);
-    document.addEventListener('mousedown', onMouseDown, true);
-    document.addEventListener('click', onClick, true);
-    document.addEventListener('keydown', onKeyDown, true);
-
-    fieldSelection.cleanup.push(() => document.removeEventListener('mousemove', onMouseMove, true));
-    fieldSelection.cleanup.push(() => document.removeEventListener('mousedown', onMouseDown, true));
-    fieldSelection.cleanup.push(() => document.removeEventListener('click', onClick, true));
-    fieldSelection.cleanup.push(() => document.removeEventListener('keydown', onKeyDown, true));
+    getAccessibleDocuments().forEach((targetDocument) => {
+      targetDocument.addEventListener('mousemove', onMouseMove, true);
+      targetDocument.addEventListener('pointerdown', onMouseDown, true);
+      targetDocument.addEventListener('mousedown', onMouseDown, true);
+      targetDocument.addEventListener('touchstart', onMouseDown, { capture: true, passive: false });
+      targetDocument.addEventListener('click', onClick, true);
+      targetDocument.addEventListener('keydown', onKeyDown, true);
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('mousemove', onMouseMove, true));
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('pointerdown', onMouseDown, true));
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('mousedown', onMouseDown, true));
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('touchstart', onMouseDown, true));
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('click', onClick, true));
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('keydown', onKeyDown, true));
+    });
   }
 
   function buildFillOperations(fields) {
@@ -998,8 +1180,9 @@
   }
 
   function dispatchInputEvents(element) {
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
+    const EventConstructor = element.ownerDocument?.defaultView?.Event || Event;
+    element.dispatchEvent(new EventConstructor('input', { bubbles: true }));
+    element.dispatchEvent(new EventConstructor('change', { bubbles: true }));
   }
 
   function fillElement(element, value) {
@@ -1098,6 +1281,9 @@
 
     if (floatUi.observer) {
       floatUi.observer.disconnect();
+    }
+    if (floatUi.documentObserver) {
+      floatUi.documentObserver.disconnect();
     }
 
     floatUi.panel.remove();
@@ -1305,6 +1491,8 @@
       buttonLayout: null,
       panelLayout: null,
       observer: null,
+      documentObserver: null,
+      observedBody: null,
       cleanup: [],
     };
     installFloatHostEventIsolation([button, panel]);
@@ -1641,6 +1829,11 @@
       if (!floatUi || !document.body) {
         return;
       }
+      if (floatUi.observer && floatUi.observedBody !== document.body) {
+        floatUi.observer.disconnect();
+        floatUi.observer.observe(document.body, { childList: true });
+        floatUi.observedBody = document.body;
+      }
       bringFloatUiToFront();
     };
 
@@ -1679,6 +1872,15 @@
     });
     observer.observe(document.body, { childList: true });
     floatUi.observer = observer;
+    floatUi.observedBody = document.body;
+
+    const documentObserver = new MutationObserver(() => {
+      if (floatUi && document.body && floatUi.observedBody !== document.body) {
+        scheduleReattach(0);
+      }
+    });
+    documentObserver.observe(document.documentElement, { childList: true });
+    floatUi.documentObserver = documentObserver;
 
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') {

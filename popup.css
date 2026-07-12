@@ -2605,7 +2605,7 @@ ul#history-list li span {
   border: none;
   border-radius: var(--border-radius);
   flex: none;
-  min-height: 240px;
+  min-height: 420px;
   color: var(--text-main);
   box-shadow: var(--neumorphic-shadow-inset);
 }
@@ -2618,6 +2618,7 @@ ul#history-list li span {
   border: 0;
   background: #ffffff;
   border-radius: 12px;
+  min-height: 480px;
 }
 
 /* 批量操作样式 - 新拟物风格 */
@@ -3348,9 +3349,10 @@ select {
   }
 
   .mail-body {
-    min-height: 200px;
+    min-height: 340px;
     padding: 8px;
   }
+
 
   #temp-email-page,
   #moe-mail-page,

@@ -117,7 +117,7 @@
 
 /* 入场动画仅在主动打开时挂载，避免 DOM 重挂载/样式刷新时反复重播 */
 #temp-email-float-panel.visible.panel-enter {
-  animation: floatPanelIn 0.18s ease-out;
+  animation: floatmailFloatPanelIn 0.18s ease-out;
 }
 
 #temp-email-float-panel iframe {
@@ -329,7 +329,7 @@
   background: rgba(32, 33, 36, 0.94);
 }
 
-@keyframes floatPanelIn {
+@keyframes floatmailFloatPanelIn {
   from {
     opacity: 0;
   }

@@ -345,6 +345,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const DEFAULT_TRANSLATION_TARGET_LANGUAGE = '简体中文';
   const DEFAULT_MAIL_INSIGHT_API_MODE = 'translation';
   const MAX_TRANSLATION_SOURCE_CHARS = 12000;
+  const INTERACTIVE_REQUEST_TIMEOUT_MS = 15000;
+  const AI_REQUEST_TIMEOUT_MS = 45000;
   const GENERATED_PROFILE_KEY = 'generatedProfile';
   const GENERATED_HISTORY_KINDS = new Set(['password', 'name', 'birthday', 'age', 'address']);
   const PAGE_FILL_FIELD_DEFS = [
@@ -362,6 +364,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentTheme = 'ocean-blue';
   let currentFloatWindowStyle = FLOAT_WINDOW_STYLES.MODERN;
   let activeTab = 'temp-email'; // 当前激活的选项卡
+
+  async function fetchWithTimeout(url, init = {}, timeoutMs = INTERACTIVE_REQUEST_TIMEOUT_MS) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, {
+        ...init,
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
 
   // Temp Email 状态
   let apiUrl = '';
@@ -2296,7 +2316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Recreate Temp Mail email
       try {
-        const res = await fetch(`${apiUrl}/admin/new_address`, {
+        const res = await fetchWithTimeout(`${apiUrl}/admin/new_address`, {
           method: 'POST',
           headers: { 'x-admin-auth': adminToken, 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, domain })
@@ -2394,8 +2414,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
           const data = await res.json();
           emailAddr = data.email || '';
+          // 快填创建的邮箱也必须立即进入本地缓存，后台轮询依赖 moeEmailCache。
+          // 强制刷新可同时拿到邮箱 id，避免只保存地址后收不到角标和通知。
+          await moeLoadEmails({ forceRefresh: true });
         } else {
-          const res = await fetch(`${apiUrl}/admin/new_address`, {
+          const res = await fetchWithTimeout(`${apiUrl}/admin/new_address`, {
             method: 'POST',
             headers: { 'x-admin-auth': adminToken, 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, domain })
@@ -2733,11 +2756,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       return [];
     }
     const codeSet = new Set();
+    const flexibleCode = '((?:\\d{2,4}(?:[- ]\\d{2,4}){1,2})|(?:(?=[A-Za-z0-9-]*\\d)(?:[A-Za-z0-9]{2,4}-){1,2}[A-Za-z0-9]{2,4})|(?:[A-Za-z0-9]{4,16}))';
     const patterns = [
       // "verification code: XXXXX" / "验证码：XXXXX" patterns
-      /(?:verification\s*code|code|验证码|验证代码|確認コード|認証コード)\s*[：:]\s*([A-Za-z0-9]{4,16})/gi,
+      new RegExp(`(?:verification\\s*code|security\\s*code|one[-\\s]*time\\s*(?:code|password)|otp|code|验证码|验证代码|动态码|一次性密码|確認コード|認証コード)\\s*(?:is|为|是)?\\s*[：:]?\\s*${flexibleCode}`, 'gi'),
       // "code is XXXXX" / "code: XXXXX"
-      /code\s+(?:is|：|:)\s*([A-Za-z0-9]{4,16})/gi,
+      new RegExp(`code\\s+(?:is|：|:)\\s*${flexibleCode}`, 'gi'),
+      // separated numeric codes such as 123-456 / 12 34 56
+      /(?:^|\D)(\d{2,4}(?:[- ]\d{2,4}){1,2})(?=$|\D)/gm,
+      // hyphenated alphanumeric codes such as AB-12-CD（要求至少包含一个数字）
+      /(?:^|[^A-Za-z0-9])((?=[A-Za-z0-9-]*\d)(?:[A-Za-z0-9]{2,4}-){1,2}[A-Za-z0-9]{2,4})(?=$|[^A-Za-z0-9])/gm,
       // standalone hex-like codes (6-16 hex chars, often on their own line)
       /(?:^|\s)([A-Fa-f0-9]{6,16})(?:\s|$|[.,;!?)\]}>])/gm,
       // shorter numeric codes (4-8 digits, often standalone)
@@ -2747,10 +2775,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     patterns.forEach((pattern) => {
       let match;
       while ((match = pattern.exec(source)) !== null) {
-        const raw = (match[1] || '').trim();
-        const cleaned = raw.replace(/[\s-]+/g, '');
-        if (/^[A-Z0-9]{4,16}$/i.test(cleaned)) {
-          codeSet.add(cleaned);
+        const raw = String(match[1] || '').trim().replace(/\s+/g, ' ');
+        const compact = raw.replace(/[\s-]+/g, '');
+        if (/^[A-Z0-9]{4,16}$/i.test(compact)) {
+          codeSet.add(raw);
         }
       }
       // Reset lastIndex since we use the same source with multiple patterns
@@ -2770,16 +2798,108 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!source) {
       return [];
     }
-    const normalizedSource = source.replace(/\s+/g, ' ').toLowerCase();
-    return codes.filter((code) => {
-      const normalized = String(code || '').trim().toLowerCase();
-      return normalized && normalizedSource.includes(normalized);
+    const verified = [];
+    codes.forEach((code) => {
+      const normalized = String(code || '').trim().replace(/\s+/g, ' ');
+      if (!normalized) {
+        return;
+      }
+      const exactIndex = source.toLowerCase().indexOf(normalized.toLowerCase());
+      if (exactIndex >= 0) {
+        verified.push(source.slice(exactIndex, exactIndex + normalized.length));
+        return;
+      }
+
+      const compact = normalized.replace(/[\s-]+/g, '');
+      if (!/^[A-Z0-9]{4,16}$/i.test(compact)) {
+        return;
+      }
+      const flexiblePattern = compact
+        .split('')
+        .map((char) => char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('[\\s-]*');
+      const match = source.match(new RegExp(`(^|[^A-Za-z0-9])(${flexiblePattern})(?=$|[^A-Za-z0-9])`, 'i'));
+      if (match?.[2]) {
+        verified.push(match[2]);
+      }
     });
+    return Array.from(new Set(verified)).slice(0, 3);
   }
 
   function normalizeAiInsightCode(code) {
-    const normalized = String(code || '').trim().replace(/[\s-]+/g, '');
-    return /^[A-Z0-9]{4,16}$/i.test(normalized) ? normalized : '';
+    const normalized = String(code || '').trim().replace(/\s+/g, ' ');
+    const compact = normalized.replace(/[\s-]+/g, '');
+    return /^[A-Z0-9]{4,16}$/i.test(compact) ? normalized : '';
+  }
+
+  function trimUrlPunctuation(value) {
+    return String(value || '').replace(/[),.;!?\]}>]+$/g, '');
+  }
+
+  function extractHttpUrlsFromText(text) {
+    const urls = [];
+    const seen = new Set();
+    const matches = String(text || '').match(/https?:\/\/[^\s<>"'`]+/gi) || [];
+    matches.forEach((rawUrl) => {
+      try {
+        const normalized = new URL(trimUrlPunctuation(rawUrl)).toString();
+        if (!seen.has(normalized)) {
+          seen.add(normalized);
+          urls.push(normalized);
+        }
+      } catch {
+        // 忽略不完整 URL。
+      }
+    });
+    return urls;
+  }
+
+  function isLikelyActionUrl(url) {
+    const normalized = String(url || '').toLowerCase();
+    if (/unsubscribe|optout|tracking|pixel|beacon|doubleclick/.test(normalized)) {
+      return false;
+    }
+    if (/\.(?:png|jpe?g|gif|webp|svg)(?:[?#]|$)/.test(normalized)) {
+      return false;
+    }
+    return /verify|verification|activate|activation|confirm|confirmation|reset|login|signin|auth|token|code|magic|register|signup|account/.test(normalized)
+      || /[?&](?:token|code|key|ticket|credential|signature|sig|hash|verify|auth)=/i.test(normalized);
+  }
+
+  function extractActionLinksLocally(text) {
+    return extractHttpUrlsFromText(text)
+      .filter(isLikelyActionUrl)
+      .slice(0, 3)
+      .map((url) => ({ url, label: formatInsightLinkLabel(url) }));
+  }
+
+  function verifyLinksAgainstSource(links, text) {
+    const sourceUrls = extractHttpUrlsFromText(text);
+    if (!sourceUrls.length) {
+      return [];
+    }
+    const verified = new Map();
+    (Array.isArray(links) ? links : []).forEach((link) => {
+      const candidate = String(link?.url || '').trim();
+      if (!candidate) {
+        return;
+      }
+      let matchedUrl = sourceUrls.find((sourceUrl) => sourceUrl === candidate);
+      if (!matchedUrl) {
+        const prefixMatches = sourceUrls
+          .filter((sourceUrl) => sourceUrl.startsWith(candidate) && sourceUrl.length > candidate.length)
+          .sort((a, b) => b.length - a.length);
+        matchedUrl = prefixMatches[0] || '';
+      }
+      if (!matchedUrl || verified.has(matchedUrl)) {
+        return;
+      }
+      verified.set(matchedUrl, {
+        url: matchedUrl,
+        label: formatInsightLinkLabel(matchedUrl, link.label)
+      });
+    });
+    return Array.from(verified.values()).slice(0, 3);
   }
 
   function formatInsightLinkLabel(url, label = '') {
@@ -2994,7 +3114,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (retranslateBtn) retranslateBtn.classList.toggle('hidden', !text);
   }
 
-  function getTempMailTranslationSource(mail) {
+  function extractHttpUrlsFromHtml(html) {
+    if (!html) {
+      return [];
+    }
+    const urls = [];
+    const seen = new Set();
+    try {
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('a[href], area[href]').forEach((element) => {
+        const rawUrl = String(element.getAttribute('href') || '').trim();
+        try {
+          const normalized = new URL(rawUrl).toString();
+          if ((normalized.startsWith('http://') || normalized.startsWith('https://')) && !seen.has(normalized)) {
+            seen.add(normalized);
+            urls.push(normalized);
+          }
+        } catch {
+          // 忽略相对地址和损坏链接。
+        }
+      });
+    } catch {
+      return [];
+    }
+    return urls;
+  }
+
+  function appendOriginalLinksToInsightSource(text, html) {
+    const urls = extractHttpUrlsFromHtml(html).slice(0, 20);
+    if (!urls.length) {
+      return normalizeTranslationSource(text);
+    }
+    const linkBlock = `[邮件中的完整原始链接，必须逐字复制，不得缩短或补写]\n${urls.join('\n')}`;
+    const bodyBudget = Math.max(0, MAX_TRANSLATION_SOURCE_CHARS - linkBlock.length - 2);
+    return normalizeTranslationSource(`${String(text || '').slice(0, bodyBudget)}\n\n${linkBlock}`);
+  }
+
+  function getTempMailTranslationSource(mail, options = {}) {
     if (!mail) {
       return '';
     }
@@ -3077,15 +3233,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       return '';
     }
 
-    return normalizeTranslationSource(text);
+    return options.includeOriginalLinks
+      ? appendOriginalLinksToInsightSource(text, htmlContent)
+      : normalizeTranslationSource(text);
   }
 
-  function getMoeMailTranslationSource(mail) {
+  function getMoeMailTranslationSource(mail, options = {}) {
     if (!mail) {
       return '';
     }
-    const text = mail.content || htmlToText(mail.html || '') || '';
-    return normalizeTranslationSource(text);
+    const html = mail.html || '';
+    const text = mail.content || htmlToText(html) || '';
+    return options.includeOriginalLinks
+      ? appendOriginalLinksToInsightSource(text, html)
+      : normalizeTranslationSource(text);
   }
 
   function normalizeTranslationSource(text) {
@@ -3113,7 +3274,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const subject = options.subject ? String(options.subject).trim() : '';
     const from = options.from ? String(options.from).trim() : '';
 
-    const response = await fetch(`${config.apiBase}/chat/completions`, {
+    const response = await fetchWithTimeout(`${config.apiBase}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -3125,22 +3286,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         messages: [
           {
             role: 'system',
-            content: `你是一个邮件验证码与验证链接提取助手。请从邮件正文中严格提取验证码和验证链接，遵守以下规则：
+            content: `你是一个高精度邮件验证码与验证链接提取器。你的任务是“复制原文中已经存在的信息”，不是推测、补全或生成信息。严格遵守以下规则：
 
-1. 验证码通常在 "code:", "verification code:", "验证码：", "验证代码：", "code is", "your code" 等提示词附近，也可能是单独成行的数字或字母串。
-2. 验证码格式多样：纯数字（如 123456）、十六进制大小写混合（如 4fe4f0a77e）、字母数字混合（如 Ab12CD34）、短哈希 等。务必提取原文中真实存在的字符串，保留原始大小写，不要统一转为大写或小写。
-3. 验证链接是用于登录、注册、验证、激活、确认、重置密码等的 URL。不要提取退订链接、追踪链接、广告链接、图片链接。
-4. 严格禁止编造：如果文中没有找到验证码，codes 必须返回空数组 []。绝对不要猜测、编造、或虚构任何验证码。你返回的每个 code 都必须能在邮件正文中找到一模一样的原始字符串（包括大小写）。
-5. 只返回 JSON，格式为 {"codes":["4fe4f0a77e"],"links":[{"url":"https://example.com/verify","label":"验证邮箱"}]}。
-6. 最多返回 3 个验证码和 3 个链接，不要解释。`
+一、验证码提取
+1. 验证码可能出现在 code、verification code、security code、OTP、one-time password、验证码、验证代码、动态码、一次性密码等提示词附近，也可能单独成行。
+2. 验证码可能是纯数字、字母数字混合、十六进制、短哈希，也可能包含原文分隔符，例如 123-456、12 34 56、AB-12-CD。必须保留原文中的大小写、连字符和分组空格，不得自行删除、增加或替换字符。
+3. 每个验证码必须能够在邮件正文中逐字找到。如果不确定某个字符串是否为验证码，不要返回它。
+
+二、验证链接提取
+4. 只提取用于登录、注册、邮箱验证、账号激活、操作确认、魔法登录或密码重置的 HTTP/HTTPS 链接。排除退订、广告、图片、统计和追踪链接。
+5. URL 必须从邮件正文或“邮件中的完整原始链接”区域逐字复制。必须保留完整的协议、域名、端口、路径、查询字符串和片段，尤其不得丢失 ?、&、=、# 后面的 token、code、key、ticket、signature、hash 等凭证参数。
+6. 禁止把完整 URL 缩短为域名或基础路径；禁止修改 URL 编码；禁止根据链接文字猜测 URL；禁止补全正文中不存在的路径或参数。
+7. 绝对禁止返回示例域名、模板地址或占位链接，包括任何 example.com 地址。如果邮件中没有真实完整的验证链接，links 必须返回空数组 []。
+
+三、输出要求
+8. 严格禁止编造。codes 和 links 中的每一项都必须来自当前邮件原文；宁可返回空数组，也不要猜测。
+9. 只返回一个合法 JSON 对象，不要使用 Markdown，不要添加解释。结构固定为：{"codes":["原文验证码"],"links":[{"url":"原文中的完整URL","label":"简短用途"}]}。
+10. 最多返回 3 个验证码和 3 个链接。没有验证码时返回 codes:[]；没有真实完整链接时返回 links:[]。`
           },
           {
             role: 'user',
-            content: `请提取以下邮件中的验证码和验证链接。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n邮件正文：\n${sourceText}`
+            content: `请严格从下面这封邮件中复制验证码和完整验证链接。不得使用系统提示词中的格式示例作为结果。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n===== 邮件原文开始 =====\n${sourceText}\n===== 邮件原文结束 =====`
           }
         ]
       })
-    });
+    }, AI_REQUEST_TIMEOUT_MS);
 
     let data = null;
     try {
@@ -3158,20 +3328,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     const parsed = parseMailInsightJson(content);
     const aiResult = normalizeAiInsightResult(parsed);
 
-    // Verify AI-extracted codes actually exist in the email text
+    // AI 结果必须能在邮件原文中找到；链接被截断时恢复为原文中的完整 URL。
     const verifiedCodes = verifyCodesAgainstSource(aiResult.codes, sourceText);
-    if (verifiedCodes.length > 0) {
-      aiResult.codes = verifiedCodes;
-      return aiResult;
-    }
+    const localCodes = extractCodesLocally(sourceText);
+    aiResult.codes = Array.from(new Set([...verifiedCodes, ...localCodes])).slice(0, 3);
 
-    // If AI codes fail verification, try local regex extraction as fallback
-    if (aiResult.codes.length === 0 || verifiedCodes.length === 0) {
-      const localCodes = extractCodesLocally(sourceText);
-      if (localCodes.length > 0) {
-        aiResult.codes = localCodes;
+    const verifiedLinks = verifyLinksAgainstSource(aiResult.links, sourceText);
+    const localLinks = extractActionLinksLocally(sourceText);
+    const mergedLinks = new Map();
+    [...verifiedLinks, ...localLinks].forEach((link) => {
+      if (link?.url && !mergedLinks.has(link.url)) {
+        mergedLinks.set(link.url, link);
       }
-    }
+    });
+    aiResult.links = Array.from(mergedLinks.values()).slice(0, 3);
 
     return aiResult;
   }
@@ -3188,7 +3358,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const targetLanguage = normalizeTranslationSetting(translationTargetLanguage, DEFAULT_TRANSLATION_TARGET_LANGUAGE);
     const subject = options.subject ? String(options.subject).trim() : '';
     const from = options.from ? String(options.from).trim() : '';
-    const response = await fetch(`${apiBase}/chat/completions`, {
+    const response = await fetchWithTimeout(`${apiBase}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -3208,7 +3378,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         ]
       })
-    });
+    }, AI_REQUEST_TIMEOUT_MS);
 
     let data = null;
     try {
@@ -3979,7 +4149,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     testTempConnectionBtn.disabled = true;
     showMessage(tempConnectionMessage, '连接测试中...', '');
     try {
-      const res = await fetch(`${targetUrl}/open_api/settings`);
+      const res = await fetchWithTimeout(`${targetUrl}/open_api/settings`);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
       const domains = Array.isArray(data.domains) ? data.domains.length : 0;
@@ -4025,7 +4195,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!base || !apiKey) {
       throw new Error('请先填写 API Base 和 API Key');
     }
-    const response = await fetch(`${base}/models`, {
+    const response = await fetchWithTimeout(`${base}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` }
     });
     if (!response.ok) {
@@ -4197,7 +4367,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     resultArea.classList.add('hidden');
 
     try {
-      const res = await fetch(`${apiUrl}/admin/new_address`, {
+      const res = await fetchWithTimeout(`${apiUrl}/admin/new_address`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -4505,14 +4675,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (apiUrl && adminToken) {
       for (const addr of selectedTempHistory) {
         try {
-          const queryRes = await fetch(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
+          const queryRes = await fetchWithTimeout(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
             headers: { 'x-admin-auth': adminToken }
           });
           if (queryRes.ok) {
             const queryData = await queryRes.json();
             const match = (queryData.results || []).find(a => matchesAddressRecord(a, addr));
             if (match) {
-              await fetch(`${apiUrl}/admin/delete_address/${match.id}`, {
+              await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
                 method: 'DELETE',
                 headers: { 'x-admin-auth': adminToken }
               });
@@ -4529,11 +4699,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     selectedTempHistory.forEach(addr => {
       delete verifyStatus[addr];
       delete tempUnreadCounts[addr];
+      delete tempMailMeta[addr];
     });
     chrome.storage.local.set({
       emailHistory: history,
       verifyStatusCache: verifyStatus,
-      tempUnreadCounts
+      tempUnreadCounts,
+      [TEMP_MAIL_META_KEY]: tempMailMeta
     });
     
     // 退出批量模式并重新渲染
@@ -4548,10 +4720,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     history = [];
     verifyStatus = {};
     tempUnreadCounts = {};
+    tempMailMeta = {};
     chrome.storage.local.set({
       emailHistory: history,
       verifyStatusCache: verifyStatus,
-      tempUnreadCounts
+      tempUnreadCounts,
+      [TEMP_MAIL_META_KEY]: tempMailMeta
     });
     renderHistory();
   });
@@ -4767,7 +4941,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       danger: true
     });
     try {
-      const res = await fetch(`${apiUrl}/admin/mails/${currentMailId}`, {
+      const res = await fetchWithTimeout(`${apiUrl}/admin/mails/${currentMailId}`, {
         method: 'DELETE',
         headers: { 'x-admin-auth': adminToken }
       });
@@ -4794,14 +4968,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!confirm(`确定要删除邮箱 ${addr} 及其所有邮件吗？`)) return;
     let serverDeleted = false;
     try {
-      const queryRes = await fetch(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
+      const queryRes = await fetchWithTimeout(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
         headers: { 'x-admin-auth': adminToken }
       });
       if (queryRes.ok) {
         const queryData = await queryRes.json();
         const match = (queryData.results || []).find(a => matchesAddressRecord(a, addr));
         if (match) {
-          const delRes = await fetch(`${apiUrl}/admin/delete_address/${match.id}`, {
+          const delRes = await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
             method: 'DELETE',
             headers: { 'x-admin-auth': adminToken }
           });
@@ -4835,7 +5009,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function fetchMails(address) {
     mailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
     try {
-      const res = await fetch(`${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=50&offset=0&summary_only=true`, {
+      const res = await fetchWithTimeout(`${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=50&offset=0&summary_only=true`, {
         headers: { 'x-admin-auth': adminToken }
       });
       if (!res.ok) throw new Error(`${res.status}`);
@@ -4858,7 +5032,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   async function fetchTempMailById(mailId, address = '') {
-    const res = await fetch(`${apiUrl}/admin/mails/${mailId}`, {
+    const res = await fetchWithTimeout(`${apiUrl}/admin/mails/${mailId}`, {
       headers: { 'x-admin-auth': adminToken }
     });
     if (res.ok) {
@@ -4876,7 +5050,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 兼容尚未部署单封详情接口的旧后端：
     // 回退到旧的列表接口重新拉取当前收件箱，并从中定位目标邮件正文。
-    const fallbackRes = await fetch(
+    const fallbackRes = await fetchWithTimeout(
       `${apiUrl}/admin/mails?address=${encodeURIComponent(fallbackAddress)}&limit=50&offset=0`,
       {
         headers: { 'x-admin-auth': adminToken }
@@ -4990,7 +5164,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     for (const mailId of selectedTempMails) {
       try {
-        await fetch(`${apiUrl}/admin/mails/${mailId}`, {
+        await fetchWithTimeout(`${apiUrl}/admin/mails/${mailId}`, {
           method: 'DELETE',
           headers: { 'x-admin-auth': adminToken }
         });
@@ -5098,7 +5272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderCurrentTempMail();
 
     try {
-      const extracted = await extractMailInsightsWithApi(getTempMailTranslationSource(currentTempMail), {
+      const extracted = await extractMailInsightsWithApi(getTempMailTranslationSource(currentTempMail, { includeOriginalLinks: true }), {
         subject: currentTempMail.subject,
         from: currentTempMail.source
       });
@@ -5335,7 +5509,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     if (moeEmailListLoadPromise) {
-      return moeEmailListLoadPromise;
+      await moeEmailListLoadPromise;
+      if (!forceRefresh) {
+        return;
+      }
     }
 
     moeEmailListDiv.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
@@ -5767,7 +5944,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderCurrentMoeMail();
 
     try {
-      const extracted = await extractMailInsightsWithApi(getMoeMailTranslationSource(currentMoeMail), {
+      const extracted = await extractMailInsightsWithApi(getMoeMailTranslationSource(currentMoeMail, { includeOriginalLinks: true }), {
         subject: currentMoeMail.subject,
         from: currentMoeMail.from_address
       });
