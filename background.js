@@ -1,5 +1,9 @@
 const VERIFY_ALARM_NAME = 'temp-email-verify';
 const MAIL_ALARM_NAME = 'temp-email-mail-poll';
+const CLEANUP_ALARM_NAME = 'temp-email-expired-cleanup';
+const CLEANUP_ALARM_INTERVAL_MINUTES = 30;
+const EXPIRED_CLEANUP_THROTTLE_MS = 5 * 60 * 1000;
+const LAST_EXPIRED_CLEANUP_AT_KEY = 'lastExpiredCleanupAt';
 const MIN_ALARM_INTERVAL_SECONDS = 30;
 const MAX_INTERVAL_SECONDS = 24 * 60 * 60;
 const DISABLED_INTERVAL_SETTING = Object.freeze({ value: 0, unit: 'minutes' });
@@ -20,29 +24,70 @@ const INTERVAL_UNIT_FACTORS = Object.freeze({
 let verifyRunPromise = null;
 let mailPollRunPromise = null;
 let cleanupExpiredPromise = null;
-let lastExpiredCleanupAt = 0;
+let mailStateMutationPromise = Promise.resolve();
+let notificationTargetsMutationPromise = Promise.resolve();
 const remoteDataCache = new Map();
 const remoteDataRequests = new Map();
 let remoteDataCacheEpoch = 0;
 
 function storageGet(keys) {
-  return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(keys, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(result);
+    });
+  });
 }
 
 function storageSet(items) {
-  return new Promise((resolve) => chrome.storage.local.set(items, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(items, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 function storageRemove(keys) {
-  return new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.remove(keys, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 function clearAlarm(name) {
-  return new Promise((resolve) => chrome.alarms.clear(name, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.alarms.clear(name, (wasCleared) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(wasCleared);
+    });
+  });
 }
 
 function tabsQuery(queryInfo) {
-  return new Promise((resolve) => chrome.tabs.query(queryInfo, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.tabs.query(queryInfo, (tabs) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(tabs);
+    });
+  });
 }
 
 function tabsSendMessage(tabId, message) {
@@ -82,9 +127,39 @@ function insertCss(tabId, files) {
 }
 
 function createNotification(notificationId, options) {
-  return new Promise((resolve) => {
-    chrome.notifications.create(notificationId, options, resolve);
+  return new Promise((resolve, reject) => {
+    chrome.notifications.create(notificationId, options, (createdId) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(createdId);
+    });
   });
+}
+
+function runMailStateMutation(worker) {
+  const task = mailStateMutationPromise.then(worker, worker);
+  mailStateMutationPromise = task.catch(() => {});
+  return task;
+}
+
+function runNotificationTargetsMutation(worker) {
+  const task = notificationTargetsMutationPromise.then(async () => {
+    const stored = await storageGet([MAIL_NOTIFICATION_TARGETS_KEY]);
+    const targets = { ...(stored[MAIL_NOTIFICATION_TARGETS_KEY] || {}) };
+    const result = await worker(targets);
+    await storageSet({ [MAIL_NOTIFICATION_TARGETS_KEY]: targets });
+    return result;
+  }, async () => {
+    const stored = await storageGet([MAIL_NOTIFICATION_TARGETS_KEY]);
+    const targets = { ...(stored[MAIL_NOTIFICATION_TARGETS_KEY] || {}) };
+    const result = await worker(targets);
+    await storageSet({ [MAIL_NOTIFICATION_TARGETS_KEY]: targets });
+    return result;
+  });
+  notificationTargetsMutationPromise = task.catch(() => {});
+  return task;
 }
 
 function parseIntSetting(value, fallback) {
@@ -359,8 +434,8 @@ function updateAddressPollState(state, key, options) {
   };
 }
 
-async function fetchJson(url, init) {
-  const response = await fetchWithTimeout(url, init);
+async function fetchJson(url, init = {}, timeoutMs = REMOTE_REQUEST_TIMEOUT_MS) {
+  const response = await fetchWithTimeout(url, init, timeoutMs);
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
@@ -369,28 +444,35 @@ async function fetchJson(url, init) {
 
 async function fetchWithTimeout(url, init = {}, timeoutMs = REMOTE_REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = init.signal;
+  let abortSource = '';
+  const abortFromExternal = () => {
+    if (!abortSource) abortSource = 'external';
+    controller.abort(externalSignal?.reason);
+  };
+  if (externalSignal?.aborted) {
+    abortFromExternal();
+  } else if (externalSignal) {
+    externalSignal.addEventListener('abort', abortFromExternal, { once: true });
+  }
+  const timer = setTimeout(() => {
+    if (!abortSource) abortSource = 'timeout';
+    controller.abort();
+  }, timeoutMs);
   try {
     return await fetch(url, {
       ...init,
       signal: controller.signal,
     });
   } catch (error) {
-    if (error?.name === 'AbortError') {
+    if (abortSource === 'timeout' && error?.name === 'AbortError') {
       throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
     }
     throw error;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', abortFromExternal);
   }
-}
-
-async function fetchJsonWithTimeout(url, init = {}, timeoutMs = REMOTE_REQUEST_TIMEOUT_MS) {
-  const response = await fetchWithTimeout(url, init, timeoutMs);
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
-  }
-  return response.json();
 }
 
 function clearRemoteDataCache(prefix = '') {
@@ -446,11 +528,11 @@ async function fetchCachedJson(
 
   const existingRequest = remoteDataRequests.get(cacheKey);
   if (existingRequest) {
-    return existingRequest.request;
+    return existingRequest;
   }
 
   const requestEpoch = remoteDataCacheEpoch;
-  const request = fetchJsonWithTimeout(url, init)
+  const request = fetchJson(url, init)
     .then(async (data) => {
       if (remoteDataCacheEpoch !== requestEpoch) {
         return data;
@@ -463,11 +545,11 @@ async function fetchCachedJson(
       return data;
     })
     .finally(() => {
-      if (remoteDataRequests.get(cacheKey)?.request === request) {
+      if (remoteDataRequests.get(cacheKey) === request) {
         remoteDataRequests.delete(cacheKey);
       }
     });
-  remoteDataRequests.set(cacheKey, { request, epoch: requestEpoch });
+  remoteDataRequests.set(cacheKey, request);
   return request;
 }
 
@@ -523,7 +605,9 @@ async function getMoeEmailList(forceRefresh = false) {
 
 async function cleanupExpiredTempAddresses(force = false) {
   const now = Date.now();
-  if (!force && now - lastExpiredCleanupAt < 60 * 1000) {
+  const cleanupState = await storageGet([LAST_EXPIRED_CLEANUP_AT_KEY]);
+  const lastCleanupAt = Number(cleanupState[LAST_EXPIRED_CLEANUP_AT_KEY]) || 0;
+  if (!force && now - lastCleanupAt < EXPIRED_CLEANUP_THROTTLE_MS) {
     return { removed: 0 };
   }
 
@@ -531,7 +615,6 @@ async function cleanupExpiredTempAddresses(force = false) {
     'apiUrl',
     'adminToken',
     'emailHistory',
-    'verifyStatusCache',
     'tempUnreadCounts',
     'tempKnownMailIds',
     'tempMailMeta',
@@ -547,15 +630,16 @@ async function cleanupExpiredTempAddresses(force = false) {
       && now >= Number(meta.createdAt) + Number(meta.expiryMs);
   });
 
-  lastExpiredCleanupAt = now;
+  await storageSet({ [LAST_EXPIRED_CLEANUP_AT_KEY]: now });
   if (expiredAddresses.length === 0) {
     return { removed: 0 };
   }
 
+  const deletableAddresses = new Set();
   if (apiUrl && adminToken) {
     await runWithConcurrency(expiredAddresses, 3, async (address) => {
       try {
-        const data = await fetchJsonWithTimeout(
+        const data = await fetchJson(
           `${apiUrl}/admin/address?query=${encodeURIComponent(address)}&limit=10&offset=0`,
           { headers: { 'x-admin-auth': adminToken } }
         );
@@ -569,6 +653,7 @@ async function cleanupExpiredTempAddresses(force = false) {
             throw new Error(`${response.status} ${response.statusText}`);
           }
         }
+        deletableAddresses.add(address);
       } catch (error) {
         console.warn('过期邮箱服务端删除失败:', error.message);
       }
@@ -577,46 +662,62 @@ async function cleanupExpiredTempAddresses(force = false) {
 
   // 服务端删除期间，其他 popup 可能新增邮箱或更新状态；提交前重新读取并合并，
   // 避免用清理开始时的旧快照覆盖较新的数据。
-  const latest = await storageGet([
-    'emailHistory',
-    'verifyStatusCache',
-    'tempUnreadCounts',
-    'tempKnownMailIds',
-    'tempMailMeta',
-    'mailPollState',
-  ]);
-  const latestHistory = Array.isArray(latest.emailHistory) ? latest.emailHistory : [];
-  const latestTempMailMeta = { ...(latest.tempMailMeta || {}) };
-  const confirmedExpired = expiredAddresses.filter((address) => {
-    const before = tempMailMeta[address];
-    const current = latestTempMailMeta[address];
-    return current
-      && Number(current.createdAt) === Number(before?.createdAt)
-      && Number(current.expiryMs) === Number(before?.expiryMs)
-      && Number(current.expiryMs) > 0
-      && now >= Number(current.createdAt) + Number(current.expiryMs);
+  return runMailStateMutation(async () => {
+    const latest = await storageGet([
+      'apiUrl',
+      'adminToken',
+      'emailHistory',
+      'verifyStatusCache',
+      'tempUnreadCounts',
+      'tempKnownMailIds',
+      'tempMailMeta',
+      'mailPollState',
+    ]);
+    const latestApiUrl = String(latest.apiUrl || '').trim().replace(/\/$/, '');
+    const latestAdminToken = String(latest.adminToken || '').trim();
+    if (latestApiUrl !== apiUrl || latestAdminToken !== adminToken) {
+      return { removed: 0, pending: expiredAddresses.length };
+    }
+
+    const latestHistory = Array.isArray(latest.emailHistory) ? latest.emailHistory : [];
+    const latestTempMailMeta = { ...(latest.tempMailMeta || {}) };
+    const confirmedExpired = expiredAddresses.filter((address) => {
+      if (!deletableAddresses.has(address)) {
+        return false;
+      }
+      const before = tempMailMeta[address];
+      const current = latestTempMailMeta[address];
+      return current
+        && Number(current.createdAt) === Number(before?.createdAt)
+        && Number(current.expiryMs) === Number(before?.expiryMs)
+        && Number(current.expiryMs) > 0
+        && now >= Number(current.createdAt) + Number(current.expiryMs);
+    });
+    const expiredSet = new Set(confirmedExpired);
+    const verifyStatusCache = { ...(latest.verifyStatusCache || {}) };
+    const tempUnreadCounts = { ...(latest.tempUnreadCounts || {}) };
+    const tempKnownMailIds = { ...(latest.tempKnownMailIds || {}) };
+    const mailPollState = { ...(latest.mailPollState || {}) };
+    for (const address of confirmedExpired) {
+      delete verifyStatusCache[address];
+      delete tempUnreadCounts[address];
+      delete tempKnownMailIds[address];
+      delete latestTempMailMeta[address];
+      delete mailPollState[`temp:${address}`];
+    }
+    await storageSet({
+      emailHistory: latestHistory.filter((address) => !expiredSet.has(address)),
+      verifyStatusCache,
+      tempUnreadCounts,
+      tempKnownMailIds,
+      tempMailMeta: latestTempMailMeta,
+      mailPollState,
+    });
+    return {
+      removed: confirmedExpired.length,
+      pending: expiredAddresses.length - confirmedExpired.length,
+    };
   });
-  const expiredSet = new Set(confirmedExpired);
-  const verifyStatusCache = { ...(latest.verifyStatusCache || {}) };
-  const tempUnreadCounts = { ...(latest.tempUnreadCounts || {}) };
-  const tempKnownMailIds = { ...(latest.tempKnownMailIds || {}) };
-  const mailPollState = { ...(latest.mailPollState || {}) };
-  for (const address of confirmedExpired) {
-    delete verifyStatusCache[address];
-    delete tempUnreadCounts[address];
-    delete tempKnownMailIds[address];
-    delete latestTempMailMeta[address];
-    delete mailPollState[`temp:${address}`];
-  }
-  await storageSet({
-    emailHistory: latestHistory.filter((address) => !expiredSet.has(address)),
-    verifyStatusCache,
-    tempUnreadCounts,
-    tempKnownMailIds,
-    tempMailMeta: latestTempMailMeta,
-    mailPollState,
-  });
-  return { removed: confirmedExpired.length };
 }
 
 function runCleanupExpiredTempAddresses(force = false) {
@@ -665,16 +766,11 @@ async function verifyAddress(apiUrl, adminToken, address) {
   const timeoutMs = 8000;
 
   for (let attempt = 1; attempt <= maxRetry; attempt += 1) {
-    let timer = null;
     try {
-      const controller = new AbortController();
-      timer = setTimeout(() => controller.abort(), timeoutMs);
       const data = await fetchJson(
         `${apiUrl}/admin/address?query=${encodeURIComponent(address)}&limit=10&offset=0`,
-        {
-          headers: { 'x-admin-auth': adminToken },
-          signal: controller.signal,
-        }
+        { headers: { 'x-admin-auth': adminToken } },
+        timeoutMs
       );
 
       const matched = (data.results || []).find((record) => matchesAddressRecord(record, address));
@@ -684,10 +780,6 @@ async function verifyAddress(apiUrl, adminToken, address) {
         return 'error';
       }
       await sleep(1000 * attempt);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
     }
   }
 
@@ -699,27 +791,45 @@ async function verifyAddressesNow() {
     'apiUrl',
     'adminToken',
     'emailHistory',
-    'verifyStatusCache',
   ]);
 
   const apiUrl = (settings.apiUrl || '').trim().replace(/\/$/, '');
   const adminToken = (settings.adminToken || '').trim();
   const history = Array.isArray(settings.emailHistory) ? settings.emailHistory : [];
 
-  if (!apiUrl || !adminToken || history.length === 0) {
+  const verificationResults = {};
+  if (apiUrl && adminToken && history.length > 0) {
+    await runWithConcurrency(history, 3, async (address) => {
+      verificationResults[address] = await verifyAddress(apiUrl, adminToken, address);
+    });
+  }
+
+  // 验证期间配置、邮箱列表和状态都可能被 popup 修改；只把本次结果合并到最新状态。
+  const latest = await storageGet(['apiUrl', 'adminToken', 'emailHistory', 'verifyStatusCache']);
+  const latestApiUrl = String(latest.apiUrl || '').trim().replace(/\/$/, '');
+  const latestAdminToken = String(latest.adminToken || '').trim();
+  if (!latestApiUrl || !latestAdminToken) {
     await storageSet({ verifyStatusCache: {} });
     return;
   }
-
-  const verifyStatusCache = {};
-  for (const address of history) {
-    verifyStatusCache[address] = await verifyAddress(apiUrl, adminToken, address);
+  if (latestApiUrl !== apiUrl || latestAdminToken !== adminToken) {
+    return;
   }
 
-  await storageSet({
-    verifyStatusCache,
-    lastVerifyAt: Date.now(),
+  const latestHistory = Array.isArray(latest.emailHistory) ? latest.emailHistory : [];
+  const activeAddresses = new Set(latestHistory);
+  const verifyStatusCache = { ...(latest.verifyStatusCache || {}) };
+  Object.keys(verifyStatusCache).forEach((address) => {
+    if (!activeAddresses.has(address)) {
+      delete verifyStatusCache[address];
+    }
   });
+  for (const [address, status] of Object.entries(verificationResults)) {
+    if (activeAddresses.has(address)) {
+      verifyStatusCache[address] = status;
+    }
+  }
+  await storageSet({ verifyStatusCache });
 }
 
 function runVerifyAddressesNow() {
@@ -749,7 +859,6 @@ async function updateBadgeFromStorage() {
 }
 
 async function pollMailNow() {
-  await runCleanupExpiredTempAddresses();
   const settings = await storageGet([
     'apiUrl',
     'adminToken',
@@ -785,6 +894,11 @@ async function pollMailNow() {
   const tempUnreadCounts = { ...(settings.tempUnreadCounts || {}) };
   const moeUnreadCounts = { ...(settings.moeUnreadCounts || {}) };
   const mailPollState = { ...(settings.mailPollState || {}) };
+  const initialTempUnreadCounts = { ...tempUnreadCounts };
+  const initialMoeUnreadCounts = { ...moeUnreadCounts };
+  const updatedTempAddresses = new Set();
+  const updatedMoeIds = new Set();
+  const updatedPollStateKeys = new Set();
   const notifications = [];
 
   const activeTempAddresses = new Set(history);
@@ -815,7 +929,7 @@ async function pollMailNow() {
         return;
       }
       try {
-        const data = await fetchJsonWithTimeout(
+        const data = await fetchJson(
           `${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=20&offset=0&summary_only=true`,
           { headers: { 'x-admin-auth': adminToken } }
         );
@@ -841,6 +955,7 @@ async function pollMailNow() {
         }
 
         tempKnownMailIds[address] = ids.slice(0, 50);
+        updatedTempAddresses.add(address);
         updateAddressPollState(mailPollState, stateKey, {
           hasNewMail: newMessages.length > 0,
           failed: false,
@@ -848,6 +963,7 @@ async function pollMailNow() {
           baseIntervalMs: basePollIntervalMs,
           now,
         });
+        updatedPollStateKeys.add(stateKey);
       } catch (error) {
         console.warn('Temp Email 轮询失败:', error.message);
         updateAddressPollState(mailPollState, stateKey, {
@@ -857,6 +973,7 @@ async function pollMailNow() {
           baseIntervalMs: basePollIntervalMs,
           now,
         });
+        updatedPollStateKeys.add(stateKey);
       }
     });
   }
@@ -871,7 +988,7 @@ async function pollMailNow() {
         return;
       }
       try {
-        const data = await fetchJsonWithTimeout(`${moeApiUrl}/api/emails/${emailId}`, {
+        const data = await fetchJson(`${moeApiUrl}/api/emails/${emailId}`, {
           headers: { 'X-API-Key': moeApiKey },
         });
         const messages = Array.isArray(data.messages) ? data.messages : [];
@@ -896,6 +1013,7 @@ async function pollMailNow() {
         }
 
         moeKnownMailIds[emailId] = ids.slice(0, 50);
+        updatedMoeIds.add(emailId);
         updateAddressPollState(mailPollState, stateKey, {
           hasNewMail: newMessages.length > 0,
           failed: false,
@@ -903,6 +1021,7 @@ async function pollMailNow() {
           baseIntervalMs: basePollIntervalMs,
           now,
         });
+        updatedPollStateKeys.add(stateKey);
       } catch (error) {
         console.warn('MoeMail 轮询失败:', error.message);
         updateAddressPollState(mailPollState, stateKey, {
@@ -912,49 +1031,158 @@ async function pollMailNow() {
           baseIntervalMs: basePollIntervalMs,
           now,
         });
+        updatedPollStateKeys.add(stateKey);
       }
     });
   }
 
-  await storageSet({
-    tempKnownMailIds,
-    moeKnownMailIds,
-    tempUnreadCounts,
-    moeUnreadCounts,
-    mailPollState,
-    lastMailPollAt: Date.now(),
-  });
+  // 轮询网络请求期间 popup 可能清零未读、删除邮箱或切换服务配置。
+  // 提交前基于最新值按地址合并，避免旧快照整对象覆盖用户操作。
+  const mergeResult = await runMailStateMutation(async () => {
+    const latest = await storageGet([
+      'apiUrl',
+      'adminToken',
+      'emailHistory',
+      'moeApiUrl',
+      'moeApiKey',
+      'moeEmailCache',
+      'tempKnownMailIds',
+      'moeKnownMailIds',
+      'tempUnreadCounts',
+      'moeUnreadCounts',
+      'mailPollState',
+      'notificationsEnabled',
+    ]);
+    const latestHistory = Array.isArray(latest.emailHistory) ? latest.emailHistory : [];
+    const latestMoeEmailCache = Array.isArray(latest.moeEmailCache) ? latest.moeEmailCache : [];
+    const latestTempAddresses = new Set(latestHistory);
+    const latestMoeIds = new Set(latestMoeEmailCache.map((email) => String(email.id)));
+    const mergedTempKnownMailIds = { ...(latest.tempKnownMailIds || {}) };
+    const mergedMoeKnownMailIds = { ...(latest.moeKnownMailIds || {}) };
+    const mergedTempUnreadCounts = { ...(latest.tempUnreadCounts || {}) };
+    const mergedMoeUnreadCounts = { ...(latest.moeUnreadCounts || {}) };
+    const mergedMailPollState = { ...(latest.mailPollState || {}) };
+    const tempConfigUnchanged = String(latest.apiUrl || '').trim().replace(/\/$/, '') === apiUrl
+      && String(latest.adminToken || '').trim() === adminToken;
+    const moeConfigUnchanged = String(latest.moeApiUrl || '').trim().replace(/\/$/, '') === moeApiUrl
+      && String(latest.moeApiKey || '').trim() === moeApiKey;
 
-  if (!notificationsEnabled) {
-    return;
-  }
-  if (notifications.length === 0) {
-    return;
-  }
-
-  const storedTargets = await storageGet([MAIL_NOTIFICATION_TARGETS_KEY]);
-  const notificationTargets = { ...(storedTargets[MAIL_NOTIFICATION_TARGETS_KEY] || {}) };
-  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000;
-  Object.keys(notificationTargets).forEach((id) => {
-    if (Number(notificationTargets[id]?.createdAt) < recentCutoff) {
-      delete notificationTargets[id];
-    }
-  });
-
-  for (const notification of notifications.slice(0, 5)) {
-    const notificationId = `mail-${Date.now()}-${Math.random()}`;
-    notificationTargets[notificationId] = {
-      inbox: notification.inbox,
-      createdAt: Date.now(),
-    };
-    await createNotification(notificationId, {
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: `收到 ${notification.count} 封新邮件`,
-      message: `${notification.source}\n最新主题: ${notification.subject}`,
+    Object.keys(mergedTempKnownMailIds).forEach((address) => {
+      if (!latestTempAddresses.has(address)) delete mergedTempKnownMailIds[address];
     });
+    Object.keys(mergedTempUnreadCounts).forEach((address) => {
+      if (!latestTempAddresses.has(address)) delete mergedTempUnreadCounts[address];
+    });
+    Object.keys(mergedMoeKnownMailIds).forEach((emailId) => {
+      if (!latestMoeIds.has(String(emailId))) delete mergedMoeKnownMailIds[emailId];
+    });
+    Object.keys(mergedMoeUnreadCounts).forEach((emailId) => {
+      if (!latestMoeIds.has(String(emailId))) delete mergedMoeUnreadCounts[emailId];
+    });
+    Object.keys(mergedMailPollState).forEach((stateKey) => {
+      if (stateKey.startsWith('temp:') && !latestTempAddresses.has(stateKey.slice(5))) {
+        delete mergedMailPollState[stateKey];
+      } else if (stateKey.startsWith('moe:') && !latestMoeIds.has(stateKey.slice(4))) {
+        delete mergedMailPollState[stateKey];
+      }
+    });
+
+    if (tempConfigUnchanged) {
+      for (const address of updatedTempAddresses) {
+        if (!latestTempAddresses.has(address)) continue;
+        mergedTempKnownMailIds[address] = tempKnownMailIds[address];
+        const initialCount = Number(initialTempUnreadCounts[address]) || 0;
+        const latestCount = Number(mergedTempUnreadCounts[address]) || 0;
+        if (latestCount === initialCount) {
+          mergedTempUnreadCounts[address] = Number(tempUnreadCounts[address]) || 0;
+        }
+      }
+    }
+    if (moeConfigUnchanged) {
+      for (const emailId of updatedMoeIds) {
+        if (!latestMoeIds.has(emailId)) continue;
+        mergedMoeKnownMailIds[emailId] = moeKnownMailIds[emailId];
+        const initialCount = Number(initialMoeUnreadCounts[emailId]) || 0;
+        const latestCount = Number(mergedMoeUnreadCounts[emailId]) || 0;
+        if (latestCount === initialCount) {
+          mergedMoeUnreadCounts[emailId] = Number(moeUnreadCounts[emailId]) || 0;
+        }
+      }
+    }
+    for (const stateKey of updatedPollStateKeys) {
+      const isTemp = stateKey.startsWith('temp:');
+      const id = stateKey.slice(stateKey.indexOf(':') + 1);
+      if ((isTemp && tempConfigUnchanged && latestTempAddresses.has(id))
+        || (!isTemp && moeConfigUnchanged && latestMoeIds.has(id))) {
+        mergedMailPollState[stateKey] = mailPollState[stateKey];
+      }
+    }
+
+    await storageSet({
+      tempKnownMailIds: mergedTempKnownMailIds,
+      moeKnownMailIds: mergedMoeKnownMailIds,
+      tempUnreadCounts: mergedTempUnreadCounts,
+      moeUnreadCounts: mergedMoeUnreadCounts,
+      mailPollState: mergedMailPollState,
+    });
+    return {
+      latestTempAddresses,
+      latestMoeIds,
+      tempConfigUnchanged,
+      moeConfigUnchanged,
+      latestNotificationsEnabled: latest.notificationsEnabled !== false,
+    };
+  });
+  const {
+    latestTempAddresses,
+    latestMoeIds,
+    tempConfigUnchanged,
+    moeConfigUnchanged,
+    latestNotificationsEnabled,
+  } = mergeResult;
+
+  const activeNotifications = notifications.filter((notification) => {
+    if (notification.inbox?.type === 'temp') {
+      return tempConfigUnchanged && latestTempAddresses.has(notification.inbox.address);
+    }
+    return moeConfigUnchanged && latestMoeIds.has(String(notification.inbox?.emailId));
+  });
+  if (!notificationsEnabled || !latestNotificationsEnabled) {
+    return;
   }
-  await storageSet({ [MAIL_NOTIFICATION_TARGETS_KEY]: notificationTargets });
+  if (activeNotifications.length === 0) {
+    return;
+  }
+
+  const recentCutoff = Date.now() - 24 * 60 * 60 * 1000;
+  await runNotificationTargetsMutation((targets) => {
+    Object.keys(targets).forEach((id) => {
+      if (Number(targets[id]?.createdAt) < recentCutoff) delete targets[id];
+    });
+  });
+
+  for (const notification of activeNotifications.slice(0, 5)) {
+    const notificationId = `mail-${Date.now()}-${Math.random()}`;
+    await runNotificationTargetsMutation((targets) => {
+      targets[notificationId] = {
+        inbox: notification.inbox,
+        createdAt: Date.now(),
+      };
+    });
+    try {
+      await createNotification(notificationId, {
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: `收到 ${notification.count} 封新邮件`,
+        message: `${notification.source}\n最新主题: ${notification.subject}`,
+      });
+    } catch (error) {
+      await runNotificationTargetsMutation((targets) => {
+        delete targets[notificationId];
+      });
+      console.warn('创建新邮件通知失败:', error.message);
+    }
+  }
 }
 
 function runPollMailNow() {
@@ -1030,18 +1258,8 @@ async function refreshPageToolsForOpenTabs() {
   }
 }
 
-async function configureAlarms() {
-  const settings = await storageGet([
-    'verifyInterval',
-    'apiUrl',
-    'adminToken',
-    'emailHistory',
-    'mailPollingInterval',
-    'moeApiUrl',
-    'moeApiKey',
-    'moeEmailCache',
-  ]);
-
+async function configureVerifyAlarm() {
+  const settings = await storageGet(['verifyInterval', 'apiUrl', 'adminToken', 'emailHistory']);
   await clearAlarm(VERIFY_ALARM_NAME);
   const verifyIntervalSeconds = resolveIntervalSeconds(settings.verifyInterval, DISABLED_INTERVAL_SETTING);
   const hasTempVerifyConfig = Boolean(settings.apiUrl && settings.adminToken)
@@ -1055,6 +1273,18 @@ async function configureAlarms() {
     });
   }
 
+}
+
+async function configureMailAlarm() {
+  const settings = await storageGet([
+    'mailPollingInterval',
+    'apiUrl',
+    'adminToken',
+    'emailHistory',
+    'moeApiUrl',
+    'moeApiKey',
+    'moeEmailCache',
+  ]);
   await clearAlarm(MAIL_ALARM_NAME);
   const mailPollingIntervalSeconds = resolveIntervalSeconds(settings.mailPollingInterval, DEFAULT_MAIL_POLL_INTERVAL);
   const hasTempMailSource = Boolean(settings.apiUrl && settings.adminToken)
@@ -1072,17 +1302,29 @@ async function configureAlarms() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-  configureAlarms().catch((error) => console.warn('配置告警失败:', error.message));
-  refreshPageToolsForOpenTabs().catch((error) => console.warn('刷新页面工具失败:', error.message));
-  updateBadgeFromStorage().catch((error) => console.warn('更新角标失败:', error.message));
-});
+function configureAlarms() {
+  return Promise.all([configureVerifyAlarm(), configureMailAlarm()]);
+}
 
-chrome.runtime.onStartup.addListener(() => {
+async function configureCleanupAlarm() {
+  await clearAlarm(CLEANUP_ALARM_NAME);
+  chrome.alarms.create(CLEANUP_ALARM_NAME, {
+    delayInMinutes: CLEANUP_ALARM_INTERVAL_MINUTES,
+    periodInMinutes: CLEANUP_ALARM_INTERVAL_MINUTES,
+  });
+}
+
+function initializeBackground() {
   configureAlarms().catch((error) => console.warn('配置告警失败:', error.message));
+  configureCleanupAlarm().catch((error) => console.warn('配置过期清理告警失败:', error.message));
+  runCleanupExpiredTempAddresses().catch((error) => console.warn('初始化过期邮箱清理失败:', error.message));
   refreshPageToolsForOpenTabs().catch((error) => console.warn('刷新页面工具失败:', error.message));
   updateBadgeFromStorage().catch((error) => console.warn('更新角标失败:', error.message));
-});
+}
+
+chrome.runtime.onInstalled.addListener(initializeBackground);
+
+chrome.runtime.onStartup.addListener(initializeBackground);
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === VERIFY_ALARM_NAME) {
@@ -1092,23 +1334,28 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
   if (alarm.name === MAIL_ALARM_NAME) {
     runPollMailNow().catch((error) => console.warn('后台轮询失败:', error.message));
+    return;
+  }
+
+  if (alarm.name === CLEANUP_ALARM_NAME) {
+    runCleanupExpiredTempAddresses().catch((error) => console.warn('过期邮箱清理失败:', error.message));
   }
 });
 
 chrome.notifications.onClicked.addListener((notificationId) => {
   (async () => {
-    const stored = await storageGet([MAIL_NOTIFICATION_TARGETS_KEY]);
-    const targets = { ...(stored[MAIL_NOTIFICATION_TARGETS_KEY] || {}) };
-    const target = targets[notificationId];
+    const target = await runNotificationTargetsMutation((targets) => {
+      const matched = targets[notificationId];
+      if (matched) delete targets[notificationId];
+      return matched;
+    });
     if (!target?.inbox) {
       return;
     }
 
-    delete targets[notificationId];
     await storageSet({
       activeInbox: target.inbox,
       activeTab: target.inbox.type === 'moe' ? 'moe-mail' : 'temp-email',
-      [MAIL_NOTIFICATION_TARGETS_KEY]: targets,
     });
     chrome.notifications.clear(notificationId);
 
@@ -1122,6 +1369,12 @@ chrome.notifications.onClicked.addListener((notificationId) => {
     }
     chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') });
   })().catch((error) => console.warn('打开通知对应收件箱失败:', error.message));
+});
+
+chrome.notifications.onClosed.addListener((notificationId) => {
+  runNotificationTargetsMutation((targets) => {
+    delete targets[notificationId];
+  }).catch((error) => console.warn('清理通知映射失败:', error.message));
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
@@ -1141,8 +1394,17 @@ chrome.storage.onChanged.addListener((changes, area) => {
     ]).catch(() => {});
   }
 
-  const alarmKeys = [
+  const verifyAlarmKeys = [
     'verifyInterval',
+    'apiUrl',
+    'adminToken',
+    'emailHistory',
+  ];
+  if (verifyAlarmKeys.some((key) => changes[key] !== undefined)) {
+    configureVerifyAlarm().catch((error) => console.warn('重新配置验证告警失败:', error.message));
+  }
+
+  const mailAlarmKeys = [
     'apiUrl',
     'adminToken',
     'emailHistory',
@@ -1151,8 +1413,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     'moeApiKey',
     'moeEmailCache',
   ];
-  if (alarmKeys.some((key) => changes[key] !== undefined)) {
-    configureAlarms().catch((error) => console.warn('重新配置告警失败:', error.message));
+  if (mailAlarmKeys.some((key) => changes[key] !== undefined)) {
+    configureMailAlarm().catch((error) => console.warn('重新配置邮件告警失败:', error.message));
   }
 
   const pageKeys = [
@@ -1209,41 +1471,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    if (message?.type === 'invalidate-remote-data-cache') {
-      const scope = String(message.scope || '');
-      if (scope === 'temp') {
-        clearRemoteDataCache('temp-domains:');
-        await storageRemove([TEMP_DOMAIN_CACHE_STORAGE_KEY]);
-      } else if (scope === 'moe') {
-        clearRemoteDataCache('moe-');
-        await storageRemove([
-          MOE_CONFIG_CACHE_STORAGE_KEY,
-          MOE_EMAIL_LIST_CACHE_STORAGE_KEY,
-        ]);
-      } else {
-        clearRemoteDataCache();
-        await storageRemove([
-          TEMP_DOMAIN_CACHE_STORAGE_KEY,
-          MOE_CONFIG_CACHE_STORAGE_KEY,
-          MOE_EMAIL_LIST_CACHE_STORAGE_KEY,
-        ]);
-      }
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === 'run-verify-now') {
-      await runVerifyAddressesNow();
-      sendResponse({ ok: true });
-      return;
-    }
-
-    if (message?.type === 'run-mail-poll-now') {
-      await runPollMailNow();
-      sendResponse({ ok: true });
-      return;
-    }
-
     if (message?.type === 'cleanup-expired-temp-addresses') {
       const result = await runCleanupExpiredTempAddresses(message.force === true);
       sendResponse({ ok: true, data: result });
@@ -1251,22 +1478,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     if (message?.type === 'clear-temp-unread' && message.address) {
-      const { tempUnreadCounts = {} } = await storageGet(['tempUnreadCounts']);
-      if (tempUnreadCounts[message.address]) {
-        tempUnreadCounts[message.address] = 0;
-        await storageSet({ tempUnreadCounts });
-      }
+      await runMailStateMutation(async () => {
+        const { tempUnreadCounts = {} } = await storageGet(['tempUnreadCounts']);
+        if (tempUnreadCounts[message.address]) {
+          tempUnreadCounts[message.address] = 0;
+          await storageSet({ tempUnreadCounts });
+        }
+      });
       sendResponse({ ok: true });
       return;
     }
 
     if (message?.type === 'clear-moe-unread' && message.emailId !== undefined && message.emailId !== null) {
       const key = String(message.emailId);
-      const { moeUnreadCounts = {} } = await storageGet(['moeUnreadCounts']);
-      if (moeUnreadCounts[key]) {
-        moeUnreadCounts[key] = 0;
-        await storageSet({ moeUnreadCounts });
-      }
+      await runMailStateMutation(async () => {
+        const { moeUnreadCounts = {} } = await storageGet(['moeUnreadCounts']);
+        if (moeUnreadCounts[key]) {
+          moeUnreadCounts[key] = 0;
+          await storageSet({ moeUnreadCounts });
+        }
+      });
       sendResponse({ ok: true });
       return;
     }

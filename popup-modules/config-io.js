@@ -12,7 +12,7 @@
     generatedProfile: ['generatedProfile', 'generatedToolAutoCloseSeconds', 'generatedToolHistory'],
     defaultTab: ['defaultTab', 'activeTab', 'tabLayoutMode', 'theme', 'selectedStyle', 'selectedTheme'],
     emailHistory: ['emailHistory', 'verifyStatusCache', 'tempUnreadCounts'],
-    bookmarks: ['bookmarks', 'bookmarkSort'],
+    bookmarks: ['bookmarks'],
     bookmarkSort: ['bookmarkSort']
   };
 
@@ -156,15 +156,20 @@
           let importedCount = 0;
 
           categories.forEach((category) => {
-            if (!data[category] || !CATEGORY_KEYS[category]) {
+            // 旧版曾把 bookmarkSort 同时写入 bookmarks 分类；导入时继续兼容。
+            const categoryData = data[category]
+              || (category === 'bookmarkSort' && data.bookmarks?.bookmarkSort !== undefined
+                ? data.bookmarks
+                : null);
+            if (!categoryData || !CATEGORY_KEYS[category]) {
               return;
             }
             CATEGORY_KEYS[category].forEach((key) => {
-              if (data[category][key] !== undefined) {
-                if (!validateImportValue(key, data[category][key])) {
+              if (categoryData[key] !== undefined) {
+                if (!validateImportValue(key, categoryData[key])) {
                   throw new Error(`配置项 ${key} 类型或格式无效`);
                 }
-                toStore[key] = data[category][key];
+                toStore[key] = categoryData[key];
               }
             });
             importedCount += 1;
@@ -174,6 +179,10 @@
             showMessage(ioMessage, '配置文件中无匹配的勾选项', 'error');
             return;
           }
+
+          // 已下线的旧布局只做兼容读取，落库时统一迁移到当前模式。
+          if (toStore.tabLayoutMode !== undefined) toStore.tabLayoutMode = 'sidebar';
+          if (toStore.floatWindowStyle !== undefined) toStore.floatWindowStyle = 'modern';
 
           chrome.storage.local.set(toStore, () => {
             showMessage(ioMessage, `已导入 ${importedCount} 个分类，刷新中...`, 'success');

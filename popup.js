@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const { createMailRenderer } = window.PopupMailRenderer;
   const { initConfigIO } = window.PopupConfigIO;
-  const { initGeneratedTools } = window.PopupToolGenerators;
+  const { initGeneratedTools, generatePassword } = window.PopupToolGenerators;
 
   // ===================== 元素引用 =====================
   const backToHomeBtn = document.getElementById('back-to-home');
@@ -206,8 +206,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fastFillDomainSpecificRow = document.getElementById('fast-fill-domain-specific-row');
   const fastFillDomainWhitelistRow = document.getElementById('fast-fill-domain-whitelist-row');
   const fastFillDomainBlacklistRow = document.getElementById('fast-fill-domain-blacklist-row');
-  const fastFillDomainWhitelistEl = document.getElementById('fast-fill-domain-whitelist');
-  const fastFillDomainBlacklistEl = document.getElementById('fast-fill-domain-blacklist');
   const fastFillDomainWhitelistList = document.getElementById('fast-fill-domain-whitelist-list');
   const fastFillDomainBlacklistList = document.getElementById('fast-fill-domain-blacklist-list');
   const fastFillMoeExpiryRow = document.getElementById('fast-fill-moe-expiry-row');
@@ -238,13 +236,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const saveSettingsBtn = document.getElementById('save-settings');
   const settingsMessage = document.getElementById('settings-message');
   const floatToggle = document.getElementById('float-toggle');
-  const floatWindowStyleToggle = document.getElementById('float-window-style-toggle');
-  const floatWindowStyleBtns = floatWindowStyleToggle
-    ? Array.from(floatWindowStyleToggle.querySelectorAll('[data-float-window-style]'))
-    : [];
   const defaultTabSelect = document.getElementById('default-tab-select');
-  const tabLayoutToggle = document.getElementById('tab-layout-toggle');
-  const tabLayoutModeBtns = Array.from(document.querySelectorAll('#tab-layout-toggle [data-layout-mode]'));
   const themePicker = document.getElementById('theme-picker');
   const themeSwatches = themePicker ? Array.from(themePicker.querySelectorAll('.theme-swatch')) : [];
   const verifyIntervalSelect = document.getElementById('verify-interval-select');
@@ -310,15 +302,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     Object.freeze({ key: '1h', value: 1, unit: 'hours' })
   ]);
   const TAB_LAYOUT_MODE_KEY = 'tabLayoutMode';
-  const TAB_LAYOUT_MODES = Object.freeze({
-    TOP: 'top',
-    SIDEBAR: 'sidebar'
-  });
+  const FIXED_TAB_LAYOUT_MODE = 'sidebar';
   const FLOAT_WINDOW_STYLE_KEY = 'floatWindowStyle';
-  const FLOAT_WINDOW_STYLES = Object.freeze({
-    LEGACY: 'legacy',
-    MODERN: 'modern'
-  });
+  const FIXED_FLOAT_WINDOW_STYLE = 'modern';
   const GENERATED_RESULT_AUTO_CLOSE_KEY = 'generatedToolAutoCloseSeconds';
   const GENERATED_HISTORY_KEY = 'generatedToolHistory';
   const DEFAULT_GENERATED_RESULT_AUTO_CLOSE_SECONDS = 30;
@@ -362,7 +348,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     { kind: 'address', label: '住址', pickLabel: '住址输入框' }
   ];
   let currentTheme = 'ocean-blue';
-  let currentFloatWindowStyle = FLOAT_WINDOW_STYLES.MODERN;
   let activeTab = 'temp-email'; // 当前激活的选项卡
 
   async function fetchWithTimeout(url, init = {}, timeoutMs = INTERACTIVE_REQUEST_TIMEOUT_MS) {
@@ -450,7 +435,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let siteAccessMode = 'all';
   let siteAllowlist = [];
   let siteBlocklist = [];
-  let tabLayoutMode = TAB_LAYOUT_MODES.SIDEBAR;
+  const tabLayoutMode = FIXED_TAB_LAYOUT_MODE;
   let currentSiteOrigin = '';
   let pageFillRules = {};
 
@@ -1087,12 +1072,96 @@ document.addEventListener('DOMContentLoaded', async () => {
       resolve(response);
     });
   });
-  let tempDomainsLoaded = false;
-  let tempDomainsLoadPromise = null;
-  let moeDomainsLoaded = false;
-  let moeDomainsLoadPromise = null;
   let moeEmailListLoaded = false;
   let moeEmailListLoadPromise = null;
+
+  function createDomainLoader({ select, createButton, messageElement, fetchDomains }) {
+    let loaded = false;
+    let loadPromise = null;
+    let generation = 0;
+
+    async function load(options = {}) {
+      const forceRefresh = options.forceRefresh === true;
+      if (!forceRefresh && loaded) return;
+      if (loadPromise) return loadPromise;
+
+      const requestGeneration = generation;
+      const requestPromise = (async () => {
+        select.disabled = true;
+        select.innerHTML = '<option value="">加载中...</option>';
+        createButton.disabled = true;
+        const domains = await fetchDomains(forceRefresh);
+        if (requestGeneration !== generation) return;
+        select.innerHTML = '';
+        if (domains.length === 0) {
+          select.innerHTML = '<option value="">无可用域名</option>';
+          loaded = true;
+          return;
+        }
+        domains.forEach((domain) => {
+          const option = document.createElement('option');
+          option.value = domain;
+          option.textContent = domain;
+          select.appendChild(option);
+        });
+        select.disabled = false;
+        createButton.disabled = false;
+        loaded = true;
+      })().catch((error) => {
+        if (requestGeneration !== generation) return;
+        select.innerHTML = '<option value="">加载失败</option>';
+        showMessage(messageElement, `获取域名失败: ${error.message}`, 'error');
+      }).finally(() => {
+        if (loadPromise === requestPromise) loadPromise = null;
+      });
+      loadPromise = requestPromise;
+      return loadPromise;
+    }
+
+    return {
+      load,
+      reset() {
+        generation += 1;
+        loaded = false;
+        loadPromise = null;
+      }
+    };
+  }
+
+  const tempDomainLoader = createDomainLoader({
+    select: domainSelect,
+    createButton: createBtn,
+    messageElement: createMessage,
+    async fetchDomains(forceRefresh) {
+      const response = await runtimeSendMessage({ type: 'get-temp-domains', forceRefresh });
+      return Array.isArray(response?.data?.domains) ? response.data.domains : [];
+    }
+  });
+  const moeDomainLoader = createDomainLoader({
+    select: moeDomainSelect,
+    createButton: moeCreateBtn,
+    messageElement: moeCreateMessage,
+    async fetchDomains(forceRefresh) {
+      const response = await runtimeSendMessage({ type: 'get-moe-config', forceRefresh });
+      return String(response?.data?.emailDomains || '').split(',').map((domain) => domain.trim()).filter(Boolean);
+    }
+  });
+  const loadDomains = tempDomainLoader.load;
+  const moeLoadDomains = moeDomainLoader.load;
+
+  function bindDomainRetry(button, loader) {
+    button.addEventListener('click', async () => {
+      button.style.animation = 'spin 1s linear infinite';
+      try {
+        await loader.load({ forceRefresh: true });
+      } finally {
+        button.style.animation = '';
+      }
+    });
+  }
+  bindDomainRetry(retryDomainsBtn, tempDomainLoader);
+  bindDomainRetry(moeRetryDomainsBtn, moeDomainLoader);
+
   async function proxiedFetch(url, init = {}) {
     const response = await runtimeSendMessage({
       type: 'proxy-fetch',
@@ -1226,91 +1295,54 @@ document.addEventListener('DOMContentLoaded', async () => {
   const allPages = [fastFillPage, tempPage, moePage, bookmarksPage, toolsPage, generatedHistoryPage, fillRulesPage, themesPage, settingsPage, configIOPage];
   const MAIN_TABS = new Set(['fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools', 'generated-history', 'fill-rules', 'themes', 'settings', 'config-io']);
 
-  function normalizeTabLayoutMode(mode) {
-    return mode === TAB_LAYOUT_MODES.TOP ? TAB_LAYOUT_MODES.TOP : TAB_LAYOUT_MODES.SIDEBAR;
-  }
-
-  function isSidebarLayoutMode(mode = tabLayoutMode) {
-    return normalizeTabLayoutMode(mode) === TAB_LAYOUT_MODES.SIDEBAR;
-  }
-
-  function normalizeTabForLayout(tab, mode = tabLayoutMode) {
+  function normalizeTabForLayout(tab) {
     const fallbackTab = 'temp-email';
-    const nextTab = MAIN_TABS.has(tab) ? tab : fallbackTab;
-    if (nextTab === 'generated-history' && !isSidebarLayoutMode(mode)) {
-      return 'tools';
-    }
-    if (nextTab === 'fill-rules' && !isSidebarLayoutMode(mode)) {
-      return 'tools';
-    }
-    if (nextTab === 'config-io' && !isSidebarLayoutMode(mode)) {
-      return 'settings';
-    }
-    return nextTab;
+    return MAIN_TABS.has(tab) ? tab : fallbackTab;
   }
 
-  function mountGeneratedHistorySection(mode = tabLayoutMode) {
+  function mountGeneratedHistorySection() {
     if (!generatedHistorySection || !toolsGeneratedHistorySlot || !generatedHistoryPageSlot) {
       return;
     }
-    const sidebarEnabled = isSidebarLayoutMode(mode);
-    const targetSlot = sidebarEnabled ? generatedHistoryPageSlot : toolsGeneratedHistorySlot;
-    if (generatedHistorySection.parentElement !== targetSlot) {
-      targetSlot.appendChild(generatedHistorySection);
+    if (generatedHistorySection.parentElement !== generatedHistoryPageSlot) {
+      generatedHistoryPageSlot.appendChild(generatedHistorySection);
     }
     if (generatedHistoryTabBtn) {
-      generatedHistoryTabBtn.classList.toggle('hidden', !sidebarEnabled);
+      generatedHistoryTabBtn.classList.remove('hidden');
     }
   }
 
-  function mountFillRulesSection(mode = tabLayoutMode) {
+  function mountFillRulesSection() {
     if (!fillRulesSection || !toolsFillRulesSlot || !fillRulesPageSlot) {
       return;
     }
-    const sidebarEnabled = isSidebarLayoutMode(mode);
-    const targetSlot = sidebarEnabled ? fillRulesPageSlot : toolsFillRulesSlot;
-    if (fillRulesSection.parentElement !== targetSlot) {
-      targetSlot.appendChild(fillRulesSection);
+    if (fillRulesSection.parentElement !== fillRulesPageSlot) {
+      fillRulesPageSlot.appendChild(fillRulesSection);
     }
     if (fillRulesTabBtn) {
-      fillRulesTabBtn.classList.toggle('hidden', !sidebarEnabled);
+      fillRulesTabBtn.classList.remove('hidden');
     }
   }
 
-  function mountConfigIOSection(mode = tabLayoutMode) {
+  function mountConfigIOSection() {
     if (!configIOSection || !settingsConfigIOSlot || !configIOPageSlot) {
       return;
     }
-    const sidebarEnabled = isSidebarLayoutMode(mode);
-    const targetSlot = sidebarEnabled ? configIOPageSlot : settingsConfigIOSlot;
-    if (configIOSection.parentElement !== targetSlot) {
-      targetSlot.appendChild(configIOSection);
+    if (configIOSection.parentElement !== configIOPageSlot) {
+      configIOPageSlot.appendChild(configIOSection);
     }
     if (configIOTabBtn) {
-      configIOTabBtn.classList.toggle('hidden', !sidebarEnabled);
+      configIOTabBtn.classList.remove('hidden');
     }
   }
 
-  function syncTabLayoutToggle(mode) {
-    const normalized = normalizeTabLayoutMode(mode);
-    tabLayoutModeBtns.forEach((btn) => {
-      const isActive = btn.dataset.layoutMode === normalized;
-      btn.classList.toggle('active', isActive);
-      btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
-      btn.tabIndex = isActive ? 0 : -1;
-    });
-  }
-
-  function applyTabLayoutMode(mode) {
-    const normalized = normalizeTabLayoutMode(mode);
-    tabLayoutMode = normalized;
+  function applyTabLayoutMode() {
     document.body.classList.remove('tab-layout-top', 'tab-layout-sidebar');
-    document.body.classList.add(`tab-layout-${normalized}`);
-    syncTabLayoutToggle(normalized);
-    mountGeneratedHistorySection(normalized);
-    mountFillRulesSection(normalized);
-    mountConfigIOSection(normalized);
-    const normalizedActiveTab = normalizeTabForLayout(activeTab, normalized);
+    document.body.classList.add('tab-layout-sidebar');
+    mountGeneratedHistorySection();
+    mountFillRulesSection();
+    mountConfigIOSection();
+    const normalizedActiveTab = normalizeTabForLayout(activeTab);
     if (normalizedActiveTab !== activeTab) {
       switchTab(normalizedActiveTab, { persist: false });
       return;
@@ -1320,41 +1352,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  function saveTabLayoutMode(mode) {
-    const normalized = normalizeTabLayoutMode(mode);
-    applyTabLayoutMode(normalized);
-    storageSet({ [TAB_LAYOUT_MODE_KEY]: normalized });
-  }
-
-  function normalizeFloatWindowStyle(style) {
-    return style === FLOAT_WINDOW_STYLES.LEGACY ? FLOAT_WINDOW_STYLES.LEGACY : FLOAT_WINDOW_STYLES.MODERN;
-  }
-
-  function syncFloatWindowStyleToggle(style) {
-    const normalized = normalizeFloatWindowStyle(style);
-    floatWindowStyleBtns.forEach((btn) => {
-      const isActive = btn.dataset.floatWindowStyle === normalized;
-      btn.classList.toggle('active', isActive);
-      btn.setAttribute('aria-checked', isActive ? 'true' : 'false');
-      btn.tabIndex = isActive ? 0 : -1;
-    });
-  }
-
-  function applyFloatingWindowStyle(style) {
-    const normalized = normalizeFloatWindowStyle(style);
-    currentFloatWindowStyle = normalized;
+  function applyFloatingWindowStyle() {
     const isFloatingHost = window.top !== window;
-    document.documentElement.setAttribute('data-floating-window-style', normalized);
-    document.body.classList.toggle('floating-hosted', isFloatingHost && normalized === FLOAT_WINDOW_STYLES.MODERN);
-    document.body.classList.toggle('floating-style-modern', isFloatingHost && normalized === FLOAT_WINDOW_STYLES.MODERN);
-    document.body.classList.toggle('floating-style-legacy', isFloatingHost && normalized === FLOAT_WINDOW_STYLES.LEGACY);
-    syncFloatWindowStyleToggle(normalized);
-  }
-
-  function saveFloatingWindowStyle(style) {
-    const normalized = normalizeFloatWindowStyle(style);
-    applyFloatingWindowStyle(normalized);
-    storageSet({ [FLOAT_WINDOW_STYLE_KEY]: normalized });
+    document.documentElement.setAttribute('data-floating-window-style', FIXED_FLOAT_WINDOW_STYLE);
+    document.body.classList.toggle('floating-hosted', isFloatingHost);
+    document.body.classList.toggle('floating-style-modern', isFloatingHost);
+    document.body.classList.remove('floating-style-legacy');
   }
 
   const VALID_THEMES = new Set(['ocean-blue', 'sakura-pink', 'emerald-green', 'lavender-purple', 'midnight-dark', 'sunset-orange', 'cyber-neon', 'mocha-brown', 'arctic-ice', 'rose-gold']);
@@ -1379,7 +1382,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     storageSet({ [THEME_KEY]: normalized });
   }
 
-  applyFloatingWindowStyle(currentFloatWindowStyle);
+  applyFloatingWindowStyle();
 
   function updateHeaderForTab(tab) {
     const activeBtn = Array.from(tabBtns).find((btn) => btn.dataset.tab === tab);
@@ -2450,25 +2453,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const useSpecial = document.getElementById('ff-pwd-special')?.checked;
         const noAmbig = document.getElementById('ff-pwd-no-ambig')?.checked;
 
-        const genPwd = window.PopupToolGenerators?.generatePassword;
-        const password = genPwd
-          ? genPwd(len, useUpper, useLower, useDigit, useSpecial, noAmbig)
-          : (function () {
-              // Fallback inline generator (kept for robustness)
-              const ambiguous = 'O0lI1|';
-              let chars = '';
-              if (useUpper) chars += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-              if (useLower) chars += 'abcdefghijklmnopqrstuvwxyz';
-              if (useDigit) chars += '0123456789';
-              if (useSpecial) chars += '!@#$%^&*()-_=+[]{}:;<>,.?/~';
-              if (!chars) chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-              if (noAmbig) chars = chars.split('').filter(function (c) { return ambiguous.indexOf(c) === -1; }).join('');
-              var rv = new Uint32Array(len);
-              crypto.getRandomValues(rv);
-              var pwd = '';
-              for (var i = 0; i < len; i++) pwd += chars[rv[i] % chars.length];
-              return pwd;
-            })();
+        const password = generatePassword(len, useUpper, useLower, useDigit, useSpecial, noAmbig);
         generatedFields.password = password;
         generatedFields.confirmPassword = password;
         updateGeneratedProfile({ password, confirmPassword: password });
@@ -3608,7 +3593,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     syncBlocklistTextarea();
   }
 
-  applyTabLayoutMode(TAB_LAYOUT_MODES.SIDEBAR);
+  applyTabLayoutMode();
 
   // ===================== 初始化加载 =====================
   storageGet([
@@ -3634,8 +3619,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 默认页面设置
     const savedDefault = result.defaultTab || 'temp-email';
     defaultTabSelect.value = savedDefault;
-    applyTabLayoutMode(result[TAB_LAYOUT_MODE_KEY]);
-    applyFloatingWindowStyle(result[FLOAT_WINDOW_STYLE_KEY]);
+    applyTabLayoutMode();
+    applyFloatingWindowStyle();
+    if (result[TAB_LAYOUT_MODE_KEY] !== FIXED_TAB_LAYOUT_MODE
+        || result[FLOAT_WINDOW_STYLE_KEY] !== FIXED_FLOAT_WINDOW_STYLE) {
+      storageSet({
+        [TAB_LAYOUT_MODE_KEY]: FIXED_TAB_LAYOUT_MODE,
+        [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE
+      });
+    }
     applyTheme(result[THEME_KEY]);
 
     if (result.emailHistory) {
@@ -3793,7 +3785,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tempConfigChanged = newUrl !== apiUrl || newToken !== adminToken;
     const moeConfigChanged = newMoeUrl !== moeApiUrl || newMoeKey !== moeApiKey;
     const floatEnabled = floatToggle.checked;
-    const newFloatWindowStyle = currentFloatWindowStyle;
+    const newFloatWindowStyle = FIXED_FLOAT_WINDOW_STYLE;
     const newDefaultTab = defaultTabSelect.value;
     const newTabLayoutMode = tabLayoutMode;
     let verifyInterval = { ...DISABLED_INTERVAL_SETTING };
@@ -3849,11 +3841,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     moeApiUrl = newMoeUrl;
     moeApiKey = newMoeKey;
     if (tempConfigChanged) {
-      tempDomainsLoaded = false;
+      tempDomainLoader.reset();
       fastFillLoadedSources.delete('temp');
     }
     if (moeConfigChanged) {
-      moeDomainsLoaded = false;
+      moeDomainLoader.reset();
       moeEmailListLoaded = false;
       fastFillLoadedSources.delete('moe');
     }
@@ -3925,76 +3917,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     siteAccessMode = siteAccessModeSelect.value || 'all';
     refreshCurrentSiteInfo();
   });
-
-  if (tabLayoutToggle) {
-    tabLayoutToggle.addEventListener('click', (event) => {
-      const targetBtn = event.target.closest('[data-layout-mode]');
-      if (!targetBtn) {
-        return;
-      }
-      const nextMode = normalizeTabLayoutMode(targetBtn.dataset.layoutMode);
-      if (nextMode === tabLayoutMode) {
-        return;
-      }
-      saveTabLayoutMode(nextMode);
-    });
-
-    tabLayoutToggle.addEventListener('keydown', (event) => {
-      const direction = ['ArrowUp', 'ArrowLeft'].includes(event.key)
-        ? -1
-        : ['ArrowDown', 'ArrowRight'].includes(event.key)
-          ? 1
-          : 0;
-      if (!direction || tabLayoutModeBtns.length < 2) {
-        return;
-      }
-      event.preventDefault();
-      const currentIndex = tabLayoutModeBtns.findIndex((btn) => btn.dataset.layoutMode === tabLayoutMode);
-      const safeIndex = currentIndex >= 0 ? currentIndex : 0;
-      const nextIndex = (safeIndex + direction + tabLayoutModeBtns.length) % tabLayoutModeBtns.length;
-      const nextBtn = tabLayoutModeBtns[nextIndex];
-      if (!nextBtn) {
-        return;
-      }
-      saveTabLayoutMode(nextBtn.dataset.layoutMode);
-      nextBtn.focus();
-    });
-  }
-
-  if (floatWindowStyleToggle) {
-    floatWindowStyleToggle.addEventListener('click', (event) => {
-      const targetBtn = event.target.closest('[data-float-window-style]');
-      if (!targetBtn) {
-        return;
-      }
-      const nextStyle = normalizeFloatWindowStyle(targetBtn.dataset.floatWindowStyle);
-      if (nextStyle === currentFloatWindowStyle) {
-        return;
-      }
-      saveFloatingWindowStyle(nextStyle);
-    });
-
-    floatWindowStyleToggle.addEventListener('keydown', (event) => {
-      const direction = ['ArrowUp', 'ArrowLeft'].includes(event.key)
-        ? -1
-        : ['ArrowDown', 'ArrowRight'].includes(event.key)
-          ? 1
-          : 0;
-      if (!direction || floatWindowStyleBtns.length < 2) {
-        return;
-      }
-      event.preventDefault();
-      const currentIndex = floatWindowStyleBtns.findIndex((btn) => btn.dataset.floatWindowStyle === currentFloatWindowStyle);
-      const safeIndex = currentIndex >= 0 ? currentIndex : 0;
-      const nextIndex = (safeIndex + direction + floatWindowStyleBtns.length) % floatWindowStyleBtns.length;
-      const nextBtn = floatWindowStyleBtns[nextIndex];
-      if (!nextBtn) {
-        return;
-      }
-      saveFloatingWindowStyle(nextBtn.dataset.floatWindowStyle);
-      nextBtn.focus();
-    });
-  }
 
   if (themePicker) {
     themePicker.addEventListener('click', (event) => {
@@ -4285,61 +4207,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   mailInsightModelSelect.addEventListener('change', () => {
     mailInsightModelInput.value = mailInsightModelSelect.value;
-  });
-
-  // ===================== Temp Email: 加载域名 =====================
-  async function loadDomains(options = {}) {
-    const forceRefresh = options.forceRefresh === true;
-    if (!forceRefresh && tempDomainsLoaded) {
-      return;
-    }
-    if (tempDomainsLoadPromise) {
-      return tempDomainsLoadPromise;
-    }
-
-    tempDomainsLoadPromise = (async () => {
-      domainSelect.disabled = true;
-      domainSelect.innerHTML = '<option value="">加载中...</option>';
-      createBtn.disabled = true;
-
-      const response = await runtimeSendMessage({
-        type: 'get-temp-domains',
-        forceRefresh,
-      });
-      const domains = Array.isArray(response?.data?.domains) ? response.data.domains : [];
-
-      domainSelect.innerHTML = '';
-      if (domains.length === 0) {
-        domainSelect.innerHTML = '<option value="">无可用域名</option>';
-        tempDomainsLoaded = true;
-        return;
-      }
-      
-      domains.forEach(d => {
-        const option = document.createElement('option');
-        option.value = d;
-        option.textContent = d;
-        domainSelect.appendChild(option);
-      });
-      
-      domainSelect.disabled = false;
-      createBtn.disabled = false;
-      tempDomainsLoaded = true;
-    })().catch((e) => {
-      domainSelect.innerHTML = '<option value="">加载失败</option>';
-      showMessage(createMessage, `获取域名失败: ${e.message}`, 'error');
-    }).finally(() => {
-      tempDomainsLoadPromise = null;
-    });
-
-    return tempDomainsLoadPromise;
-  }
-
-  // 重试获取域名列表
-  retryDomainsBtn.addEventListener('click', async () => {
-    retryDomainsBtn.style.animation = 'spin 1s linear infinite';
-    await loadDomains({ forceRefresh: true });
-    retryDomainsBtn.style.animation = '';
   });
 
   // ===================== Temp Email: 创建邮箱 =====================
@@ -5403,64 +5270,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
-  // ===================== MoeMail: 加载域名 =====================
-  async function moeLoadDomains(options = {}) {
-    const forceRefresh = options.forceRefresh === true;
-    if (!forceRefresh && moeDomainsLoaded) {
-      return;
-    }
-    if (moeDomainsLoadPromise) {
-      return moeDomainsLoadPromise;
-    }
-
-    moeDomainsLoadPromise = (async () => {
-      moeDomainSelect.disabled = true;
-      moeDomainSelect.innerHTML = '<option value="">加载中...</option>';
-      moeCreateBtn.disabled = true;
-
-      const response = await runtimeSendMessage({
-        type: 'get-moe-config',
-        forceRefresh,
-      });
-
-      // emailDomains 是逗号分隔的字符串
-      const domainStr = response?.data?.emailDomains || '';
-      const domains = String(domainStr).split(',').map(d => d.trim()).filter(Boolean);
-
-      moeDomainSelect.innerHTML = '';
-      if (domains.length === 0) {
-        moeDomainSelect.innerHTML = '<option value="">无可用域名</option>';
-        moeDomainsLoaded = true;
-        return;
-      }
-
-      domains.forEach(d => {
-        const opt = document.createElement('option');
-        opt.value = d;
-        opt.textContent = d;
-        moeDomainSelect.appendChild(opt);
-      });
-
-      moeDomainSelect.disabled = false;
-      moeCreateBtn.disabled = false;
-      moeDomainsLoaded = true;
-    })().catch((e) => {
-      moeDomainSelect.innerHTML = '<option value="">加载失败</option>';
-      showMessage(moeCreateMessage, `获取域名失败: ${e.message}`, 'error');
-    }).finally(() => {
-      moeDomainsLoadPromise = null;
-    });
-
-    return moeDomainsLoadPromise;
-  }
-
-  // MoeMail 重试获取域名列表
-  moeRetryDomainsBtn.addEventListener('click', async () => {
-    moeRetryDomainsBtn.style.animation = 'spin 1s linear infinite';
-    await moeLoadDomains({ forceRefresh: true });
-    moeRetryDomainsBtn.style.animation = '';
-  });
-
   // ===================== MoeMail: 创建邮箱 =====================
   moeCreateBtn.addEventListener('click', async () => {
     const name = moeEmailNameInput.value.trim();
@@ -6463,9 +6272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (toStore.floatWindowEnabled !== undefined) {
           floatToggle.checked = toStore.floatWindowEnabled;
         }
-        if (toStore[FLOAT_WINDOW_STYLE_KEY] !== undefined) {
-          applyFloatingWindowStyle(toStore[FLOAT_WINDOW_STYLE_KEY]);
-        }
+        if (toStore[FLOAT_WINDOW_STYLE_KEY] !== undefined) applyFloatingWindowStyle();
         if (toStore.verifyInterval !== undefined) {
           setupAutoVerify(normalizeIntervalSetting(toStore.verifyInterval, DISABLED_INTERVAL_SETTING));
         }
@@ -6526,9 +6333,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           syncGeneratedResultAutoCloseInput(generatedResultAutoCloseSeconds);
           restoreGeneratedToolResults();
         }
-        if (toStore[TAB_LAYOUT_MODE_KEY] !== undefined) {
-          applyTabLayoutMode(toStore[TAB_LAYOUT_MODE_KEY]);
-        }
+        if (toStore[TAB_LAYOUT_MODE_KEY] !== undefined) applyTabLayoutMode();
         if (toStore[THEME_KEY] !== undefined) {
           applyTheme(toStore[THEME_KEY]);
         }
@@ -6649,8 +6454,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           renderBookmarks();
         }
 
-        tempDomainsLoaded = false;
-        moeDomainsLoaded = false;
+        tempDomainLoader.reset();
+        moeDomainLoader.reset();
         moeEmailListLoaded = false;
         fastFillLoadedSources.clear();
         ensureRemoteDataForTab(activeTab);
@@ -6858,7 +6663,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       adminTokenInput.value = adminToken;
     }
     if (tempConfigChanged) {
-      tempDomainsLoaded = false;
+      tempDomainLoader.reset();
       fastFillLoadedSources.delete('temp');
     }
 
@@ -6873,7 +6678,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeApiKeyInput.value = moeApiKey;
     }
     if (moeConfigChanged) {
-      moeDomainsLoaded = false;
+      moeDomainLoader.reset();
       moeEmailListLoaded = false;
       fastFillLoadedSources.delete('moe');
     }
@@ -6886,7 +6691,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       floatToggle.checked = changes.floatWindowEnabled.newValue !== false;
     }
     if (changes[FLOAT_WINDOW_STYLE_KEY]) {
-      applyFloatingWindowStyle(changes[FLOAT_WINDOW_STYLE_KEY].newValue);
+      applyFloatingWindowStyle();
+      if (changes[FLOAT_WINDOW_STYLE_KEY].newValue !== FIXED_FLOAT_WINDOW_STYLE) {
+        storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE });
+      }
     }
     if (changes.defaultTab) {
       defaultTabSelect.value = changes.defaultTab.newValue || 'temp-email';
@@ -6895,7 +6703,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       switchTab(changes.activeTab.newValue || 'temp-email', { persist: false });
     }
     if (changes[TAB_LAYOUT_MODE_KEY]) {
-      applyTabLayoutMode(changes[TAB_LAYOUT_MODE_KEY].newValue);
+      applyTabLayoutMode();
+      if (changes[TAB_LAYOUT_MODE_KEY].newValue !== FIXED_TAB_LAYOUT_MODE) {
+        storageSet({ [TAB_LAYOUT_MODE_KEY]: FIXED_TAB_LAYOUT_MODE });
+      }
     }
     if (changes[THEME_KEY]) {
       applyTheme(changes[THEME_KEY].newValue);
