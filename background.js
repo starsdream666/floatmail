@@ -90,6 +90,30 @@ function tabsQuery(queryInfo) {
   });
 }
 
+function tabsGet(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(tab);
+    });
+  });
+}
+
+function tabsReload(tabId) {
+  return new Promise((resolve, reject) => {
+    chrome.tabs.reload(tabId, {}, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 function tabsSendMessage(tabId, message) {
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -110,6 +134,18 @@ function executeScript(tabId, files) {
         return;
       }
       resolve(result);
+    });
+  });
+}
+
+function executeScriptFunction(tabId, func) {
+  return new Promise((resolve, reject) => {
+    chrome.scripting.executeScript({ target: { tabId }, func }, (results) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(results?.[0]?.result);
     });
   });
 }
@@ -223,121 +259,6 @@ function isHttpUrl(rawUrl) {
   } catch {
     return false;
   }
-}
-
-function normalizeOrigin(rawUrl) {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-      return '';
-    }
-    return url.origin;
-  } catch {
-    return '';
-  }
-}
-
-function normalizeOriginList(list) {
-  return (Array.isArray(list) ? list : [])
-    .map(normalizeOrigin)
-    .filter(Boolean);
-}
-
-/**
- * 从 URL 或 origin 中提取 hostname（不含端口）
- * 支持: 'https://example.com:8080/path' → 'example.com'
- *       'https://example.com' → 'example.com'
- *       'example.com' → 'example.com'
- */
-function extractHostname(rawUrl) {
-  if (!rawUrl || typeof rawUrl !== 'string') return '';
-  try {
-    const url = new URL(rawUrl);
-    return url.hostname || '';
-  } catch {
-    // 可能是纯 hostname 或 origin 不带协议
-    const cleaned = rawUrl.trim();
-    if (cleaned.includes('://')) {
-      const afterProtocol = cleaned.split('://')[1];
-      return afterProtocol.split('/')[0].split(':')[0];
-    }
-    return cleaned.split(':')[0];
-  }
-}
-
-/**
- * 判断 URL 是否匹配某条黑名单/白名单规则
- *
- * 支持三种匹配模式：
- * 1. 完整域名（origin）: 'https://mail.google.com' — 精确匹配 origin
- * 2. 通配符: '*.example.com' — 匹配 example.com 及其所有子域名
- * 3. 域名关键词: 'spam' — 匹配 hostname 中包含该关键词的任意域名（忽略大小写）
- */
-function matchesSitePattern(rawUrl, pattern) {
-  if (!rawUrl || !pattern) return false;
-  const p = String(pattern).trim();
-  if (!p) return false;
-
-  // 1. 完整 origin 精确匹配 (http:// 或 https:// 开头)
-  if (p.startsWith('http://') || p.startsWith('https://')) {
-    try {
-      const patternOrigin = new URL(p).origin;
-      let origin;
-      try {
-        origin = new URL(rawUrl).origin;
-      } catch {
-        // rawUrl 可能本身就已经是 origin
-        origin = rawUrl;
-      }
-      return patternOrigin === origin;
-    } catch {
-      return false;
-    }
-  }
-
-  const hostname = extractHostname(rawUrl);
-  if (!hostname) return false;
-
-  // 2. 通配符匹配: '*.example.com'
-  if (p.startsWith('*.')) {
-    const suffix = p.slice(2); // 移除 '*.' → 'example.com'
-    if (!suffix) return false;
-    return hostname === suffix || hostname.endsWith('.' + suffix);
-  }
-
-  // 3. 关键词匹配（忽略大小写）
-  return hostname.toLowerCase().includes(p.toLowerCase());
-}
-
-/**
- * 判断 URL 是否匹配规则列表中的任意一条
- */
-function matchesAnySitePattern(rawUrl, patterns) {
-  if (!Array.isArray(patterns) || patterns.length === 0) return false;
-  return patterns.some(pattern => matchesSitePattern(rawUrl, pattern));
-}
-
-function shouldAllowSite(url, settings) {
-  const origin = normalizeOrigin(url);
-  if (!origin) {
-    return false;
-  }
-
-  // 黑名单：支持完整域名、通配符、关键词三种模式
-  const blocklist = Array.isArray(settings.siteBlocklist) ? settings.siteBlocklist : [];
-  if (matchesAnySitePattern(url, blocklist)) {
-    return false;
-  }
-
-  if (settings.siteAccessMode === 'whitelist') {
-    const allowlist = Array.isArray(settings.siteAllowlist) ? settings.siteAllowlist : [];
-    // 白名单同时也尝试模式匹配（兼容新格式），以及旧的 origin 精确匹配
-    if (matchesAnySitePattern(url, allowlist)) return true;
-    const allowlistOrigins = new Set(normalizeOriginList(allowlist));
-    return allowlistOrigins.has(origin);
-  }
-
-  return true;
 }
 
 function buildAddressString(record) {
@@ -1198,22 +1119,89 @@ function runPollMailNow() {
   return mailPollRunPromise;
 }
 
-async function isPageToolsReady(tabId) {
+const PAGE_TOOLS_VERSION = '2026.07.13-lifecycle-v2';
+const pageToolsReconcileRuns = new Map();
+
+async function getPageToolsStatus(tabId) {
   try {
     const response = await tabsSendMessage(tabId, { type: 'page-tools-ping' });
-    return Boolean(response?.ok);
+    return response?.ok ? response : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function ensurePageToolsInjected(tabId, url) {
+async function getPageToolsDomState(tabId) {
+  try {
+    return await executeScriptFunction(tabId, () => ({
+      buttons: document.querySelectorAll('#temp-email-float-btn').length,
+      panels: document.querySelectorAll('#temp-email-float-panel').length,
+    }));
+  } catch {
+    return { buttons: 0, panels: 0 };
+  }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForCurrentPageTools(tabId, attempts = 40, intervalMs = 250) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const status = await getPageToolsStatus(tabId);
+    if (status?.version === PAGE_TOOLS_VERSION) {
+      return true;
+    }
+    if (attempt < attempts - 1) {
+      await delay(intervalMs);
+    }
+  }
+  return false;
+}
+
+async function reloadTabForPageToolsMigration(tabId) {
+  await tabsReload(tabId);
+  if (!await waitForCurrentPageTools(tabId)) {
+    throw new Error('页面刷新后页面助手未能及时加载');
+  }
+  return true;
+}
+
+async function reconcilePageToolsInTabInternal(tabId, url) {
   if (!isHttpUrl(url)) {
     return false;
   }
 
-  if (await isPageToolsReady(tabId)) {
+  const status = await getPageToolsStatus(tabId);
+  const domState = await getPageToolsDomState(tabId);
+  const hasLegacyDom = domState.buttons > 0 || domState.panels > 0;
+  const hasDuplicateDom = domState.buttons > 1 || domState.panels > 1;
+
+  // 无版本的旧脚本无法移除匿名监听器，其 observer 会不断复挂遗留 DOM；
+  // 这种实例以及已出现重复 UI 的页面只能通过一次整页刷新安全迁移。
+  if ((status?.ok && !status.version)
+    || hasDuplicateDom
+    || (!status && hasLegacyDom)) {
+    return reloadTabForPageToolsMigration(tabId);
+  }
+
+  if (status?.version === PAGE_TOOLS_VERSION) {
     return true;
+  }
+
+  if (status) {
+    try {
+      const disposeResponse = await tabsSendMessage(tabId, { type: 'dispose-page-tools' });
+      if (disposeResponse?.ok !== true) {
+        throw new Error(disposeResponse?.error || '旧页面助手不支持释放');
+      }
+    } catch {
+      try {
+        await tabsSendMessage(tabId, { type: 'teardown-page-tools' });
+      } catch {
+        // 旧实例上下文可能已失效，新脚本会清理遗留 DOM。
+      }
+    }
   }
 
   try {
@@ -1223,37 +1211,40 @@ async function ensurePageToolsInjected(tabId, url) {
   }
 
   await executeScript(tabId, ['content.js']);
+  const nextStatus = await getPageToolsStatus(tabId);
+  if (nextStatus?.version !== PAGE_TOOLS_VERSION) {
+    throw new Error('页面助手版本校验失败');
+  }
   return true;
 }
 
-async function refreshPageToolsForOpenTabs() {
-  const settings = await storageGet([
-    'floatWindowEnabled',
-    'siteAccessMode',
-    'siteAllowlist',
-    'siteBlocklist',
-  ]);
-  const autoInjectEnabled = settings.floatWindowEnabled !== false;
+function reconcilePageToolsInTab(tabId, url) {
+  if (pageToolsReconcileRuns.has(tabId)) {
+    return pageToolsReconcileRuns.get(tabId);
+  }
+  const run = reconcilePageToolsInTabInternal(tabId, url)
+    .finally(() => {
+      if (pageToolsReconcileRuns.get(tabId) === run) {
+        pageToolsReconcileRuns.delete(tabId);
+      }
+    });
+  pageToolsReconcileRuns.set(tabId, run);
+  return run;
+}
+
+async function reconcilePageToolsInOpenTabs() {
   const tabs = await tabsQuery({});
+  tabs.sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)));
 
   for (const tab of tabs) {
     if (!tab.id || !tab.url || !isHttpUrl(tab.url)) {
       continue;
     }
 
-    if (autoInjectEnabled && shouldAllowSite(tab.url, settings)) {
-      try {
-        await ensurePageToolsInjected(tab.id, tab.url);
-      } catch (error) {
-        console.warn('页面工具注入失败:', error.message);
-      }
-      continue;
-    }
-
     try {
-      await tabsSendMessage(tab.id, { type: 'teardown-page-tools' });
-    } catch {
-      // 页面上尚未注入，无需处理。
+      await reconcilePageToolsInTab(tab.id, tab.url);
+    } catch (error) {
+      console.warn('页面工具兼容注入失败:', error.message);
     }
   }
 }
@@ -1318,11 +1309,17 @@ function initializeBackground() {
   configureAlarms().catch((error) => console.warn('配置告警失败:', error.message));
   configureCleanupAlarm().catch((error) => console.warn('配置过期清理告警失败:', error.message));
   runCleanupExpiredTempAddresses().catch((error) => console.warn('初始化过期邮箱清理失败:', error.message));
-  refreshPageToolsForOpenTabs().catch((error) => console.warn('刷新页面工具失败:', error.message));
   updateBadgeFromStorage().catch((error) => console.warn('更新角标失败:', error.message));
 }
 
-chrome.runtime.onInstalled.addListener(initializeBackground);
+chrome.runtime.onInstalled.addListener((details) => {
+  initializeBackground();
+  if (details.reason === 'install' || details.reason === 'update') {
+    // 声明式 content script 不会补注入安装/升级前已打开的页面。
+    reconcilePageToolsInOpenTabs()
+      .catch((error) => console.warn('页面工具兼容注入失败:', error.message));
+  }
+});
 
 chrome.runtime.onStartup.addListener(initializeBackground);
 
@@ -1417,16 +1414,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     configureMailAlarm().catch((error) => console.warn('重新配置邮件告警失败:', error.message));
   }
 
-  const pageKeys = [
-    'floatWindowEnabled',
-    'siteAccessMode',
-    'siteAllowlist',
-    'siteBlocklist',
-  ];
-  if (pageKeys.some((key) => changes[key] !== undefined)) {
-    refreshPageToolsForOpenTabs().catch((error) => console.warn('刷新页面工具失败:', error.message));
-  }
-
   if (changes.tempUnreadCounts || changes.moeUnreadCounts) {
     updateBadgeFromStorage().catch((error) => console.warn('更新角标失败:', error.message));
   }
@@ -1448,6 +1435,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type === 'storage-remove') {
       await storageRemove(message.keys);
       sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'ensure-page-tools') {
+      const tabId = Number(message.tabId);
+      if (!Number.isInteger(tabId)) {
+        throw new Error('缺少有效的标签页 ID');
+      }
+      const tab = await tabsGet(tabId);
+      const ready = await reconcilePageToolsInTab(tabId, tab?.url || '');
+      sendResponse({ ok: true, data: { ready, version: ready ? PAGE_TOOLS_VERSION : '' } });
       return;
     }
 

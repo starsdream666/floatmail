@@ -3,9 +3,26 @@
 (function () {
   'use strict';
 
-  if (window.__tempEmailPageToolsLoaded) {
+  const PAGE_TOOLS_VERSION = '2026.07.13-lifecycle-v2';
+  const existingPageToolsController = window.__floatMailPageToolsController;
+  if (existingPageToolsController?.version === PAGE_TOOLS_VERSION
+    && existingPageToolsController.disposed !== true) {
     return;
   }
+  if (typeof existingPageToolsController?.dispose === 'function') {
+    try {
+      existingPageToolsController.dispose();
+    } catch {
+      // 旧实例清理失败时继续启动，新实例会移除遗留 UI。
+    }
+  }
+
+  const pageToolsController = {
+    version: PAGE_TOOLS_VERSION,
+    disposed: false,
+    dispose: null,
+  };
+  window.__floatMailPageToolsController = pageToolsController;
   window.__tempEmailPageToolsLoaded = true;
 
   const BUTTON_ID = 'temp-email-float-btn';
@@ -58,6 +75,8 @@
   let shouldReopenFloatPanelAfterSelection = false;
   let lastPanelStateChangeTime = 0;
   let selectionHintTimer = null;
+  let floatLifecycleRevision = 0;
+  let pageToolsDisposed = false;
   const targetHighlightState = new WeakMap();
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
@@ -1940,11 +1959,14 @@
     return patterns.some(p => matchesFloatSitePattern(rawUrl, p));
   }
 
-  async function maybeInitFloatWindow() {
+  async function reconcileFloatWindow(revision) {
     const result = await storageGet([
       'floatWindowEnabled', FLOAT_LAYOUT_KEY, FLOAT_WINDOW_STYLE_KEY,
       'siteAccessMode', 'siteAllowlist', 'siteBlocklist'
     ]);
+    if (pageToolsDisposed || revision !== floatLifecycleRevision) {
+      return;
+    }
     if (result[FLOAT_WINDOW_STYLE_KEY] !== FIXED_FLOAT_WINDOW_STYLE) {
       storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
     }
@@ -1971,66 +1993,78 @@
     await initFloatWindow(result[FLOAT_LAYOUT_KEY]);
   }
 
-  document.addEventListener('focusin', (event) => {
+  function scheduleFloatWindowReconcile() {
+    if (pageToolsDisposed) {
+      return;
+    }
+    const revision = ++floatLifecycleRevision;
+    reconcileFloatWindow(revision).catch(() => {});
+  }
+
+  function handleDocumentFocusIn(event) {
     if (isEditableElement(event.target)) {
       lastFocusedElement = event.target;
     }
-  }, true);
-
-  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.addListener) {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local') {
-        return;
-      }
-
-      if (changes[PAGE_FILL_RULES_KEY]) {
-        allFillRules = changes[PAGE_FILL_RULES_KEY].newValue || {};
-      }
-
-      if (changes.floatWindowEnabled) {
-        if (changes.floatWindowEnabled.newValue === false) {
-          teardownFloatWindow();
-        } else {
-          maybeInitFloatWindow().catch(() => {});
-        }
-      }
-
-      if (changes.siteAccessMode || changes.siteAllowlist || changes.siteBlocklist) {
-        maybeInitFloatWindow().catch(() => {});
-      }
-
-      if (changes[FLOAT_LAYOUT_KEY] && floatUi) {
-        const nextLayout = changes[FLOAT_LAYOUT_KEY].newValue || {};
-        floatUi.buttonLayout = applyButtonLayout(floatUi.button, nextLayout.button);
-        floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel);
-        floatUi.isPinned = Boolean(nextLayout.pinned);
-        const pinButton = document.getElementById('temp-email-panel-pin');
-        if (pinButton) {
-          pinButton.classList.toggle('pinned', floatUi.isPinned);
-          pinButton.title = floatUi.isPinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
-        }
-      }
-
-      if (changes[FLOAT_WINDOW_STYLE_KEY]) {
-        applyFloatWindowStyle();
-        if (changes[FLOAT_WINDOW_STYLE_KEY].newValue !== FIXED_FLOAT_WINDOW_STYLE) {
-          storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
-        }
-      }
-    });
   }
 
-  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.addListener) {
-    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  function handleStorageChanged(changes, area) {
+    if (pageToolsDisposed || area !== 'local') {
+      return;
+    }
+
+    if (changes[PAGE_FILL_RULES_KEY]) {
+      allFillRules = changes[PAGE_FILL_RULES_KEY].newValue || {};
+    }
+
+    if (changes.floatWindowEnabled
+      || changes.siteAccessMode
+      || changes.siteAllowlist
+      || changes.siteBlocklist) {
+      const revision = ++floatLifecycleRevision;
+      if (changes.floatWindowEnabled?.newValue === false) {
+        teardownFloatWindow();
+      } else {
+        reconcileFloatWindow(revision).catch(() => {});
+      }
+    }
+
+    if (changes[FLOAT_LAYOUT_KEY] && floatUi) {
+      const nextLayout = changes[FLOAT_LAYOUT_KEY].newValue || {};
+      floatUi.buttonLayout = applyButtonLayout(floatUi.button, nextLayout.button);
+      floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel);
+      floatUi.isPinned = Boolean(nextLayout.pinned);
+      const pinButton = document.getElementById('temp-email-panel-pin');
+      if (pinButton) {
+        pinButton.classList.toggle('pinned', floatUi.isPinned);
+        pinButton.title = floatUi.isPinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
+      }
+    }
+
+    if (changes[FLOAT_WINDOW_STYLE_KEY]) {
+      applyFloatWindowStyle();
+      if (changes[FLOAT_WINDOW_STYLE_KEY].newValue !== FIXED_FLOAT_WINDOW_STYLE) {
+        storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
+      }
+    }
+  }
+
+  function handleRuntimeMessage(message, sender, sendResponse) {
     (async () => {
       if (message?.type === 'page-tools-ping') {
-        sendResponse({ ok: true });
+        sendResponse({ ok: true, version: PAGE_TOOLS_VERSION });
         return;
       }
 
       if (message?.type === 'teardown-page-tools') {
+        floatLifecycleRevision += 1;
         teardownFloatWindow();
         sendResponse({ ok: true });
+        return;
+      }
+
+      if (message?.type === 'dispose-page-tools') {
+        sendResponse({ ok: true, version: PAGE_TOOLS_VERSION });
+        disposePageTools();
         return;
       }
 
@@ -2081,8 +2115,40 @@
     });
 
     return true;
-    });
   }
 
-  maybeInitFloatWindow().catch(() => {});
+  function disposePageTools() {
+    if (pageToolsDisposed) {
+      return;
+    }
+    pageToolsDisposed = true;
+    pageToolsController.disposed = true;
+    floatLifecycleRevision += 1;
+    teardownFloatWindow();
+    document.removeEventListener('focusin', handleDocumentFocusIn, true);
+    if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.removeListener) {
+      chrome.storage.onChanged.removeListener(handleStorageChanged);
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.removeListener) {
+      chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+    }
+    if (window.__floatMailPageToolsController === pageToolsController) {
+      delete window.__floatMailPageToolsController;
+      window.__tempEmailPageToolsLoaded = false;
+    }
+  }
+
+  pageToolsController.dispose = disposePageTools;
+  document.addEventListener('focusin', handleDocumentFocusIn, true);
+  if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.addListener) {
+    chrome.storage.onChanged.addListener(handleStorageChanged);
+  }
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.addListener) {
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+  }
+
+  // 升级或扩展重载后，移除失效上下文遗留的悬浮 DOM。
+  document.getElementById(BUTTON_ID)?.remove();
+  document.getElementById(PANEL_ID)?.remove();
+  scheduleFloatWindowReconcile();
 })();
