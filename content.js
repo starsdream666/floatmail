@@ -16,18 +16,13 @@
   const PAGE_FILL_RULES_KEY = 'pageFillRules';
   const DEFAULT_PANEL_WIDTH = 560;
   const DEFAULT_PANEL_HEIGHT = 680;
-  const LEGACY_DEFAULT_PANEL_WIDTH = 500;
-  const LEGACY_DEFAULT_PANEL_HEIGHT = 560;
   const MIN_PANEL_WIDTH = 320;
   const MIN_PANEL_HEIGHT = 300;
   const PREVIEW_TARGET_CLASS = 'temp-email-fill-preview-target';
   const SELECT_TARGET_CLASS = 'temp-email-fill-select-target';
   const SELECTION_HINT_ID = 'temp-email-fill-selection-hint';
   const FLOAT_SELECT_MESSAGE_SOURCE = 'temp-email-floating-panel';
-  const FLOAT_WINDOW_STYLES = Object.freeze({
-    LEGACY: 'legacy',
-    MODERN: 'modern',
-  });
+  const FIXED_FLOAT_WINDOW_STYLE = 'modern';
   const FLOAT_HOST_EVENT_TYPES = [
     'pointerdown',
     'pointerup',
@@ -60,9 +55,9 @@
   let previewTargets = [];
   let fieldSelection = null;
   let hostScrollLock = null;
-  let currentFloatWindowStyle = FLOAT_WINDOW_STYLES.MODERN;
   let shouldReopenFloatPanelAfterSelection = false;
   let lastPanelStateChangeTime = 0;
+  let selectionHintTimer = null;
   const targetHighlightState = new WeakMap();
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
@@ -175,23 +170,16 @@
     }
 
     const { button, panel, observer } = floatUi;
-    const firstNode = floatUi.panelVisible ? button : panel;
-    const lastNode = floatUi.panelVisible ? panel : button;
-    // 仅在节点脱离 body 或按钮/面板相对顺序错误时重挂。
-    // 不再因 body 末尾新增兄弟节点反复 appendChild：
-    // 填充/SPA 更新会不断改 DOM，重挂 iframe 面板会像“关闭又打开”。
-    // 置顶依赖最大 z-index，不依赖始终处于 body 最后。
-    const needsReorder = firstNode.parentNode !== document.body
-      || lastNode.parentNode !== document.body
-      || firstNode.nextElementSibling !== lastNode;
+    const detachedNodes = [button, panel].filter((node) => node.parentNode !== document.body);
 
-    if (needsReorder) {
+    // 只补挂确实脱离 body 的节点。按钮与 iframe 面板的前后顺序不参与置顶，
+    // 避免开关面板或页面更新时重挂 iframe，导致重绘和入场动画重播。
+    if (detachedNodes.length > 0) {
       // 暂停 observer 避免 appendChild 自触发
       if (observer) {
         observer.disconnect();
       }
-      document.body.appendChild(firstNode);
-      document.body.appendChild(lastNode);
+      detachedNodes.forEach((node) => document.body.appendChild(node));
       if (observer) {
         observer.observe(document.body, { childList: true });
         floatUi.observedBody = document.body;
@@ -206,6 +194,10 @@
       return;
     }
     floatUi.panel.classList.remove('panel-enter');
+    if (floatUi.panelEnterCleanup) {
+      floatUi.panelEnterCleanup();
+      floatUi.panelEnterCleanup = null;
+    }
   }
 
   function playPanelEnterAnimation() {
@@ -224,10 +216,10 @@
       if (event.target !== panel || event.animationName !== 'floatmailFloatPanelIn') {
         return;
       }
-      panel.classList.remove('panel-enter');
-      panel.removeEventListener('animationend', onAnimationEnd);
+      clearPanelEnterAnimation();
     };
     panel.addEventListener('animationend', onAnimationEnd);
+    floatUi.panelEnterCleanup = () => panel.removeEventListener('animationend', onAnimationEnd);
   }
 
   function setFloatPanelVisible(visible, options = {}) {
@@ -313,20 +305,8 @@
     return fillRulesReady;
   }
 
-  function normalizeFloatWindowStyle(style) {
-    return style === FLOAT_WINDOW_STYLES.LEGACY ? FLOAT_WINDOW_STYLES.LEGACY : FLOAT_WINDOW_STYLES.MODERN;
-  }
-
-  function getDefaultPanelSize(style) {
-    return normalizeFloatWindowStyle(style) === FLOAT_WINDOW_STYLES.LEGACY
-      ? { width: LEGACY_DEFAULT_PANEL_WIDTH, height: LEGACY_DEFAULT_PANEL_HEIGHT }
-      : { width: DEFAULT_PANEL_WIDTH, height: DEFAULT_PANEL_HEIGHT };
-  }
-
-  function isDefaultPanelSizeForStyle(width, height, style) {
-    const defaultSize = getDefaultPanelSize(style);
-    return Math.round(width) === defaultSize.width
-      && Math.round(height) === defaultSize.height;
+  function getDefaultPanelSize() {
+    return { width: DEFAULT_PANEL_WIDTH, height: DEFAULT_PANEL_HEIGHT };
   }
 
   function lockHostPageScroll() {
@@ -459,9 +439,9 @@
     return getSearchRoots().filter((root) => root.nodeType === Node.DOCUMENT_NODE);
   }
 
-  function getEditableCandidates() {
+  function getEditableCandidates(searchRoots = getSearchRoots()) {
     const candidates = [];
-    getSearchRoots().forEach((root) => {
+    searchRoots.forEach((root) => {
       try {
         candidates.push(...root.querySelectorAll('input, textarea, [contenteditable=""], [contenteditable="true"]'));
       } catch {
@@ -617,14 +597,14 @@
     return root;
   }
 
-  function queryEditableElement(selector, contextPath = null) {
+  function queryEditableElement(selector, contextPath = null, searchRoots = null) {
     if (!selector) {
       return null;
     }
 
     const roots = Array.isArray(contextPath) && contextPath.length > 0
       ? [resolveRuleContext(contextPath)].filter(Boolean)
-      : getSearchRoots();
+      : (searchRoots || getSearchRoots());
     for (const root of roots) {
       try {
         const element = root.querySelector(selector);
@@ -638,18 +618,18 @@
     return null;
   }
 
-  function resolveRuleTarget(kind) {
+  function resolveRuleTarget(kind, searchRoots = null) {
     const rule = getOriginFillRules()[kind];
     if (!rule?.selector) {
       return null;
     }
-    return queryEditableElement(rule.selector, rule.contextPath);
+    return queryEditableElement(rule.selector, rule.contextPath, searchRoots);
   }
 
   function resolveFillTarget(kind, options = {}) {
     const exclude = options.exclude || new Set();
     const preferFocused = options.preferFocused !== false;
-    const ruleTarget = options.ignoreRule ? null : resolveRuleTarget(kind);
+    const ruleTarget = options.ignoreRule ? null : resolveRuleTarget(kind, options.searchRoots);
 
     if (ruleTarget && !exclude.has(ruleTarget)) {
       return ruleTarget;
@@ -663,7 +643,8 @@
       return lastFocusedElement;
     }
 
-    const candidates = getEditableCandidates().filter((candidate) => !exclude.has(candidate));
+    const candidates = (options.candidates || getEditableCandidates(options.searchRoots))
+      .filter((candidate) => !exclude.has(candidate));
     let bestElement = null;
     let bestScore = -1;
     for (const candidate of candidates) {
@@ -841,7 +822,8 @@
   }
 
   function getEditableTargetFromNode(node) {
-    let current = node instanceof Element ? node : node?.parentElement || null;
+    // 同源 iframe 中的元素属于 iframe 自己的 realm，不能用顶层 Element 做 instanceof。
+    let current = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement || null;
 
     while (current) {
       if (isEditableElement(current) && isElementVisible(current)) {
@@ -916,10 +898,14 @@
   }
 
   function removeSelectionHint() {
+    if (selectionHintTimer !== null) {
+      window.clearTimeout(selectionHintTimer);
+      selectionHintTimer = null;
+    }
     document.getElementById(SELECTION_HINT_ID)?.remove();
   }
 
-  function showSelectionHint(text, tone = 'info') {
+  function showSelectionHint(text, tone = 'info', autoRemoveDelay = 0) {
     if (!document.body) {
       return;
     }
@@ -931,6 +917,18 @@
     }
     hint.textContent = text;
     hint.dataset.tone = tone;
+    if (selectionHintTimer !== null) {
+      window.clearTimeout(selectionHintTimer);
+      selectionHintTimer = null;
+    }
+    if (autoRemoveDelay > 0) {
+      selectionHintTimer = window.setTimeout(() => {
+        selectionHintTimer = null;
+        if (!fieldSelection) {
+          document.getElementById(SELECTION_HINT_ID)?.remove();
+        }
+      }, autoRemoveDelay);
+    }
   }
 
   function clearSelectionHover() {
@@ -1001,12 +999,7 @@
   function finishFieldSelection(message, tone = 'success') {
     stopFieldSelection(false);
     restoreFloatPanelAfterFieldSelection();
-    showSelectionHint(message, tone);
-    window.setTimeout(() => {
-      if (!fieldSelection) {
-        removeSelectionHint();
-      }
-    }, 1800);
+    showSelectionHint(message, tone, 1800);
   }
 
   function startFieldSelection(kind, label) {
@@ -1058,15 +1051,10 @@
       showSelectionHint(`正在保存${labelText}规则...`, 'info');
       saveFillRule(kind, target)
         .then(() => {
-          showSelectionHint(`已保存${labelText}规则。`, 'success');
-          window.setTimeout(() => {
-            if (!fieldSelection) {
-              removeSelectionHint();
-            }
-          }, 1800);
+          showSelectionHint(`已保存${labelText}规则。`, 'success', 1800);
         })
         .catch((error) => {
-          showSelectionHint(`保存失败：${error.message}`, 'error');
+          showSelectionHint(`保存失败：${error.message}`, 'error', 3000);
         })
         .finally(() => {
           restoreFloatPanelAfterFieldSelection();
@@ -1082,16 +1070,19 @@
     };
 
     getAccessibleDocuments().forEach((targetDocument) => {
+      const supportsPointerEvents = Boolean(targetDocument.defaultView?.PointerEvent);
       targetDocument.addEventListener('mousemove', onMouseMove, true);
-      targetDocument.addEventListener('pointerdown', onMouseDown, true);
-      targetDocument.addEventListener('mousedown', onMouseDown, true);
-      targetDocument.addEventListener('touchstart', onMouseDown, { capture: true, passive: false });
+      targetDocument.addEventListener(supportsPointerEvents ? 'pointerdown' : 'mousedown', onMouseDown, true);
+      if (!supportsPointerEvents) {
+        targetDocument.addEventListener('touchstart', onMouseDown, { capture: true, passive: false });
+      }
       targetDocument.addEventListener('click', onClick, true);
       targetDocument.addEventListener('keydown', onKeyDown, true);
       fieldSelection.cleanup.push(() => targetDocument.removeEventListener('mousemove', onMouseMove, true));
-      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('pointerdown', onMouseDown, true));
-      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('mousedown', onMouseDown, true));
-      fieldSelection.cleanup.push(() => targetDocument.removeEventListener('touchstart', onMouseDown, true));
+      fieldSelection.cleanup.push(() => targetDocument.removeEventListener(supportsPointerEvents ? 'pointerdown' : 'mousedown', onMouseDown, true));
+      if (!supportsPointerEvents) {
+        fieldSelection.cleanup.push(() => targetDocument.removeEventListener('touchstart', onMouseDown, true));
+      }
       fieldSelection.cleanup.push(() => targetDocument.removeEventListener('click', onClick, true));
       fieldSelection.cleanup.push(() => targetDocument.removeEventListener('keydown', onKeyDown, true));
     });
@@ -1137,6 +1128,43 @@
     return operations;
   }
 
+  function shouldSkipFillOperation(operation, matchedGroups) {
+    return (Array.isArray(operation.skipIfMatchedGroups)
+      && operation.skipIfMatchedGroups.some((group) => matchedGroups.has(group)))
+      || (Array.isArray(operation.skipIfMatchedGroupsAll)
+        && operation.skipIfMatchedGroupsAll.every((group) => matchedGroups.has(group)));
+  }
+
+  function buildFillPlan(fields) {
+    const searchRoots = getSearchRoots();
+    const candidates = getEditableCandidates(searchRoots);
+    const usedTargets = new Set();
+    const matchedGroups = new Set();
+    const plan = [];
+
+    for (const operation of buildFillOperations(fields || {})) {
+      if (shouldSkipFillOperation(operation, matchedGroups)) {
+        continue;
+      }
+      const target = resolveFillTarget(operation.kind, {
+        exclude: usedTargets,
+        preferFocused: false,
+        searchRoots,
+        candidates,
+      });
+      if (!target) {
+        continue;
+      }
+      usedTargets.add(target);
+      if (operation.group) {
+        matchedGroups.add(operation.group);
+      }
+      plan.push({ operation, target });
+    }
+
+    return plan;
+  }
+
   async function previewFillTarget(kind) {
     await ensureFillRulesLoaded();
     const target = resolveFillTarget(kind, { preferFocused: false });
@@ -1147,33 +1175,7 @@
   async function previewFillProfile(fields) {
     await ensureFillRulesLoaded();
 
-    const operations = buildFillOperations(fields || {});
-    const usedTargets = new Set();
-    const matchedGroups = new Set();
-    const targets = [];
-
-    for (const operation of operations) {
-      if (Array.isArray(operation.skipIfMatchedGroups)
-        && operation.skipIfMatchedGroups.some((group) => matchedGroups.has(group))) {
-        continue;
-      }
-      if (Array.isArray(operation.skipIfMatchedGroupsAll)
-        && operation.skipIfMatchedGroupsAll.every((group) => matchedGroups.has(group))) {
-        continue;
-      }
-      const target = resolveFillTarget(operation.kind, {
-        exclude: usedTargets,
-        preferFocused: false,
-      });
-      if (!target) {
-        continue;
-      }
-      usedTargets.add(target);
-      if (operation.group) {
-        matchedGroups.add(operation.group);
-      }
-      targets.push(target);
-    }
+    const targets = buildFillPlan(fields).map(({ target }) => target);
 
     setPreviewTargets(targets);
     return { ok: true, matched: targets.length };
@@ -1228,24 +1230,20 @@
     const matchedGroups = new Set();
     let filled = 0;
     for (const operation of operations) {
-      if (Array.isArray(operation.skipIfMatchedGroups)
-        && operation.skipIfMatchedGroups.some((group) => matchedGroups.has(group))) {
+      if (shouldSkipFillOperation(operation, matchedGroups)) {
         continue;
       }
-      if (Array.isArray(operation.skipIfMatchedGroupsAll)
-        && operation.skipIfMatchedGroupsAll.every((group) => matchedGroups.has(group))) {
-        continue;
-      }
+
+      // 实际填充时逐字段重新扫描。前一个 input/change 事件可能让 React/Vue
+      // 重绘表单或显示新字段，不能复用预览阶段的一次性 DOM 快照。
       const target = resolveFillTarget(operation.kind, {
         exclude: usedTargets,
         preferFocused: false,
       });
       if (!target) {
-        if (operation.optional) {
-          continue;
-        }
         continue;
       }
+
       fillElement(target, operation.value);
       lastFocusedElement = target;
       usedTargets.add(target);
@@ -1269,6 +1267,8 @@
     if (!floatUi) {
       return;
     }
+
+    clearPanelEnterAnimation();
 
     floatUi.cleanup.forEach((cleanup) => {
       try {
@@ -1328,23 +1328,18 @@
     };
   }
 
-  function applyPanelLayout(panel, layout, style = currentFloatWindowStyle, previousStyle = null) {
-    const normalizedStyle = normalizeFloatWindowStyle(style);
+  function applyPanelLayout(panel, layout) {
     const savedWidth = parseLayoutNumber(layout?.width);
     const savedHeight = parseLayoutNumber(layout?.height);
     const hasValidSavedSize = savedWidth !== null
       && savedHeight !== null
       && savedWidth >= MIN_PANEL_WIDTH
       && savedHeight >= MIN_PANEL_HEIGHT;
-    const shouldSwitchDefaultSize = hasValidSavedSize
-      && previousStyle
-      && normalizeFloatWindowStyle(previousStyle) !== normalizedStyle
-      && isDefaultPanelSizeForStyle(savedWidth, savedHeight, previousStyle);
     const savedLeft = hasValidSavedSize ? parseLayoutNumber(layout?.left) : null;
     const savedTop = hasValidSavedSize ? parseLayoutNumber(layout?.top) : null;
-    const defaultSize = getDefaultPanelSize(normalizedStyle);
-    const preferredWidth = hasValidSavedSize && !shouldSwitchDefaultSize ? savedWidth : defaultSize.width;
-    const preferredHeight = hasValidSavedSize && !shouldSwitchDefaultSize ? savedHeight : defaultSize.height;
+    const defaultSize = getDefaultPanelSize();
+    const preferredWidth = hasValidSavedSize ? savedWidth : defaultSize.width;
+    const preferredHeight = hasValidSavedSize ? savedHeight : defaultSize.height;
     const width = clamp(
       preferredWidth,
       MIN_PANEL_WIDTH,
@@ -1385,32 +1380,28 @@
     };
   }
 
-  function applyFloatWindowStyle(style, options = {}) {
-    const normalizedStyle = normalizeFloatWindowStyle(style);
-    const previousStyle = normalizeFloatWindowStyle(floatUi?.style || currentFloatWindowStyle);
-    currentFloatWindowStyle = normalizedStyle;
-
+  function applyFloatWindowStyle(options = {}) {
     if (!floatUi) {
-      return normalizedStyle;
+      return FIXED_FLOAT_WINDOW_STYLE;
     }
 
-    floatUi.style = normalizedStyle;
-    floatUi.button.dataset.style = normalizedStyle;
-    floatUi.panel.dataset.style = normalizedStyle;
+    floatUi.style = FIXED_FLOAT_WINDOW_STYLE;
+    floatUi.button.dataset.style = FIXED_FLOAT_WINDOW_STYLE;
+    floatUi.panel.dataset.style = FIXED_FLOAT_WINDOW_STYLE;
     if (floatUi.overlay) {
-      floatUi.overlay.dataset.style = normalizedStyle;
+      floatUi.overlay.dataset.style = FIXED_FLOAT_WINDOW_STYLE;
     }
 
     if (options.reapplyLayout !== false) {
       floatUi.buttonLayout = applyButtonLayout(floatUi.button, floatUi.buttonLayout);
-      floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout, normalizedStyle, previousStyle);
+      floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout);
     }
     applyFloatTopLayerStyles();
 
-    return normalizedStyle;
+    return FIXED_FLOAT_WINDOW_STYLE;
   }
 
-  async function initFloatWindow(savedLayout, savedStyle) {
+  async function initFloatWindow(savedLayout) {
     if (floatUi || !document.body) {
       return;
     }
@@ -1484,7 +1475,7 @@
       panel,
       iframe,
       overlay,
-      style: normalizeFloatWindowStyle(savedStyle),
+      style: FIXED_FLOAT_WINDOW_STYLE,
       isPinned: Boolean(savedLayout?.pinned),
       panelVisible: false,
       iframeLoaded: false,
@@ -1493,13 +1484,14 @@
       observer: null,
       documentObserver: null,
       observedBody: null,
+      panelEnterCleanup: null,
       cleanup: [],
     };
     installFloatHostEventIsolation([button, panel]);
     pinButton.classList.toggle('pinned', floatUi.isPinned);
-    applyFloatWindowStyle(floatUi.style, { reapplyLayout: false });
+    applyFloatWindowStyle({ reapplyLayout: false });
     floatUi.buttonLayout = applyButtonLayout(button, savedLayout?.button);
-    floatUi.panelLayout = applyPanelLayout(panel, savedLayout?.panel, floatUi.style);
+    floatUi.panelLayout = applyPanelLayout(panel, savedLayout?.panel);
     bringFloatUiToFront();
 
     const syncFloatingFieldSelectionState = () => {
@@ -1953,7 +1945,9 @@
       'floatWindowEnabled', FLOAT_LAYOUT_KEY, FLOAT_WINDOW_STYLE_KEY,
       'siteAccessMode', 'siteAllowlist', 'siteBlocklist'
     ]);
-    currentFloatWindowStyle = normalizeFloatWindowStyle(result[FLOAT_WINDOW_STYLE_KEY]);
+    if (result[FLOAT_WINDOW_STYLE_KEY] !== FIXED_FLOAT_WINDOW_STYLE) {
+      storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
+    }
     if (result.floatWindowEnabled === false) {
       teardownFloatWindow();
       return;
@@ -1974,7 +1968,7 @@
         }
       }
     }
-    await initFloatWindow(result[FLOAT_LAYOUT_KEY], currentFloatWindowStyle);
+    await initFloatWindow(result[FLOAT_LAYOUT_KEY]);
   }
 
   document.addEventListener('focusin', (event) => {
@@ -2008,7 +2002,7 @@
       if (changes[FLOAT_LAYOUT_KEY] && floatUi) {
         const nextLayout = changes[FLOAT_LAYOUT_KEY].newValue || {};
         floatUi.buttonLayout = applyButtonLayout(floatUi.button, nextLayout.button);
-        floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel, floatUi.style);
+        floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel);
         floatUi.isPinned = Boolean(nextLayout.pinned);
         const pinButton = document.getElementById('temp-email-panel-pin');
         if (pinButton) {
@@ -2018,8 +2012,10 @@
       }
 
       if (changes[FLOAT_WINDOW_STYLE_KEY]) {
-        currentFloatWindowStyle = normalizeFloatWindowStyle(changes[FLOAT_WINDOW_STYLE_KEY].newValue);
-        applyFloatWindowStyle(currentFloatWindowStyle);
+        applyFloatWindowStyle();
+        if (changes[FLOAT_WINDOW_STYLE_KEY].newValue !== FIXED_FLOAT_WINDOW_STYLE) {
+          storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
+        }
       }
     });
   }

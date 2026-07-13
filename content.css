@@ -21,7 +21,6 @@
   z-index: 2147483646 !important;
   pointer-events: auto !important;
   isolation: isolate;
-  transition: transform 0.2s, box-shadow 0.2s;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -39,6 +38,16 @@
     color 0.22s ease,
     backdrop-filter 0.22s ease,
     -webkit-backdrop-filter 0.22s ease;
+}
+
+#temp-email-float-btn {
+  transition:
+    transform 0.2s ease,
+    border-radius 0.22s ease,
+    background 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease,
+    color 0.22s ease;
 }
 
 #temp-email-float-btn:hover {
@@ -77,8 +86,8 @@
   position: fixed !important;
   bottom: 90px;
   right: 30px;
-  width: 500px;
-  height: 560px;
+  width: 560px;
+  height: 680px;
   min-width: 320px;
   min-height: 300px;
   border: 1px solid rgba(255, 255, 255, 0.38);
@@ -289,18 +298,6 @@
 .temp-email-resize-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: ne-resize; }
 .temp-email-resize-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: sw-resize; }
 .temp-email-resize-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: se-resize; }
-
-.temp-email-fill-preview-target {
-  outline: 3px solid #1a73e8 !important;
-  outline-offset: 2px !important;
-  box-shadow: 0 0 0 4px rgba(26, 115, 232, 0.22) !important;
-}
-
-.temp-email-fill-select-target {
-  outline: 3px solid #f9ab00 !important;
-  outline-offset: 2px !important;
-  box-shadow: 0 0 0 4px rgba(249, 171, 0, 0.24) !important;
-}
 
 #temp-email-fill-selection-hint {
   position: fixed;

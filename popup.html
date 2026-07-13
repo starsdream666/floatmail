@@ -494,12 +494,10 @@
           </div>
           <div id="fast-fill-domain-whitelist-row" class="tool-opt-row hidden">
             <label>白名单域名（每行一个）</label>
-            <textarea id="fast-fill-domain-whitelist" rows="3" placeholder="mail1.com&#10;mail2.com" class="hidden"></textarea>
             <div id="fast-fill-domain-whitelist-list" class="domain-checklist"></div>
           </div>
           <div id="fast-fill-domain-blacklist-row" class="tool-opt-row hidden">
             <label>黑名单域名（每行一个）</label>
-            <textarea id="fast-fill-domain-blacklist" rows="3" placeholder="blocked1.com&#10;blocked2.com" class="hidden"></textarea>
             <div id="fast-fill-domain-blacklist-list" class="domain-checklist"></div>
           </div>
           <div id="fast-fill-moe-expiry-row" class="tool-opt-row hidden">
@@ -819,28 +817,12 @@
           <label for="float-toggle">启用悬浮窗按钮</label>
           <input type="checkbox" id="float-toggle" class="toggle-checkbox" checked />
         </div>
-        <div class="form-group" style="display: none !important">
-          <label>悬浮窗风格</label>
-          <div id="float-window-style-toggle" class="settings-segmented-control" role="radiogroup" aria-label="悬浮窗风格">
-            <button type="button" class="settings-segment-btn" data-float-window-style="legacy" role="radio" aria-checked="false">旧风格</button>
-            <button type="button" class="settings-segment-btn active" data-float-window-style="modern" role="radio" aria-checked="true">现风格</button>
-          </div>
-          <div class="tool-note">只影响网页中的悬浮窗外观，点击后会立即热切换，无需额外保存。</div>
-        </div>
         <div class="form-group toggle-row">
           <label for="default-tab-select">默认打开页面</label>
           <select id="default-tab-select" title="默认页面" class="settings-select">
             <option value="temp-email">Temp Email</option>
             <option value="moe-mail">Moe Mail</option>
           </select>
-        </div>
-        <div class="form-group" style="display: none !important">
-          <label>页面选择框样式</label>
-          <div id="tab-layout-toggle" class="settings-segmented-control" role="radiogroup" aria-label="页面选择框样式">
-            <button type="button" class="settings-segment-btn active" data-layout-mode="top" role="radio" aria-checked="true">顶部横向</button>
-            <button type="button" class="settings-segment-btn" data-layout-mode="sidebar" role="radio" aria-checked="false">左侧竖向</button>
-          </div>
-          <div class="tool-note">切换后立即应用到当前弹窗与悬浮窗，无需额外点击保存。</div>
         </div>
         <div class="form-group">
           <label>主题风格</label>
