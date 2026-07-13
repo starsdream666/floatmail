@@ -610,29 +610,29 @@
       };
     }
 
-    function renderMoeEmailBody(container, message, insightsContainer, viewMode, allowRemoteImages = false) {
+    function renderMoeEmailBody(container, message, options = {}) {
       const html = message?.html || '';
       const safeHtmlAvailable = Boolean(html) && !isMailHtmlTooLarge(html);
       const plainText = getMailPlainText(message?.content, html, '(无内容)') || '(无内容)';
-      const insightsOverride = arguments[5];
-      const insightsRenderOptions = arguments[6] || {};
-      renderMailInsights(insightsContainer, insightsOverride || { codes: [], links: [] }, insightsRenderOptions);
+      renderMailInsights(options.insightsContainer, options.insightsOverride || { codes: [], links: [] }, options.insightsRenderOptions || {});
 
-      if (viewMode === 'plain-text' || !safeHtmlAvailable) {
+      if (options.viewMode === 'plain-text' || !safeHtmlAvailable) {
         const fallbackText = !safeHtmlAvailable && html
           ? `邮件 HTML 内容过大，已自动切换为纯文本回退显示。\n\n${plainText || '(无内容)'}`
           : plainText;
         renderPlainText(container, fallbackText);
         return {
-          insights: insightsOverride || { codes: [], links: [] },
+          insights: options.insightsOverride || { codes: [], links: [] },
           hasRemoteImages: false,
           safeHtmlAvailable
         };
       }
 
-      const renderResult = renderSafeHtml(container, html, '', { allowRemoteImages });
+      const renderResult = renderSafeHtml(container, html, '', {
+        allowRemoteImages: options.allowRemoteImages === true
+      });
       return {
-        insights: insightsOverride || { codes: [], links: [] },
+        insights: options.insightsOverride || { codes: [], links: [] },
         ...renderResult,
         safeHtmlAvailable: !renderResult.domTooComplex
       };

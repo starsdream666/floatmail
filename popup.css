@@ -1066,6 +1066,7 @@
   --neumorphic-shadow-hover: 0 12px 40px rgba(197, 123, 107, 0.15);
 }
 
+/* ===================== 基础组件层 ===================== */
 html, body {
   height: 100%;
   overflow: hidden;
@@ -1075,11 +1076,14 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   margin: 0;
   padding: 0;
-  background-color: var(--bg-color);
+  background:
+    radial-gradient(circle at top left, rgba(var(--theme-accent-rgb), 0.14), transparent 34%),
+    radial-gradient(circle at top right, rgba(var(--theme-accent-rgb), 0.08), transparent 28%),
+    var(--bg-color);
   color: var(--text-main);
   width: 100%;
-  min-width: 380px;
-  min-height: 500px;
+  min-width: 420px;
+  min-height: 520px;
   box-sizing: border-box;
 }
 
@@ -1089,10 +1093,10 @@ body.js-loading {
 }
 
 .container {
-  padding: 16px;
+  padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   height: 100%;
   box-sizing: border-box;
   overflow: hidden;
@@ -1101,39 +1105,44 @@ body.js-loading {
 .header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   padding: 14px 16px;
-  border-radius: var(--border-radius);
-  background: var(--bg-color);
-  box-shadow: var(--neumorphic-shadow);
+  border: 1px solid var(--outline-strong);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, var(--surface-strong), transparent 68%),
+    var(--surface-elevated);
+  box-shadow: 0 14px 28px rgba(var(--theme-accent-rgb), 0.12), 0 6px 18px rgba(0, 0, 0, 0.06);
   flex-shrink: 0;
 }
 
 .header-copy {
   flex: 1;
+  min-width: 0;
 }
 
 .header-eyebrow {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 1px;
+  letter-spacing: 0.08em;
   color: var(--primary);
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .header h2 {
-  margin: 0;
+  margin: 0 0 4px;
   font-size: 20px;
   font-weight: 700;
   color: var(--text-main);
-  margin-bottom: 4px;
+  letter-spacing: -0.02em;
 }
 
 .header-subtitle {
   font-size: 12px;
   color: var(--text-muted);
-  line-height: 1.4;
+  line-height: 1.5;
+  margin-top: 6px;
 }
 
 .hidden {
@@ -1197,12 +1206,15 @@ body.js-loading {
 
 /* 选项卡栏 - 新拟物风格 */
 .tab-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
   gap: 8px;
-  padding: 10px;
-  background: var(--bg-color);
-  border-radius: var(--border-radius);
-  box-shadow: var(--neumorphic-shadow-inset);
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  background: var(--surface-elevated);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.04);
   flex-shrink: 0;
   overflow-x: auto;
 }
@@ -1210,23 +1222,30 @@ body.js-loading {
 .tab-btn {
   flex: 1;
   min-width: 80px;
-  padding: 10px 14px;
+  min-height: 68px;
+  padding: 8px 4px;
+  margin: 0;
   background: var(--bg-color);
   border: none;
   border-radius: 12px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.2;
   color: var(--text-muted);
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  text-align: center;
   white-space: nowrap;
 }
 
 .tab-btn svg {
+  width: 16px;
+  height: 16px;
   transition: all 0.3s ease;
   flex-shrink: 0;
 }
@@ -1238,7 +1257,9 @@ body.js-loading {
 
 .tab-btn.active {
   color: var(--primary);
-  box-shadow: var(--neumorphic-shadow);
+  border-bottom-color: transparent;
+  background: var(--surface-strong);
+  box-shadow: inset 0 0 0 1px var(--outline-strong);
   transform: translateY(-2px);
 }
 
@@ -1414,16 +1435,16 @@ body.js-loading {
 
 .form-group label {
   font-size: 13px;
-  color: var(--text-main);
-  font-weight: 600;
+  color: var(--text-muted);
+  font-weight: 500;
   margin-bottom: 0;
 }
 
 /* 数据管理区 */
 .config-io-section {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border-color);
+  margin: 0;
+  padding: 14px;
+  border: none;
 }
 
 .config-io-title {
@@ -1435,7 +1456,7 @@ body.js-loading {
 .config-io-checks {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 12px;
+  gap: 10px 12px;
   margin-bottom: 12px;
 }
 
@@ -1459,6 +1480,7 @@ body.js-loading {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-top: 12px;
 }
 
 .config-io-btns .btn {
@@ -1508,6 +1530,10 @@ body.js-loading {
   color: var(--text-muted);
   min-width: 55px;
   flex-shrink: 0;
+}
+
+.form-group .tool-opt-row label {
+  font-size: 13px;
 }
 
 .tool-opt-row select,
@@ -2050,16 +2076,10 @@ body.js-loading {
 }
 
 .settings-section-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
-  margin: 0 0 16px 0;
+  margin: 0 0 12px;
   color: var(--primary);
-}
-
-.form-group label {
-  font-size: 13px;
-  color: var(--text-muted);
-  font-weight: 500;
 }
 
 input[type="checkbox"] {
@@ -2068,6 +2088,7 @@ input[type="checkbox"] {
 
 input, select {
   padding: 12px 14px;
+  min-height: 42px;
   border-radius: 12px;
   border: none;
   background-color: var(--input-bg);
@@ -2085,7 +2106,7 @@ input:focus, select:focus {
 
 .input-row {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
 }
 
@@ -2106,6 +2127,7 @@ input:focus, select:focus {
 
 .btn {
   padding: 12px 18px;
+  min-height: 42px;
   border-radius: 12px;
   border: none;
   font-size: 14px;
@@ -2126,13 +2148,14 @@ input:focus, select:focus {
 }
 
 .primary-btn {
-  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-hover) 100%);
+  background: linear-gradient(135deg, var(--primary), var(--primary-hover));
   color: white;
   width: 100%;
   box-shadow: var(--neumorphic-shadow), inset 0 1px 0 rgba(255,255,255,0.2);
 }
 
 .primary-btn:hover {
+  background-image: linear-gradient(135deg, var(--primary-hover), var(--primary));
   box-shadow: var(--neumorphic-shadow-hover), inset 0 1px 0 rgba(255,255,255,0.2);
 }
 
@@ -2143,6 +2166,8 @@ input:focus, select:focus {
 }
 
 .icon-btn {
+  min-width: 34px;
+  min-height: 34px;
   background: var(--bg-color);
   border: none;
   font-size: 16px;
@@ -2159,7 +2184,7 @@ input:focus, select:focus {
 
 .icon-btn:hover {
   color: var(--primary);
-  transform: translateY(-2px);
+  transform: translateY(-1px);
   box-shadow: var(--neumorphic-shadow);
 }
 
@@ -2248,7 +2273,7 @@ input:focus, select:focus {
   border: none;
   border-radius: 14px;
   padding: 12px;
-  margin-top: 10px;
+  margin-top: 12px;
   box-shadow: var(--neumorphic-shadow-inset);
 }
 
@@ -2279,7 +2304,7 @@ input:focus, select:focus {
   overflow: hidden;
   background: var(--bg-color);
   border-radius: var(--border-radius);
-  padding: 16px;
+  padding: 14px 16px 16px;
   box-shadow: var(--neumorphic-shadow);
 }
 
@@ -2424,7 +2449,7 @@ ul#history-list li span {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 20px;
+  padding: 12px 14px;
   border: none;
   border-radius: var(--border-radius);
   background: var(--bg-color);
@@ -2466,7 +2491,7 @@ ul#history-list li span {
   align-items: center;
   justify-content: flex-end;
   flex-shrink: 0;
-  max-width: 120px;
+  max-width: 132px;
 }
 
 .mail-tool-btn {
@@ -2477,6 +2502,10 @@ ul#history-list li span {
   border-radius: 8px;
   box-shadow: var(--neumorphic-shadow-sm);
   transition: all 0.3s ease;
+}
+
+.icon-btn.mail-tool-btn {
+  border-radius: 10px;
 }
 
 .mail-tool-btn:hover {
@@ -2554,7 +2583,7 @@ ul#history-list li span {
   padding: 18px 20px;
   background: var(--bg-color);
   border: none;
-  border-radius: var(--border-radius);
+  border-radius: 14px;
   flex: none;
   min-height: 420px;
   color: var(--text-main);
@@ -2803,99 +2832,12 @@ ul#history-list li span {
   line-height: 1.5;
 }
 
-body {
-  min-width: 420px;
-  min-height: 520px;
-  background:
-    radial-gradient(circle at top left, rgba(var(--theme-accent-rgb), 0.14), transparent 34%),
-    radial-gradient(circle at top right, rgba(var(--theme-accent-rgb), 0.08), transparent 28%),
-    var(--bg-color);
-}
-
-.container {
-  padding: 14px;
-  gap: 12px;
-}
-
-.header {
-  padding: 14px 16px;
-  border: 1px solid var(--outline-strong);
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, var(--surface-strong), transparent 68%),
-    var(--surface-elevated);
-  box-shadow: 0 14px 28px rgba(var(--theme-accent-rgb), 0.12), 0 6px 18px rgba(0, 0, 0, 0.06);
-  align-items: flex-start;
-}
-
-.header-copy {
-  min-width: 0;
-  flex: 1;
-}
-
-.header-eyebrow {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--primary);
-  margin-bottom: 4px;
-}
-
-.header h2 {
-  font-size: 20px;
-  letter-spacing: -0.02em;
-}
-
-.header-subtitle {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.5;
-  margin-top: 6px;
-}
-
 .header .icon-btn {
   width: 36px;
   height: 36px;
   border-radius: 12px;
   background: var(--surface-muted);
   border: 1px solid var(--border-color);
-}
-
-.tab-bar {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-  gap: 8px;
-  margin: 0;
-  padding: 6px;
-  border: 1px solid var(--border-color);
-  border-radius: 16px;
-  background: var(--surface-elevated);
-  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.04);
-}
-
-.tab-btn {
-  min-height: 68px;
-  padding: 8px 4px;
-  margin: 0;
-  border: none;
-  border-radius: 12px;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 11px;
-  line-height: 1.2;
-  text-align: center;
-}
-
-.tab-btn svg {
-  width: 16px;
-  height: 16px;
-}
-
-.tab-btn.active {
-  border-bottom-color: transparent;
-  background: var(--surface-strong);
-  box-shadow: inset 0 0 0 1px var(--outline-strong);
 }
 
 #fast-fill-page,
@@ -3064,7 +3006,6 @@ body {
 }
 
 .tool-title,
-.settings-section-title,
 .history-section h3,
 .moe-history-title,
 .bm-header h3 {
@@ -3072,16 +3013,6 @@ body {
   font-weight: 700;
   color: var(--text-main);
   margin-bottom: 12px;
-}
-
-.settings-section-title {
-  color: var(--primary);
-}
-
-.history-section {
-  margin-top: 0;
-  padding-top: 14px;
-  border-top: none;
 }
 
 .history-header,
@@ -3104,10 +3035,6 @@ ul#history-list li {
   box-shadow: none;
 }
 
-.result-box {
-  margin-top: 12px;
-}
-
 .tool-result,
 .result-box,
 .site-control-card {
@@ -3121,43 +3048,6 @@ ul#history-list li {
 
 .tool-generated-summary .tool-result.hidden {
   display: none !important;
-}
-
-.input-row {
-  align-items: stretch;
-}
-
-input,
-select {
-  min-height: 42px;
-  border-radius: 12px;
-}
-
-.btn {
-  min-height: 42px;
-  border-radius: 12px;
-}
-
-.primary-btn {
-  background-image: linear-gradient(135deg, var(--primary), var(--primary-hover));
-}
-
-.primary-btn:hover {
-  background-image: linear-gradient(135deg, var(--primary-hover), var(--primary));
-}
-
-.icon-btn {
-  min-width: 34px;
-  min-height: 34px;
-  border-radius: 10px;
-}
-
-.icon-btn:hover {
-  transform: translateY(-1px);
-}
-
-.text-btn {
-  border-radius: 10px;
 }
 
 .settings-save-bar {
@@ -3179,19 +3069,6 @@ select {
 
 #save-settings {
   margin: 0;
-}
-
-.config-io-section {
-  margin-top: 0;
-  padding-top: 14px;
-}
-
-.config-io-checks {
-  gap: 10px 12px;
-}
-
-.config-io-btns {
-  margin-top: 12px;
 }
 
 .config-io-page-slot {
@@ -3221,205 +3098,191 @@ select {
   display: contents;
 }
 
-.mail-reader-top {
-  padding: 12px 14px;
-}
-
-.mail-reader-toolbar {
-  max-width: 132px;
-}
-
-.mail-body {
-  border-radius: 14px;
-}
-
 .batch-action-bar {
   border-radius: 14px;
   border: 1px solid var(--border-color);
   border-top: 1px solid var(--border-color);
 }
 
-.message {
-  min-height: 0;
+/* ===================== 一键填充页面 ===================== */
+.fast-fill-result {
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: var(--card-bg-secondary, #f8fafc);
+  border-radius: 8px;
+  border: 1px solid var(--border-color, #e0e0e0);
+  font-size: 12px;
+}
+.fast-fill-result-item {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-color-light, #eee);
+  font-size: 12px;
+}
+.fast-fill-result-item:last-child {
+  border-bottom: none;
+}
+.fast-fill-result-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.fast-fill-result-kind {
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 42px;
+}
+.fast-fill-result-value {
+  word-break: break-word;
+  overflow-wrap: break-word;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.fast-fill-inbox-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  margin-top: 6px;
+  white-space: nowrap;
+}
+.fast-fill-refill-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border-color-light, #ddd);
 }
 
-@media (max-width: 440px) {
-  body {
-    min-width: 380px;
-  }
-
-  .mail-reader-top {
-    flex-direction: column;
-  }
-
-  .mail-reader-toolbar {
-    max-width: none;
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .tab-bar {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
+/* 快填历史 */
+.fast-fill-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-color-light, #eee);
+}
+.fast-fill-history-item:last-child {
+  border-bottom: none;
+}
+.fast-fill-history-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 48px;
+  flex-shrink: 0;
+}
+.fast-fill-history-time {
+  font-size: 12px;
+  font-weight: 600;
+}
+.fast-fill-history-source {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.fast-fill-history-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.fast-fill-history-field {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--card-bg-secondary, #f0f4ff);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.fast-fill-history-actions {
+  flex-shrink: 0;
+}
+#fast-fill-generate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-@media (max-height: 720px) {
-  .container {
-    padding: 10px;
-    gap: 10px;
-  }
-
-  .header {
-    padding: 10px 12px;
-    border-radius: 14px;
-  }
-
-  .header h2 {
-    font-size: 18px;
-  }
-
-  .header-subtitle {
-    display: none;
-  }
-
-  .tab-bar {
-    padding: 4px;
-    gap: 6px;
-    border-radius: 14px;
-  }
-
-  .tab-btn {
-    min-height: 50px;
-    padding: 6px 4px;
-    gap: 4px;
-    font-size: 10px;
-  }
-
-  .mail-reader-top {
-    padding: 10px 12px;
-  }
-
-  .mail-body {
-    min-height: 340px;
-    padding: 8px;
-  }
-
-
-  #temp-email-page,
-  #moe-mail-page,
-  #bookmarks-page,
-  #generated-history-page,
-  #fill-rules-page,
-  #themes-page,
-  #settings-page,
-  #config-io-page,
-  #tools-page {
-    gap: 10px;
-  }
-
-  #temp-email-page .page-card,
-  #moe-mail-page .page-card,
-  #bookmarks-page .page-card,
-  #generated-history-page .page-card,
-  #fill-rules-page .page-card,
-  #themes-page .page-card,
-  #settings-page .page-card,
-  #config-io-page .page-card,
-  #tools-page .page-card {
-    padding: 10px;
-    border-radius: 14px;
-  }
-
-  .generated-history-item {
-    flex-direction: column;
-  }
-
-  .generated-history-item-actions {
-    width: 100%;
-    justify-content: flex-end;
-  }
-
-  .generated-history-page-title,
-  .generated-history-url,
-  .generated-history-time {
-    white-space: normal;
-    word-break: break-all;
-  }
-
-  .tool-section,
-  .settings-section,
-  .config-io-section {
-    padding: 10px;
-  }
-
-  .tool-title,
-  .settings-section-title,
-  .history-section h3,
-  .moe-history-title,
-  .bm-header h3 {
-    margin-bottom: 8px;
-  }
-
-  .form-group {
-    gap: 4px;
-    margin-bottom: 8px;
-  }
-
-  .settings-interval-row {
-    gap: 6px;
-  }
-
-  .settings-custom-input {
-    width: 92px;
-    flex-basis: 92px;
-  }
-
-  .settings-unit-select {
-    width: 84px;
-    flex-basis: 84px;
-  }
-
-  input,
-  select,
-  .btn {
-    min-height: 38px;
-  }
-
-  .result-box,
-  .tool-result,
-  .site-control-card,
-  .mail-body {
-    padding: 8px 10px;
-  }
-
-  .history-section,
-  .mail-list,
-  #bm-list,
-  #moe-email-list {
-    min-height: 0;
-  }
-
-  .history-section {
-    padding-top: 10px;
-  }
+/* 设置页默认过期时间网格 */
+.settings-expiry-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+.settings-expiry-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-expiry-item span {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.settings-expiry-item select {
+  width: 100%;
 }
 
-[data-theme="midnight-dark"] .mail-body,
-[data-theme="midnight-dark"] body.floating-hosted .mail-body {
-  background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(148, 163, 184, 0.2);
-  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.18);
-  color: #202124;
+/* 域名勾选列表 */
+.domain-checklist {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: var(--input-bg, #f8fafc);
+  flex: 1;
+  min-width: 0;
+}
+.domain-checklist label {
+  display: grid;
+  grid-template-columns: 20px 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  cursor: pointer;
+  width: 100%;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.domain-checklist label input[type="checkbox"] {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  min-height: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  appearance: auto;
+  -webkit-appearance: checkbox;
+  box-shadow: none;
+  transition: none;
+  box-sizing: border-box;
+  justify-self: center;
+}
+.domain-checklist-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  text-align: center;
 }
 
-[data-theme="cyber-neon"] .mail-body,
-[data-theme="cyber-neon"] body.floating-hosted .mail-body {
-  background: rgba(255, 255, 255, 0.98);
-  border-color: rgba(0, 255, 136, 0.16);
-  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.18);
-  color: #202124;
+/* ===================== Temp Mail 过期提示 ===================== */
+.expiry-hint {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--card-bg-secondary, #f0f4ff);
+  color: var(--text-muted, #888);
+  white-space: nowrap;
+}
+.expiry-hint.expired {
+  background: #fff0f0;
+  color: #e74c3c;
 }
 
+/* ===================== 页面布局与 Sidebar ===================== */
 /* 主页面直接隐藏顶部标题区，给列表和工具区域腾出更多空间 */
 .container:has(#tab-bar:not(.hidden)) .header {
   display: none;
@@ -3601,23 +3464,22 @@ body.tab-layout-sidebar .container:has(#tab-bar.hidden) #config-io-page {
   grid-column: 1;
 }
 
-@media (max-height: 720px) {
-  body.tab-layout-sidebar .container {
-    grid-template-columns: 94px minmax(0, 1fr);
-  }
-
-  body.tab-layout-sidebar .tab-bar {
-    padding: 6px;
-    gap: 6px;
-  }
-
-  body.tab-layout-sidebar .tab-btn {
-    min-height: 50px;
-    padding: 8px 6px;
-    gap: 4px;
-  }
+/* ===================== 主题特例（位于布局之后） ===================== */
+[data-theme="midnight-dark"] .mail-body {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(148, 163, 184, 0.2);
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.18);
+  color: #202124;
 }
 
+[data-theme="cyber-neon"] .mail-body {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(0, 255, 136, 0.16);
+  box-shadow: 0 14px 26px rgba(0, 0, 0, 0.18);
+  color: #202124;
+}
+
+/* ===================== Floating Hosted 覆盖 ===================== */
 body.floating-hosted {
   position: relative;
   min-width: 100%;
@@ -4080,180 +3942,179 @@ body.floating-hosted ::-webkit-scrollbar-thumb {
   background-clip: padding-box;
 }
 
-/* ===================== 一键填充页面 ===================== */
-.fast-fill-result {
-  margin-top: 6px;
-  padding: 6px 10px;
-  background: var(--card-bg-secondary, #f8fafc);
-  border-radius: 8px;
-  border: 1px solid var(--border-color, #e0e0e0);
-  font-size: 12px;
-}
-.fast-fill-result-item {
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border-color-light, #eee);
-  font-size: 12px;
-}
-.fast-fill-result-item:last-child {
-  border-bottom: none;
-}
-.fast-fill-result-info {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.fast-fill-result-kind {
-  color: var(--text-muted, #888);
-  font-size: 12px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  min-width: 42px;
-}
-.fast-fill-result-value {
-  word-break: break-word;
-  overflow-wrap: break-word;
-  font-size: 13px;
-  line-height: 1.4;
-}
-.fast-fill-inbox-btn {
-  font-size: 11px;
-  padding: 3px 10px;
-  margin-top: 6px;
-  white-space: nowrap;
-}
-.fast-fill-refill-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border-color-light, #ddd);
+/* ===================== 响应式覆盖（保持在层叠末尾） ===================== */
+@media (max-width: 440px) {
+  body {
+    min-width: 380px;
+  }
+
+  .mail-reader-top {
+    flex-direction: column;
+  }
+
+  .mail-reader-toolbar {
+    max-width: none;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .tab-bar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
-/* 快填历史 */
-.fast-fill-history-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border-color-light, #eee);
-}
-.fast-fill-history-item:last-child {
-  border-bottom: none;
-}
-.fast-fill-history-header {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 48px;
-  flex-shrink: 0;
-}
-.fast-fill-history-time {
-  font-size: 12px;
-  font-weight: 600;
-}
-.fast-fill-history-source {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-.fast-fill-history-fields {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex: 1;
-  min-width: 0;
-}
-.fast-fill-history-field {
-  font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 6px;
-  background: var(--card-bg-secondary, #f0f4ff);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.fast-fill-history-actions {
-  flex-shrink: 0;
-}
-#fast-fill-generate-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+@media (max-height: 720px) {
+  .container {
+    padding: 10px;
+    gap: 10px;
+  }
 
-/* 设置页默认过期时间网格 */
-.settings-expiry-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px 12px;
-}
-.settings-expiry-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.settings-expiry-item span {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-.settings-expiry-item select {
-  width: 100%;
-}
+  .header {
+    padding: 10px 12px;
+    border-radius: 14px;
+  }
 
-/* 域名勾选列表 */
-.domain-checklist {
-  max-height: 160px;
-  overflow-y: auto;
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  padding: 6px 8px;
-  background: var(--input-bg, #f8fafc);
-  flex: 1;
-  min-width: 0;
-}
-.domain-checklist label {
-  display: grid;
-  grid-template-columns: 20px 1fr;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 0;
-  font-size: 12px;
-  cursor: pointer;
-  width: 100%;
-  min-width: 0;
-  flex-shrink: 1;
-}
-.domain-checklist label input[type="checkbox"] {
-  margin: 0;
-  width: 14px;
-  height: 14px;
-  padding: 0;
-  min-height: auto;
-  border: 1px solid var(--border-color);
-  border-radius: 3px;
-  appearance: auto;
-  -webkit-appearance: checkbox;
-  box-shadow: none;
-  transition: none;
-  box-sizing: border-box;
-  justify-self: center;
-}
-.domain-checklist-empty {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 4px 0;
-  text-align: center;
-}
+  .header h2 {
+    font-size: 18px;
+  }
 
-/* ===================== Temp Mail 过期提示 ===================== */
-.expiry-hint {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--card-bg-secondary, #f0f4ff);
-  color: var(--text-muted, #888);
-  white-space: nowrap;
-}
-.expiry-hint.expired {
-  background: #fff0f0;
-  color: #e74c3c;
+  .header-subtitle {
+    display: none;
+  }
+
+  .tab-bar {
+    padding: 4px;
+    gap: 6px;
+    border-radius: 14px;
+  }
+
+  .tab-btn {
+    min-height: 50px;
+    padding: 6px 4px;
+    gap: 4px;
+    font-size: 10px;
+  }
+
+  .mail-reader-top {
+    padding: 10px 12px;
+  }
+
+  .mail-body {
+    min-height: 340px;
+    padding: 8px;
+  }
+
+
+  #temp-email-page,
+  #moe-mail-page,
+  #bookmarks-page,
+  #generated-history-page,
+  #fill-rules-page,
+  #themes-page,
+  #settings-page,
+  #config-io-page,
+  #tools-page {
+    gap: 10px;
+  }
+
+  #temp-email-page .page-card,
+  #moe-mail-page .page-card,
+  #bookmarks-page .page-card,
+  #generated-history-page .page-card,
+  #fill-rules-page .page-card,
+  #themes-page .page-card,
+  #settings-page .page-card,
+  #config-io-page .page-card,
+  #tools-page .page-card {
+    padding: 10px;
+    border-radius: 14px;
+  }
+
+  .generated-history-item {
+    flex-direction: column;
+  }
+
+  .generated-history-item-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .generated-history-page-title,
+  .generated-history-url,
+  .generated-history-time {
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  .tool-section,
+  .settings-section,
+  .config-io-section {
+    padding: 10px;
+  }
+
+  .tool-title,
+  .settings-section-title,
+  .history-section h3,
+  .moe-history-title,
+  .bm-header h3 {
+    margin-bottom: 8px;
+  }
+
+  .form-group {
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .settings-interval-row {
+    gap: 6px;
+  }
+
+  .settings-custom-input {
+    width: 92px;
+    flex-basis: 92px;
+  }
+
+  .settings-unit-select {
+    width: 84px;
+    flex-basis: 84px;
+  }
+
+  input,
+  select,
+  .btn {
+    min-height: 38px;
+  }
+
+  .result-box,
+  .tool-result,
+  .site-control-card,
+  .mail-body {
+    padding: 8px 10px;
+  }
+
+  .history-section,
+  .mail-list,
+  #bm-list,
+  #moe-email-list {
+    min-height: 0;
+  }
+
+  .history-section {
+    padding-top: 10px;
+  }
+
+  body.tab-layout-sidebar .container {
+    grid-template-columns: 94px minmax(0, 1fr);
+  }
+
+  body.tab-layout-sidebar .tab-bar {
+    padding: 6px;
+    gap: 6px;
+  }
+
+  body.tab-layout-sidebar .tab-btn {
+    min-height: 50px;
+    padding: 8px 6px;
+    gap: 4px;
+  }
 }

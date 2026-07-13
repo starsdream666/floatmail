@@ -191,6 +191,175 @@
     return passwordArr.join('');
   }
 
+  function pickRandom(list, random) {
+    return list[Math.floor(random() * list.length)];
+  }
+
+  function randomInt(min, max, random) {
+    return min + Math.floor(random() * (max - min + 1));
+  }
+
+  /**
+   * 生成姓名数据。调用方通过参数明确普通工具与快填的分布差异。
+   */
+  function generateName({
+    region = 'en',
+    gender = 'random',
+    zhTwoCharacterProbability = 0.6,
+    fallbackGender = '',
+    random = Math.random
+  } = {}) {
+    const resolvedGender = gender === 'random'
+      ? (random() < 0.5 ? 'male' : 'female')
+      : gender;
+
+    if (region === 'en') {
+      const firstName = pickRandom(NAME_DATA.en[resolvedGender] || NAME_DATA.en[fallbackGender], random);
+      const lastName = pickRandom(NAME_DATA.en.last, random);
+      return {
+        fullName: `${firstName} ${lastName}`,
+        firstName,
+        lastName,
+        gender: resolvedGender,
+        region
+      };
+    }
+
+    const lastName = pickRandom(NAME_DATA.zh.surname, random);
+    const givenPool = NAME_DATA.zh[resolvedGender] || NAME_DATA.zh[fallbackGender];
+    const givenLength = random() < zhTwoCharacterProbability ? 2 : 1;
+    let firstName = '';
+    for (let i = 0; i < givenLength; i += 1) {
+      firstName += pickRandom(givenPool, random);
+    }
+    return {
+      fullName: lastName + firstName,
+      firstName,
+      lastName,
+      gender: resolvedGender,
+      region
+    };
+  }
+
+  /**
+   * 在闭区间年份内生成生日；now 可注入，便于调用方稳定复用和测试。
+   */
+  function generateBirthday({
+    minYear = 1980,
+    maxYear = 2005,
+    now = new Date(),
+    random = Math.random
+  } = {}) {
+    let lowerYear = Number.parseInt(minYear, 10) || 1980;
+    let upperYear = Number.parseInt(maxYear, 10) || 2005;
+    if (lowerYear > upperYear) {
+      [lowerYear, upperYear] = [upperYear, lowerYear];
+    }
+
+    const year = randomInt(lowerYear, upperYear, random);
+    const month = randomInt(1, 12, random);
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const day = randomInt(1, daysInMonth, random);
+    let age = now.getFullYear() - year;
+    const currentMonth = now.getMonth() + 1;
+    if (currentMonth < month || (currentMonth === month && now.getDate() < day)) {
+      age -= 1;
+    }
+
+    return {
+      date: `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`,
+      age: Math.max(0, age),
+      year,
+      month,
+      day
+    };
+  }
+
+  /**
+   * 生成地址。legacy-fast-fill 用于精确保留旧快填的简化地址分布。
+   */
+  function generateAddress({ region = 'zh', preset = 'full', random = Math.random } = {}) {
+    if (preset === 'legacy-fast-fill') {
+      const roads = ['中山路', '解放路', '人民路', '建设路', '文化路', '和平路'];
+      const cities = ['北京市朝阳区', '上海市浦东新区', '广州市天河区', '深圳市南山区', '杭州市西湖区'];
+      const road = pickRandom(roads, random);
+      const roadNum = randomInt(1, 300, random);
+      const city = pickRandom(cities, random);
+      return `${city}${road}${roadNum}号`;
+    }
+
+    if (region === 'zh') {
+      const data = ADDRESS_DATA.zh;
+      const province = pickRandom(data.provinces, random);
+      const city = pickRandom(province.cities, random);
+      const road = pickRandom(data.roads, random);
+      const roadNum = randomInt(1, 300, random);
+      const suffix = pickRandom(data.suffixes, random);
+      const buildingPrefix = pickRandom(data.buildingPrefixes, random);
+      const buildingNum = randomInt(1, 30, random);
+      const unitNum = randomInt(1, 5, random);
+      const roomNum = randomInt(101, 2808, random);
+      return `${province.name}${city}${road}${roadNum}号${suffix}${buildingPrefix}栋${buildingNum}单元${String(unitNum).padStart(2, '0')}${roomNum}室`;
+    }
+    if (region === 'en') {
+      const data = ADDRESS_DATA.en;
+      const state = pickRandom(data.states, random);
+      const city = pickRandom(state.cities, random);
+      const num = randomInt(100, 9999, random);
+      const street = pickRandom(data.streets, random);
+      const streetType = pickRandom(data.streetTypes, random);
+      const suffix = pickRandom(data.suffixes, random);
+      const aptNum = randomInt(1, 500, random);
+      const zip5 = String(randomInt(10000, 99999, random));
+      const zip4 = String(randomInt(1000, 9999, random));
+      return `${num} ${street} ${streetType}, ${suffix} ${aptNum}, ${city}, ${state.name} ${zip5}-${zip4}`;
+    }
+    if (region === 'uk') {
+      const data = ADDRESS_DATA.uk;
+      const county = pickRandom(data.counties, random);
+      const city = pickRandom(county.cities, random);
+      const num = randomInt(1, 200, random);
+      const street = pickRandom(data.streets, random);
+      const streetType = pickRandom(data.streetTypes, random);
+      const suffix = pickRandom(data.suffixes, random);
+      const suffixNum = randomInt(1, 100, random);
+      const postcodeArea = pickRandom(['SW', 'NW', 'SE', 'NE', 'EC', 'WC', 'E', 'W', 'N', 'S', 'B', 'M', 'L', 'G'], random);
+      const postcodeNum = randomInt(1, 20, random);
+      const postcodeSuffix = pickRandom(['AA', 'AB', 'AD', 'AE', 'AG', 'AH', 'AL', 'AN', 'AR', 'AT', 'BA', 'BB', 'BD', 'BE', 'BG', 'BH', 'BL', 'BN', 'BP', 'BQ', 'BR', 'BS', 'BT', 'BU', 'BW', 'BX', 'BY', 'BZ'], random);
+      return `${num} ${street} ${streetType}, ${suffix} ${suffixNum}, ${city}, ${county.name}, ${postcodeArea}${postcodeNum} ${randomInt(1, 9, random)}${postcodeSuffix}`;
+    }
+    if (region === 'jp') {
+      const data = ADDRESS_DATA.jp;
+      const prefecture = pickRandom(data.prefectures, random);
+      const city = pickRandom(prefecture.cities, random);
+      const street = pickRandom(data.streets, random);
+      const chome = randomInt(1, 7, random);
+      const ban = randomInt(1, 30, random);
+      const go = randomInt(1, 20, random);
+      const suffix = pickRandom(data.suffixes, random);
+      const roomNum = randomInt(101, 888, random);
+      const postal3 = String(randomInt(100, 999, random));
+      const postal4 = String(randomInt(1000, 9999, random));
+      return `〒${postal3}-${postal4} ${prefecture.name}${city}${street}${chome}丁目${ban}番${go}号 ${suffix}${roomNum}号室`;
+    }
+    if (region === 'kr') {
+      const data = ADDRESS_DATA.kr;
+      const province = pickRandom(data.provinces, random);
+      const city = pickRandom(province.cities, random);
+      const street = pickRandom(data.streets, random);
+      const streetNum = randomInt(1, 200, random);
+      const suffix = pickRandom(data.suffixes, random);
+      const dongSuffix = pickRandom(data.dongSuffixes, random);
+      const dongNum = randomInt(1, 50, random);
+      const dongName = pickRandom(['신천', '삼성', '역삼', '서초', '잠실', '청담', '반포', '도곡', '대치', '개포', '수서', '일원', '방배', '논현', '압구정',
+        '홍대', '연희', '합정', '망원', '상수', '이촌', '한남', '옥수', '왕십리', '성수', '자양', '구의', '신사', '가락', '방이'], random);
+      const hoNum = randomInt(101, 2003, random);
+      const postal5 = String(randomInt(10000, 99999, random));
+      return `(${postal5}) ${province.name} ${city} ${dongName}${dongSuffix} ${street} ${streetNum}길 ${randomInt(1, 50, random)}, ${suffix} ${dongNum}${dongSuffix} ${hoNum}호`;
+    }
+    return '';
+  }
+
   function initGeneratedTools(options) {
     const {
       genPwdBtn,
@@ -338,17 +507,6 @@
       }
     }
 
-    function getAgeFromBirthdayParts(year, month, day) {
-      const today = new Date();
-      let age = today.getFullYear() - year;
-      const currentMonth = today.getMonth() + 1;
-      const currentDay = today.getDate();
-      if (currentMonth < month || (currentMonth === month && currentDay < day)) {
-        age -= 1;
-      }
-      return age >= 0 ? age : 0;
-    }
-
     genPwdBtn.addEventListener('click', () => {
       const len = Math.max(4, Math.min(128, parseInt(document.getElementById('pwd-length').value, 10) || 16));
       const useUpper = document.getElementById('pwd-upper').checked;
@@ -370,28 +528,11 @@
     genNameBtn.addEventListener('click', () => {
       const genderSelection = document.getElementById('name-gender').value;
       const region = document.getElementById('name-region').value;
-      const pick = (list) => list[Math.floor(Math.random() * list.length)];
-      const gender = genderSelection === 'random'
-        ? (Math.random() < 0.5 ? 'male' : 'female')
-        : genderSelection;
-
-      let fullName;
-      let firstName;
-      let lastName;
-      if (region === 'en') {
-        firstName = pick(NAME_DATA.en[gender]);
-        lastName = pick(NAME_DATA.en.last);
-        fullName = `${firstName} ${lastName}`;
-      } else {
-        lastName = pick(NAME_DATA.zh.surname);
-        const givenPool = NAME_DATA.zh[gender];
-        const givenLength = Math.random() < 0.6 ? 2 : 1;
-        firstName = '';
-        for (let i = 0; i < givenLength; i += 1) {
-          firstName += pick(givenPool);
-        }
-        fullName = lastName + firstName;
-      }
+      const { fullName, firstName, lastName } = generateName({
+        region,
+        gender: genderSelection,
+        zhTwoCharacterProbability: 0.6
+      });
 
       updateGeneratedProfile({ fullName, firstName, lastName });
       recordGeneratedHistory({ kind: 'name', value: fullName });
@@ -409,13 +550,7 @@
         [minYear, maxYear] = [maxYear, minYear];
       }
 
-      const year = minYear + Math.floor(Math.random() * (maxYear - minYear + 1));
-      const month = 1 + Math.floor(Math.random() * 12);
-      const daysInMonth = new Date(year, month, 0).getDate();
-      const day = 1 + Math.floor(Math.random() * daysInMonth);
-
-      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-      const age = getAgeFromBirthdayParts(year, month, day);
+      const { date: dateStr, age } = generateBirthday({ minYear, maxYear });
       const ageStr = String(age);
 
       updateGeneratedProfile(fillMode === 'age'
@@ -434,78 +569,8 @@
     });
 
     genAddrBtn.addEventListener('click', () => {
-      const pick = (list) => list[Math.floor(Math.random() * list.length)];
-      const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
       const region = document.getElementById('addr-region')?.value || 'zh';
-
-      let address;
-      if (region === 'zh') {
-        const data = ADDRESS_DATA.zh;
-        const province = pick(data.provinces);
-        const city = pick(province.cities);
-        const road = pick(data.roads);
-        const roadNum = randInt(1, 300);
-        const suffix = pick(data.suffixes);
-        const buildingPrefix = pick(data.buildingPrefixes);
-        const buildingNum = randInt(1, 30);
-        const unitNum = randInt(1, 5);
-        const roomNum = randInt(101, 2808);
-        address = `${province.name}${city}${road}${roadNum}号${suffix}${buildingPrefix}栋${buildingNum}单元${String(unitNum).padStart(2, '0')}${roomNum}室`;
-      } else if (region === 'en') {
-        const data = ADDRESS_DATA.en;
-        const state = pick(data.states);
-        const city = pick(state.cities);
-        const num = randInt(100, 9999);
-        const street = pick(data.streets);
-        const streetType = pick(data.streetTypes);
-        const suffix = pick(data.suffixes);
-        const aptNum = randInt(1, 500);
-        const zip5 = String(randInt(10000, 99999));
-        const zip4 = String(randInt(1000, 9999));
-        address = `${num} ${street} ${streetType}, ${suffix} ${aptNum}, ${city}, ${state.name} ${zip5}-${zip4}`;
-      } else if (region === 'uk') {
-        const data = ADDRESS_DATA.uk;
-        const county = pick(data.counties);
-        const city = pick(county.cities);
-        const num = randInt(1, 200);
-        const street = pick(data.streets);
-        const streetType = pick(data.streetTypes);
-        const suffix = pick(data.suffixes);
-        const suffixNum = randInt(1, 100);
-        const postcodeArea = pick(['SW', 'NW', 'SE', 'NE', 'EC', 'WC', 'E', 'W', 'N', 'S', 'B', 'M', 'L', 'G']);
-        const postcodeNum = randInt(1, 20);
-        const postcodeSuffix = pick(['AA', 'AB', 'AD', 'AE', 'AG', 'AH', 'AL', 'AN', 'AR', 'AT', 'BA', 'BB', 'BD', 'BE', 'BG', 'BH', 'BL', 'BN', 'BP', 'BQ', 'BR', 'BS', 'BT', 'BU', 'BW', 'BX', 'BY', 'BZ']);
-        address = `${num} ${street} ${streetType}, ${suffix} ${suffixNum}, ${city}, ${county.name}, ${postcodeArea}${postcodeNum} ${randInt(1, 9)}${postcodeSuffix}`;
-      } else if (region === 'jp') {
-        const data = ADDRESS_DATA.jp;
-        const prefecture = pick(data.prefectures);
-        const city = pick(prefecture.cities);
-        const street = pick(data.streets);
-        const chome = randInt(1, 7);
-        const ban = randInt(1, 30);
-        const go = randInt(1, 20);
-        const suffix = pick(data.suffixes);
-        const roomNum = randInt(101, 888);
-        const postal3 = String(randInt(100, 999));
-        const postal4 = String(randInt(1000, 9999));
-        address = `〒${postal3}-${postal4} ${prefecture.name}${city}${street}${chome}丁目${ban}番${go}号 ${suffix}${roomNum}号室`;
-      } else if (region === 'kr') {
-        const data = ADDRESS_DATA.kr;
-        const province = pick(data.provinces);
-        const city = pick(province.cities);
-        const street = pick(data.streets);
-        const streetNum = randInt(1, 200);
-        const suffix = pick(data.suffixes);
-        const dongSuffix = pick(data.dongSuffixes);
-        const dongNum = randInt(1, 50);
-        const dongName = pick(['신천', '삼성', '역삼', '서초', '잠실', '청담', '반포', '도곡', '대치', '개포', '수서', '일원', '방배', '논현', '압구정',
-          '홍대', '연희', '합정', '망원', '상수', '이촌', '한남', '옥수', '왕십리', '성수', '자양', '구의', '신사', '가락', '방이']);
-        const hoNum = randInt(101, 2003);
-        const postal5 = String(randInt(10000, 99999));
-        address = `(${postal5}) ${province.name} ${city} ${dongName}${dongSuffix} ${street} ${streetNum}길 ${randInt(1, 50)}, ${suffix} ${dongNum}${dongSuffix} ${hoNum}호`;
-      } else {
-        address = '';
-      }
+      const address = generateAddress({ region });
 
       if (!address) return;
 
@@ -526,6 +591,9 @@
   window.PopupToolGenerators = {
     initGeneratedTools,
     generatePassword,
+    generateName,
+    generateBirthday,
+    generateAddress,
     NAME_DATA
   };
 })();

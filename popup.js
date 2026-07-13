@@ -62,7 +62,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const { createMailRenderer } = window.PopupMailRenderer;
   const { initConfigIO } = window.PopupConfigIO;
-  const { initGeneratedTools, generatePassword } = window.PopupToolGenerators;
+  const {
+    initGeneratedTools,
+    generatePassword,
+    generateName,
+    generateBirthday,
+    generateAddress
+  } = window.PopupToolGenerators;
 
   // ===================== 元素引用 =====================
   const backToHomeBtn = document.getElementById('back-to-home');
@@ -1195,24 +1201,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       resolve(response);
     });
   });
-  const insertCssIntoTab = (tabId, files) => new Promise((resolve, reject) => {
-    chrome.scripting.insertCSS({ target: { tabId }, files }, () => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve();
-    });
-  });
-  const executeScriptInTab = (tabId, files) => new Promise((resolve, reject) => {
-    chrome.scripting.executeScript({ target: { tabId }, files }, (result) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve(result);
-    });
-  });
 
   const FLOAT_SELECT_MESSAGE_SOURCE = 'temp-email-floating-panel';
   let floatingSelectLockActive = false;
@@ -1544,26 +1532,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     return tabs[0] || null;
   }
 
-  async function ensurePageToolsInjected(tab) {
-    if (!tab?.id || !isHttpUrl(tab.url)) {
-      throw new Error('当前页面不支持页面助手');
-    }
-
-    try {
-      await tabSendMessage(tab.id, { type: 'page-tools-ping' });
-      return;
-    } catch {
-      // 页面尚未注入，继续按需注入。
-    }
-
-    try {
-      await insertCssIntoTab(tab.id, ['content.css']);
-    } catch {
-      // CSS 重复注入时无需阻断。
-    }
-    await executeScriptInTab(tab.id, ['content.js']);
-  }
-
   async function sendToActivePage(message) {
     const tab = await getActiveTab();
     if (!tab || !tab.id) {
@@ -1576,8 +1544,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       throw new Error('当前站点已被页面助手禁用');
     }
 
-    await ensurePageToolsInjected(tab);
-    return tabSendMessage(tab.id, message);
+    try {
+      return await tabSendMessage(tab.id, message);
+    } catch (error) {
+      const detail = String(error?.message || '');
+      if (/Receiving end does not exist|Could not establish connection|Unsupported message/i.test(detail)) {
+        await runtimeSendMessage({ type: 'ensure-page-tools', tabId: tab.id });
+        return tabSendMessage(tab.id, message);
+      }
+      throw error;
+    }
   }
 
   function normalizeIntervalValue(value, fallback = 0) {
@@ -2462,28 +2438,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Generate name if needed
       if (neededKinds.includes('name') || neededKinds.includes('firstName') || neededKinds.includes('lastName')) {
-        const pick = (list) => list[Math.floor(Math.random() * list.length)];
-        const nameData = window.PopupToolGenerators?.NAME_DATA || {};
         const region = fastFillNameRegion || 'en';
         const genderSelection = fastFillNameGender || 'random';
-        const gender = genderSelection === 'random'
-          ? (Math.random() < 0.5 ? 'male' : 'female')
-          : genderSelection;
-
-        let firstName, lastName, fullName;
-        if (region === 'en' && nameData.en) {
-          firstName = pick(nameData.en[gender] || nameData.en.male);
-          lastName = pick(nameData.en.last);
-          fullName = `${firstName} ${lastName}`;
-        } else {
-          const zhData = nameData.zh || { surname: ['王','李','张','刘','陈'], male: ['伟','强','磊','洋','勇'], female: ['芳','娜','敏','静','丽'] };
-          lastName = pick(zhData.surname);
-          const givenPool = zhData[gender] || zhData.male;
-          const givenLen = Math.random() < 0.5 ? 2 : 1;
-          firstName = '';
-          for (let i = 0; i < givenLen; i++) firstName += pick(givenPool);
-          fullName = lastName + firstName;
-        }
+        const { fullName, firstName, lastName } = generateName({
+          region,
+          gender: genderSelection,
+          zhTwoCharacterProbability: 0.5,
+          fallbackGender: 'male'
+        });
 
         generatedFields.fullName = fullName;
         generatedFields.firstName = firstName;
@@ -2494,14 +2456,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Generate birthday if needed
       if (neededKinds.includes('birthday') || neededKinds.includes('age')) {
-        const year = 1985 + Math.floor(Math.random() * 20);
-        const month = 1 + Math.floor(Math.random() * 12);
-        const daysInMonth = new Date(year, month, 0).getDate();
-        const day = 1 + Math.floor(Math.random() * daysInMonth);
-        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        const today = new Date();
-        let age = today.getFullYear() - year;
-        if (today.getMonth() + 1 < month || (today.getMonth() + 1 === month && today.getDate() < day)) age -= 1;
+        const { date: dateStr, age } = generateBirthday({
+          minYear: 1985,
+          maxYear: 2004
+        });
         generatedFields.birthday = dateStr;
         generatedFields.age = String(age);
         updateGeneratedProfile({ birthday: dateStr, age: String(age) });
@@ -2510,12 +2468,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Generate address if needed
       if (neededKinds.includes('address')) {
-        const pickAddr = (list) => list[Math.floor(Math.random() * list.length)];
-        const roads = ['中山路', '解放路', '人民路', '建设路', '文化路', '和平路'];
-        const road = pickAddr(roads);
-        const roadNum = Math.floor(Math.random() * 300) + 1;
-        const city = pickAddr(['北京市朝阳区', '上海市浦东新区', '广州市天河区', '深圳市南山区', '杭州市西湖区']);
-        const address = `${city}${road}${roadNum}号`;
+        const address = generateAddress({
+          region: 'zh',
+          preset: 'legacy-fast-fill'
+        });
         generatedFields.address = address;
         updateGeneratedProfile({ address });
         resultItems.push({ kind: 'address', label: '住址', value: address });
@@ -2971,44 +2927,39 @@ document.addEventListener('DOMContentLoaded', async () => {
     throw new Error('模型返回的数据不是有效 JSON');
   }
 
-  function getTempMailInsightsOverride() {
-    return tempMailInsightStatus === 'success'
-      ? normalizeAiInsightResult(tempMailAiInsights)
+  function getMailInsightsOverride(reader) {
+    return reader.getInsightStatus() === 'success'
+      ? normalizeAiInsightResult(reader.getInsights())
       : null;
   }
 
-  function getMoeMailInsightsOverride() {
-    return moeMailInsightStatus === 'success'
-      ? normalizeAiInsightResult(moeMailAiInsights)
-      : null;
-  }
-
-  function buildTempMailInsightRenderOptions() {
-    if (tempMailInsightStatus === 'loading') {
+  function buildMailInsightRenderOptions(reader) {
+    const status = reader.getInsightStatus();
+    if (status === 'loading') {
       return {
         statusText: 'AI 提取中... ',
         statusType: 'info',
         noteText: '正在提取验证码与验证链接，完成后会自动显示在此处。',
-        onRetry: () => triggerTempMailAiInsights(true),
+        onRetry: () => triggerMailAiInsights(reader, true),
         retryLabel: 'AI 提取中',
         retryDisabled: true
       };
     }
-    if (tempMailInsightStatus === 'success') {
+    if (status === 'success') {
       return {
         statusText: 'AI 提取已完成',
         statusType: 'success',
         noteText: '当前显示 AI 提取到的高置信验证码与验证链接。',
-        onRetry: () => triggerTempMailAiInsights(true),
+        onRetry: () => triggerMailAiInsights(reader, true),
         retryLabel: '重新提取'
       };
     }
-    if (tempMailInsightStatus === 'error') {
+    if (status === 'error') {
       return {
-        statusText: `AI 提取失败：${tempMailInsightError}`,
+        statusText: `AI 提取失败：${reader.getInsightError()}`,
         statusType: 'error',
         noteText: '当前未显示验证码或验证链接，可点击右侧按钮重试。',
-        onRetry: () => triggerTempMailAiInsights(true),
+        onRetry: () => triggerMailAiInsights(reader, true),
         retryLabel: '重试提取'
       };
     }
@@ -3017,7 +2968,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusText: '未配置 AI 提取 API',
         statusType: 'info',
         noteText: '请在设置页选择复用翻译 API，或填写独立提取 API。',
-        onRetry: () => triggerTempMailAiInsights(true),
+        onRetry: () => triggerMailAiInsights(reader, true),
         retryLabel: '重试提取'
       };
     }
@@ -3025,54 +2976,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       statusText: '邮件打开后将自动进行 AI 提取',
       statusType: 'info',
       noteText: '如果自动提取未显示结果，可点击右侧按钮重试。',
-      onRetry: () => triggerTempMailAiInsights(true),
-      retryLabel: '重试提取'
-    };
-  }
-
-  function buildMoeMailInsightRenderOptions() {
-    if (moeMailInsightStatus === 'loading') {
-      return {
-        statusText: 'AI 提取中... ',
-        statusType: 'info',
-        noteText: '正在提取验证码与验证链接，完成后会自动显示在此处。',
-        onRetry: () => triggerMoeMailAiInsights(true),
-        retryLabel: 'AI 提取中',
-        retryDisabled: true
-      };
-    }
-    if (moeMailInsightStatus === 'success') {
-      return {
-        statusText: 'AI 提取已完成',
-        statusType: 'success',
-        noteText: '当前显示 AI 提取到的高置信验证码与验证链接。',
-        onRetry: () => triggerMoeMailAiInsights(true),
-        retryLabel: '重新提取'
-      };
-    }
-    if (moeMailInsightStatus === 'error') {
-      return {
-        statusText: `AI 提取失败：${moeMailInsightError}`,
-        statusType: 'error',
-        noteText: '当前未显示验证码或验证链接，可点击右侧按钮重试。',
-        onRetry: () => triggerMoeMailAiInsights(true),
-        retryLabel: '重试提取'
-      };
-    }
-    if (!hasMailInsightConfig()) {
-      return {
-        statusText: '未配置 AI 提取 API',
-        statusType: 'info',
-        noteText: '请在设置页选择复用翻译 API，或填写独立提取 API。',
-        onRetry: () => triggerMoeMailAiInsights(true),
-        retryLabel: '重试提取'
-      };
-    }
-    return {
-      statusText: '邮件打开后将自动进行 AI 提取',
-      statusType: 'info',
-      noteText: '如果自动提取未显示结果，可点击右侧按钮重试。',
-      onRetry: () => triggerMoeMailAiInsights(true),
+      onRetry: () => triggerMailAiInsights(reader, true),
       retryLabel: '重试提取'
     };
   }
@@ -3410,17 +3314,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     button.classList.toggle('is-danger', options.danger === true);
   }
 
-  function updateTempMailActionButtons(parsed) {
-    setMailActionButtonState(translateMailBtn, {
-      icon: 'translate',
-      title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
-      disabled: !currentTempMail
-    });
+  function updateMailActionButtons(reader, renderResult) {
+    const hasMail = Boolean(reader.getMail());
+    const translateButton = reader.elements.translateButton;
+    const translationInFlight = translateButton.disabled && translateButton.title === '翻译中...';
+    if (!translationInFlight) {
+      const translationExpanded = Boolean(reader.getTranslationText())
+        && !reader.elements.translation.classList.contains('hidden');
+      setMailActionButtonState(translateButton, translationExpanded
+        ? { icon: 'collapseTranslation', title: '收起翻译', disabled: !hasMail }
+        : {
+            icon: 'translate',
+            title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
+            disabled: !hasMail
+          });
+    }
 
-    setMailActionButtonState(toggleMailViewBtn, parsed?.safeHtmlAvailable
+    setMailActionButtonState(reader.elements.viewButton, renderResult?.safeHtmlAvailable
       ? {
-          icon: tempMailViewMode === 'safe-html' ? 'plainText' : 'safeHtml',
-          title: tempMailViewMode === 'safe-html' ? '切换到纯文本' : '切换到安全 HTML'
+          icon: reader.getViewMode() === 'safe-html' ? 'plainText' : 'safeHtml',
+          title: reader.getViewMode() === 'safe-html' ? '切换到纯文本' : '切换到安全 HTML'
         }
       : {
           icon: 'plainText',
@@ -3428,10 +3341,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           disabled: true
         });
 
-    setMailActionButtonState(toggleMailImagesBtn, parsed?.hasRemoteImages
+    setMailActionButtonState(reader.elements.imagesButton, renderResult?.hasRemoteImages
       ? {
-          icon: tempMailAllowRemoteImages ? 'blockImages' : 'showImages',
-          title: tempMailAllowRemoteImages ? '阻止远程图片' : '显示远程图片'
+          icon: reader.getAllowRemoteImages() ? 'blockImages' : 'showImages',
+          title: reader.getAllowRemoteImages() ? '阻止远程图片' : '显示远程图片'
         }
       : {
           icon: 'noImages',
@@ -3439,41 +3352,14 @@ document.addEventListener('DOMContentLoaded', async () => {
           disabled: true
         });
 
-    setMailActionButtonState(deleteMailBtn, {
-      icon: 'delete',
-      title: '删除此邮件',
-      danger: true
-    });
-  }
-
-  function updateMoeMailActionButtons(result) {
-    setMailActionButtonState(translateMoeMailBtn, {
-      icon: 'translate',
-      title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
-      disabled: !currentMoeMail
-    });
-
-    setMailActionButtonState(toggleMoeMailViewBtn, result?.safeHtmlAvailable
-      ? {
-          icon: moeMailViewMode === 'safe-html' ? 'plainText' : 'safeHtml',
-          title: moeMailViewMode === 'safe-html' ? '切换到纯文本' : '切换到安全 HTML'
-        }
-      : {
-          icon: 'plainText',
-          title: '仅纯文本可用',
-          disabled: true
-        });
-
-    setMailActionButtonState(toggleMoeMailImagesBtn, result?.hasRemoteImages
-      ? {
-          icon: moeMailAllowRemoteImages ? 'blockImages' : 'showImages',
-          title: moeMailAllowRemoteImages ? '阻止远程图片' : '显示远程图片'
-        }
-      : {
-          icon: 'noImages',
-          title: '无远程图片',
-          disabled: true
-        });
+    if (reader.elements.deleteButton) {
+      setMailActionButtonState(reader.elements.deleteButton, {
+        icon: 'delete',
+        title: '删除此邮件',
+        danger: true,
+        disabled: !hasMail
+      });
+    }
   }
 
   setMailActionButtonState(translateMailBtn, { icon: 'translate', title: '翻译邮件', disabled: true });
@@ -3483,6 +3369,254 @@ document.addEventListener('DOMContentLoaded', async () => {
   setMailActionButtonState(translateMoeMailBtn, { icon: 'translate', title: '翻译邮件', disabled: true });
   setMailActionButtonState(toggleMoeMailViewBtn, { icon: 'plainText', title: '切换邮件视图', disabled: true });
   setMailActionButtonState(toggleMoeMailImagesBtn, { icon: 'noImages', title: '无远程图片', disabled: true });
+
+  const tempMailReader = {
+    elements: {
+      body: mailBody,
+      insights: mailInsights,
+      translation: mailTranslation,
+      translationTitle: mailTranslationTitle,
+      translationBody: mailTranslationBody,
+      translateButton: translateMailBtn,
+      retranslateButton: retranslateMailBtn,
+      copyTranslationButton: copyMailTranslationBtn,
+      viewButton: toggleMailViewBtn,
+      imagesButton: toggleMailImagesBtn,
+      deleteButton: deleteMailBtn
+    },
+    getMail: () => currentTempMail,
+    setMail: (value) => { currentTempMail = value; },
+    getViewMode: () => tempMailViewMode,
+    setViewMode: (value) => { tempMailViewMode = value; },
+    getAllowRemoteImages: () => tempMailAllowRemoteImages,
+    setAllowRemoteImages: (value) => { tempMailAllowRemoteImages = value; },
+    getTranslationText: () => tempMailTranslationText,
+    setTranslationText: (value) => { tempMailTranslationText = value; },
+    nextTranslationToken: () => ++tempMailTranslationRequestToken,
+    isTranslationTokenCurrent: (token) => token === tempMailTranslationRequestToken,
+    getInsights: () => tempMailAiInsights,
+    setInsights: (value) => { tempMailAiInsights = value; },
+    getInsightStatus: () => tempMailInsightStatus,
+    setInsightStatus: (value) => { tempMailInsightStatus = value; },
+    getInsightError: () => tempMailInsightError,
+    setInsightError: (value) => { tempMailInsightError = value; },
+    nextInsightToken: () => ++tempMailInsightRequestToken,
+    isInsightTokenCurrent: (token) => token === tempMailInsightRequestToken,
+    getIdentity: () => currentMailId,
+    getTranslationSource: (mail, options) => getTempMailTranslationSource(mail, options),
+    getMetadata: (mail) => ({ subject: mail?.subject, from: mail?.source }),
+    renderBody: (mail, options) => renderEmailBody(mailBody, mail?.raw || '', options)
+  };
+
+  const moeMailReader = {
+    elements: {
+      body: moeMailBody,
+      insights: moeMailInsights,
+      translation: moeMailTranslation,
+      translationTitle: moeMailTranslationTitle,
+      translationBody: moeMailTranslationBody,
+      translateButton: translateMoeMailBtn,
+      retranslateButton: retranslateMoeMailBtn,
+      copyTranslationButton: copyMoeMailTranslationBtn,
+      viewButton: toggleMoeMailViewBtn,
+      imagesButton: toggleMoeMailImagesBtn
+    },
+    getMail: () => currentMoeMail,
+    setMail: (value) => { currentMoeMail = value; },
+    getViewMode: () => moeMailViewMode,
+    setViewMode: (value) => { moeMailViewMode = value; },
+    getAllowRemoteImages: () => moeMailAllowRemoteImages,
+    setAllowRemoteImages: (value) => { moeMailAllowRemoteImages = value; },
+    getTranslationText: () => moeMailTranslationText,
+    setTranslationText: (value) => { moeMailTranslationText = value; },
+    nextTranslationToken: () => ++moeMailTranslationRequestToken,
+    isTranslationTokenCurrent: (token) => token === moeMailTranslationRequestToken,
+    getInsights: () => moeMailAiInsights,
+    setInsights: (value) => { moeMailAiInsights = value; },
+    getInsightStatus: () => moeMailInsightStatus,
+    setInsightStatus: (value) => { moeMailInsightStatus = value; },
+    getInsightError: () => moeMailInsightError,
+    setInsightError: (value) => { moeMailInsightError = value; },
+    nextInsightToken: () => ++moeMailInsightRequestToken,
+    isInsightTokenCurrent: (token) => token === moeMailInsightRequestToken,
+    getIdentity: () => currentMoeMail,
+    getTranslationSource: (mail, options) => getMoeMailTranslationSource(mail, options),
+    getMetadata: (mail) => ({ subject: mail?.subject, from: mail?.from_address }),
+    renderBody: (mail, options) => renderMoeEmailBody(moeMailBody, mail, options)
+  };
+
+  function resetMailReader(reader) {
+    reader.nextTranslationToken();
+    reader.nextInsightToken();
+    reader.setMail(null);
+    reader.setViewMode('safe-html');
+    reader.setAllowRemoteImages(defaultRemoteImagesEnabled);
+    reader.setTranslationText('');
+    reader.setInsights(null);
+    reader.setInsightStatus('idle');
+    reader.setInsightError('');
+    reader.elements.insights.classList.add('hidden');
+    reader.elements.insights.innerHTML = '';
+    reader.elements.body.innerHTML = '';
+    resetTranslationPanel(
+      reader.elements.translation,
+      reader.elements.translationTitle,
+      reader.elements.translationBody,
+      reader.elements.copyTranslationButton,
+      reader.elements.retranslateButton
+    );
+    updateMailActionButtons(reader, null);
+  }
+
+  function renderCurrentMail(reader) {
+    const mail = reader.getMail();
+    if (!mail) return;
+    const result = reader.renderBody(mail, {
+      viewMode: reader.getViewMode(),
+      insightsContainer: reader.elements.insights,
+      allowRemoteImages: reader.getAllowRemoteImages(),
+      insightsOverride: getMailInsightsOverride(reader),
+      insightsRenderOptions: buildMailInsightRenderOptions(reader)
+    });
+    updateMailActionButtons(reader, result);
+  }
+
+  async function triggerMailAiInsights(reader, force = false) {
+    const mail = reader.getMail();
+    if (!mail || (!force && ['loading', 'success'].includes(reader.getInsightStatus()))) {
+      return;
+    }
+    if (!hasMailInsightConfig()) {
+      reader.setInsightStatus('error');
+      reader.setInsightError(getMailInsightConfigErrorMessage());
+      renderCurrentMail(reader);
+      return;
+    }
+
+    const requestToken = reader.nextInsightToken();
+    const identity = reader.getIdentity();
+    reader.setInsightStatus('loading');
+    reader.setInsightError('');
+    if (force) reader.setInsights(null);
+    renderCurrentMail(reader);
+
+    try {
+      const extracted = await extractMailInsightsWithApi(
+        reader.getTranslationSource(mail, { includeOriginalLinks: true }),
+        reader.getMetadata(mail)
+      );
+      if (!reader.isInsightTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
+      reader.setInsights(extracted);
+      reader.setInsightStatus('success');
+      reader.setInsightError('');
+    } catch (error) {
+      if (!reader.isInsightTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
+      reader.setInsights(null);
+      reader.setInsightStatus('error');
+      reader.setInsightError(error.message || '未知错误');
+    }
+    renderCurrentMail(reader);
+  }
+
+  async function requestMailTranslation(reader, force = false) {
+    const mail = reader.getMail();
+    if (!mail) return;
+    if (force) reader.setTranslationText('');
+    const requestToken = reader.nextTranslationToken();
+    const identity = reader.getIdentity();
+    renderTranslationPanel(
+      reader.elements.translation,
+      reader.elements.translationTitle,
+      reader.elements.translationBody,
+      reader.elements.copyTranslationButton,
+      '翻译中...',
+      'AI 翻译 · 正在处理',
+      reader.elements.retranslateButton
+    );
+    reader.elements.retranslateButton.classList.add('hidden');
+    reader.elements.copyTranslationButton.classList.add('hidden');
+    setMailActionButtonState(reader.elements.translateButton, { icon: 'loading', title: '翻译中...', disabled: true });
+    try {
+      const translated = await translateTextWithApi(reader.getTranslationSource(mail), reader.getMetadata(mail));
+      if (!reader.isTranslationTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
+      reader.setTranslationText(translated);
+      renderTranslationPanel(
+        reader.elements.translation,
+        reader.elements.translationTitle,
+        reader.elements.translationBody,
+        reader.elements.copyTranslationButton,
+        translated,
+        `AI 翻译 · ${translationTargetLanguage}`,
+        reader.elements.retranslateButton
+      );
+      setMailActionButtonState(reader.elements.translateButton, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
+    } catch (error) {
+      if (!reader.isTranslationTokenCurrent(requestToken) || reader.getIdentity() !== identity) return;
+      renderTranslationPanel(
+        reader.elements.translation,
+        reader.elements.translationTitle,
+        reader.elements.translationBody,
+        reader.elements.copyTranslationButton,
+        `翻译失败：${error.message}`,
+        'AI 翻译 · 调用失败',
+        reader.elements.retranslateButton
+      );
+      reader.elements.copyTranslationButton.classList.add('hidden');
+      setMailActionButtonState(reader.elements.translateButton, {
+        icon: 'translate',
+        title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
+        disabled: !reader.getMail()
+      });
+    }
+  }
+
+  function bindMailReaderActions(reader) {
+    reader.elements.viewButton.addEventListener('click', () => {
+      if (!reader.getMail()) return;
+      reader.setViewMode(reader.getViewMode() === 'safe-html' ? 'plain-text' : 'safe-html');
+      renderCurrentMail(reader);
+    });
+    reader.elements.imagesButton.addEventListener('click', () => {
+      if (!reader.getMail()) return;
+      reader.setAllowRemoteImages(!reader.getAllowRemoteImages());
+      renderCurrentMail(reader);
+    });
+    reader.elements.translateButton.addEventListener('click', () => {
+      if (!reader.getMail()) return;
+      if (!reader.elements.translation.classList.contains('hidden')) {
+        reader.elements.translation.classList.add('hidden');
+        setMailActionButtonState(reader.elements.translateButton, {
+          icon: 'translate',
+          title: reader.getTranslationText() ? '查看翻译' : (hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API'),
+          disabled: false
+        });
+        return;
+      }
+      if (reader.getTranslationText()) {
+        renderTranslationPanel(
+          reader.elements.translation,
+          reader.elements.translationTitle,
+          reader.elements.translationBody,
+          reader.elements.copyTranslationButton,
+          reader.getTranslationText(),
+          `AI 翻译 · ${translationTargetLanguage}`,
+          reader.elements.retranslateButton
+        );
+        setMailActionButtonState(reader.elements.translateButton, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
+        return;
+      }
+      requestMailTranslation(reader);
+    });
+    reader.elements.retranslateButton.addEventListener('click', () => requestMailTranslation(reader, true));
+    reader.elements.copyTranslationButton.addEventListener('click', () => {
+      if (reader.getTranslationText()) {
+        copyToClipboard(reader.getTranslationText(), reader.elements.copyTranslationButton);
+      }
+    });
+  }
+
+  bindMailReaderActions(tempMailReader);
+  bindMailReaderActions(moeMailReader);
 
   bindFloatingSelectScrollBridge();
 
@@ -4736,38 +4870,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function resetTempMailDetail() {
     tempMailDetailRequestToken += 1;
-    tempMailTranslationRequestToken += 1;
-    tempMailInsightRequestToken += 1;
     currentMailId = null;
-    currentTempMail = null;
-    tempMailViewMode = 'safe-html';
-    tempMailAllowRemoteImages = defaultRemoteImagesEnabled;
-    tempMailTranslationText = '';
-    tempMailAiInsights = null;
-    tempMailInsightStatus = 'idle';
-    tempMailInsightError = '';
-    mailInsights.classList.add('hidden');
-    mailInsights.innerHTML = '';
-    mailBody.innerHTML = '';
-    resetTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, retranslateMailBtn);
-    updateTempMailActionButtons(null);
+    resetMailReader(tempMailReader);
   }
 
   function resetMoeMailDetail() {
-    moeMailTranslationRequestToken += 1;
-    moeMailInsightRequestToken += 1;
-    currentMoeMail = null;
-    moeMailViewMode = 'safe-html';
-    moeMailAllowRemoteImages = defaultRemoteImagesEnabled;
-    moeMailTranslationText = '';
-    moeMailAiInsights = null;
-    moeMailInsightStatus = 'idle';
-    moeMailInsightError = '';
-    moeMailInsights.classList.add('hidden');
-    moeMailInsights.innerHTML = '';
-    moeMailBody.innerHTML = '';
-    resetTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, retranslateMoeMailBtn);
-    updateMoeMailActionButtons(null);
+    resetMailReader(moeMailReader);
   }
 
   function closeInboxView() {
@@ -5096,169 +5204,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (requestToken !== tempMailDetailRequestToken || currentMailId !== mail.id) {
         return;
       }
+      currentTempMail = null;
       renderPlainText(mailBody, `加载邮件失败：${error.message}`);
       mailInsights.classList.add('hidden');
       mailInsights.innerHTML = '';
-      updateTempMailActionButtons(null);
+      updateMailActionButtons(tempMailReader, null);
     }
   }
 
   function renderCurrentTempMail() {
-    if (!currentTempMail) return;
-    const parsed = renderEmailBody(mailBody, currentTempMail.raw || '', {
-      viewMode: tempMailViewMode,
-      insightsContainer: mailInsights,
-      allowRemoteImages: tempMailAllowRemoteImages,
-      insightsOverride: getTempMailInsightsOverride(),
-      insightsRenderOptions: buildTempMailInsightRenderOptions()
-    });
-    updateTempMailActionButtons(parsed);
+    renderCurrentMail(tempMailReader);
   }
 
   async function triggerTempMailAiInsights(force = false) {
-    if (!currentTempMail) {
-      return;
-    }
-    if (!force && (tempMailInsightStatus === 'loading' || tempMailInsightStatus === 'success')) {
-      return;
-    }
-    if (!hasMailInsightConfig()) {
-      tempMailInsightStatus = 'error';
-      tempMailInsightError = getMailInsightConfigErrorMessage();
-      renderCurrentTempMail();
-      return;
-    }
-
-    const requestToken = ++tempMailInsightRequestToken;
-    const stableMailId = currentMailId;
-    tempMailInsightStatus = 'loading';
-    tempMailInsightError = '';
-    if (force) {
-      tempMailAiInsights = null;
-    }
-    renderCurrentTempMail();
-
-    try {
-      const extracted = await extractMailInsightsWithApi(getTempMailTranslationSource(currentTempMail, { includeOriginalLinks: true }), {
-        subject: currentTempMail.subject,
-        from: currentTempMail.source
-      });
-      if (requestToken !== tempMailInsightRequestToken || !currentTempMail || currentMailId !== stableMailId) {
-        return;
-      }
-      tempMailAiInsights = extracted;
-      tempMailInsightStatus = 'success';
-      tempMailInsightError = '';
-      renderCurrentTempMail();
-    } catch (error) {
-      if (requestToken !== tempMailInsightRequestToken || !currentTempMail || currentMailId !== stableMailId) {
-        return;
-      }
-      tempMailAiInsights = null;
-      tempMailInsightStatus = 'error';
-      tempMailInsightError = error.message || '未知错误';
-      renderCurrentTempMail();
-    }
+    return triggerMailAiInsights(tempMailReader, force);
   }
-
-  toggleMailViewBtn.addEventListener('click', () => {
-    if (!currentTempMail) return;
-    tempMailViewMode = tempMailViewMode === 'safe-html' ? 'plain-text' : 'safe-html';
-    renderCurrentTempMail();
-  });
-
-  toggleMailImagesBtn.addEventListener('click', () => {
-    if (!currentTempMail) return;
-    tempMailAllowRemoteImages = !tempMailAllowRemoteImages;
-    renderCurrentTempMail();
-  });
-
-  translateMailBtn.addEventListener('click', async () => {
-    if (!currentTempMail) {
-      return;
-    }
-    // If translation panel is visible → collapse it
-    if (!mailTranslation.classList.contains('hidden')) {
-      mailTranslation.classList.add('hidden');
-      setMailActionButtonState(translateMailBtn, {
-        icon: 'translate',
-        title: tempMailTranslationText ? '查看翻译' : (hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API'),
-        disabled: !currentTempMail
-      });
-      return;
-    }
-    // If we have cached translation text → just show it (no API call)
-    if (tempMailTranslationText) {
-      renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, tempMailTranslationText, `AI 翻译 · ${translationTargetLanguage}`, retranslateMailBtn);
-      setMailActionButtonState(translateMailBtn, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
-      return;
-    }
-    // No cached translation → call API
-    const requestToken = ++tempMailTranslationRequestToken;
-    renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, '翻译中...', 'AI 翻译 · 正在处理', retranslateMailBtn);
-    retranslateMailBtn.classList.add('hidden');
-    copyMailTranslationBtn.classList.add('hidden');
-    setMailActionButtonState(translateMailBtn, { icon: 'loading', title: '翻译中...', disabled: true });
-    try {
-      const translated = await translateTextWithApi(getTempMailTranslationSource(currentTempMail), {
-        subject: currentTempMail.subject,
-        from: currentTempMail.source
-      });
-      if (requestToken !== tempMailTranslationRequestToken || !currentTempMail) {
-        return;
-      }
-      tempMailTranslationText = translated;
-      renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, translated, `AI 翻译 · ${translationTargetLanguage}`, retranslateMailBtn);
-      setMailActionButtonState(translateMailBtn, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
-    } catch (error) {
-      if (requestToken !== tempMailTranslationRequestToken) {
-        return;
-      }
-      renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, `翻译失败：${error.message}`, 'AI 翻译 · 调用失败', retranslateMailBtn);
-      copyMailTranslationBtn.classList.add('hidden');
-      setMailActionButtonState(translateMailBtn, {
-        icon: 'translate',
-        title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
-        disabled: !currentTempMail
-      });
-    }
-  });
-
-  retranslateMailBtn.addEventListener('click', async () => {
-    if (!currentTempMail) return;
-    tempMailTranslationText = '';
-    const requestToken = ++tempMailTranslationRequestToken;
-    renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, '翻译中...', 'AI 翻译 · 正在处理', retranslateMailBtn);
-    retranslateMailBtn.classList.add('hidden');
-    copyMailTranslationBtn.classList.add('hidden');
-    setMailActionButtonState(translateMailBtn, { icon: 'loading', title: '翻译中...', disabled: true });
-    try {
-      const translated = await translateTextWithApi(getTempMailTranslationSource(currentTempMail), {
-        subject: currentTempMail.subject,
-        from: currentTempMail.source
-      });
-      if (requestToken !== tempMailTranslationRequestToken || !currentTempMail) return;
-      tempMailTranslationText = translated;
-      renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, translated, `AI 翻译 · ${translationTargetLanguage}`, retranslateMailBtn);
-      setMailActionButtonState(translateMailBtn, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
-    } catch (error) {
-      if (requestToken !== tempMailTranslationRequestToken) return;
-      renderTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, `翻译失败：${error.message}`, 'AI 翻译 · 调用失败', retranslateMailBtn);
-      copyMailTranslationBtn.classList.add('hidden');
-      setMailActionButtonState(translateMailBtn, {
-        icon: 'translate',
-        title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
-        disabled: !currentTempMail
-      });
-    }
-  });
-
-  copyMailTranslationBtn.addEventListener('click', () => {
-    if (!tempMailTranslationText) {
-      return;
-    }
-    copyToClipboard(tempMailTranslationText, copyMailTranslationBtn);
-  });
 
   // MoeMail 保存设置已合并到统一设置页
 
@@ -5716,163 +5676,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function renderCurrentMoeMail() {
-    if (!currentMoeMail) return;
-    const result = renderMoeEmailBody(
-      moeMailBody,
-      currentMoeMail,
-      moeMailInsights,
-      moeMailViewMode,
-      moeMailAllowRemoteImages,
-      getMoeMailInsightsOverride(),
-      buildMoeMailInsightRenderOptions()
-    );
-    updateMoeMailActionButtons(result);
+    renderCurrentMail(moeMailReader);
   }
 
   async function triggerMoeMailAiInsights(force = false) {
-    if (!currentMoeMail) {
-      return;
-    }
-    if (!force && (moeMailInsightStatus === 'loading' || moeMailInsightStatus === 'success')) {
-      return;
-    }
-    if (!hasMailInsightConfig()) {
-      moeMailInsightStatus = 'error';
-      moeMailInsightError = getMailInsightConfigErrorMessage();
-      renderCurrentMoeMail();
-      return;
-    }
-
-    const requestToken = ++moeMailInsightRequestToken;
-    const mailRef = currentMoeMail;
-    moeMailInsightStatus = 'loading';
-    moeMailInsightError = '';
-    if (force) {
-      moeMailAiInsights = null;
-    }
-    renderCurrentMoeMail();
-
-    try {
-      const extracted = await extractMailInsightsWithApi(getMoeMailTranslationSource(currentMoeMail, { includeOriginalLinks: true }), {
-        subject: currentMoeMail.subject,
-        from: currentMoeMail.from_address
-      });
-      if (requestToken !== moeMailInsightRequestToken || !currentMoeMail || currentMoeMail !== mailRef) {
-        return;
-      }
-      moeMailAiInsights = extracted;
-      moeMailInsightStatus = 'success';
-      moeMailInsightError = '';
-      renderCurrentMoeMail();
-    } catch (error) {
-      if (requestToken !== moeMailInsightRequestToken || !currentMoeMail || currentMoeMail !== mailRef) {
-        return;
-      }
-      moeMailAiInsights = null;
-      moeMailInsightStatus = 'error';
-      moeMailInsightError = error.message || '未知错误';
-      renderCurrentMoeMail();
-    }
+    return triggerMailAiInsights(moeMailReader, force);
   }
-
-  toggleMoeMailViewBtn.addEventListener('click', () => {
-    if (!currentMoeMail) return;
-    moeMailViewMode = moeMailViewMode === 'safe-html' ? 'plain-text' : 'safe-html';
-    renderCurrentMoeMail();
-  });
-
-  toggleMoeMailImagesBtn.addEventListener('click', () => {
-    if (!currentMoeMail) return;
-    moeMailAllowRemoteImages = !moeMailAllowRemoteImages;
-    renderCurrentMoeMail();
-  });
-
-  translateMoeMailBtn.addEventListener('click', async () => {
-    if (!currentMoeMail) {
-      return;
-    }
-    // If translation panel is visible → collapse it
-    if (!moeMailTranslation.classList.contains('hidden')) {
-      moeMailTranslation.classList.add('hidden');
-      setMailActionButtonState(translateMoeMailBtn, {
-        icon: 'translate',
-        title: moeMailTranslationText ? '查看翻译' : (hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API'),
-        disabled: !currentMoeMail
-      });
-      return;
-    }
-    // If we have cached translation text → just show it (no API call)
-    if (moeMailTranslationText) {
-      renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, moeMailTranslationText, `AI 翻译 · ${translationTargetLanguage}`, retranslateMoeMailBtn);
-      setMailActionButtonState(translateMoeMailBtn, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
-      return;
-    }
-    // No cached translation → call API
-    const requestToken = ++moeMailTranslationRequestToken;
-    renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, '翻译中...', 'AI 翻译 · 正在处理', retranslateMoeMailBtn);
-    retranslateMoeMailBtn.classList.add('hidden');
-    copyMoeMailTranslationBtn.classList.add('hidden');
-    setMailActionButtonState(translateMoeMailBtn, { icon: 'loading', title: '翻译中...', disabled: true });
-    try {
-      const translated = await translateTextWithApi(getMoeMailTranslationSource(currentMoeMail), {
-        subject: currentMoeMail.subject,
-        from: currentMoeMail.from_address
-      });
-      if (requestToken !== moeMailTranslationRequestToken || !currentMoeMail) {
-        return;
-      }
-      moeMailTranslationText = translated;
-      renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, translated, `AI 翻译 · ${translationTargetLanguage}`, retranslateMoeMailBtn);
-      setMailActionButtonState(translateMoeMailBtn, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
-    } catch (error) {
-      if (requestToken !== moeMailTranslationRequestToken) {
-        return;
-      }
-      renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, `翻译失败：${error.message}`, 'AI 翻译 · 调用失败', retranslateMoeMailBtn);
-      copyMoeMailTranslationBtn.classList.add('hidden');
-      setMailActionButtonState(translateMoeMailBtn, {
-        icon: 'translate',
-        title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
-        disabled: !currentMoeMail
-      });
-    }
-  });
-
-  retranslateMoeMailBtn.addEventListener('click', async () => {
-    if (!currentMoeMail) return;
-    moeMailTranslationText = '';
-    const requestToken = ++moeMailTranslationRequestToken;
-    renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, '翻译中...', 'AI 翻译 · 正在处理', retranslateMoeMailBtn);
-    retranslateMoeMailBtn.classList.add('hidden');
-    copyMoeMailTranslationBtn.classList.add('hidden');
-    setMailActionButtonState(translateMoeMailBtn, { icon: 'loading', title: '翻译中...', disabled: true });
-    try {
-      const translated = await translateTextWithApi(getMoeMailTranslationSource(currentMoeMail), {
-        subject: currentMoeMail.subject,
-        from: currentMoeMail.from_address
-      });
-      if (requestToken !== moeMailTranslationRequestToken || !currentMoeMail) return;
-      moeMailTranslationText = translated;
-      renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, translated, `AI 翻译 · ${translationTargetLanguage}`, retranslateMoeMailBtn);
-      setMailActionButtonState(translateMoeMailBtn, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
-    } catch (error) {
-      if (requestToken !== moeMailTranslationRequestToken) return;
-      renderTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, `翻译失败：${error.message}`, 'AI 翻译 · 调用失败', retranslateMoeMailBtn);
-      copyMoeMailTranslationBtn.classList.add('hidden');
-      setMailActionButtonState(translateMoeMailBtn, {
-        icon: 'translate',
-        title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
-        disabled: !currentMoeMail
-      });
-    }
-  });
-
-  copyMoeMailTranslationBtn.addEventListener('click', () => {
-    if (!moeMailTranslationText) {
-      return;
-    }
-    copyToClipboard(moeMailTranslationText, copyMoeMailTranslationBtn);
-  });
 
   // ===================== 公共工具函数 =====================
   function showMessage(element, text, type) {
