@@ -51,7 +51,8 @@
         "popup.html",
         "popup.css",
         "popup.js",
-        "popup-modules/*.js"
+        "popup-modules/*.js",
+        "icons/float-btn.png"
       ],
       "matches": [
         "<all_urls>"
