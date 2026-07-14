@@ -3,17 +3,27 @@
   position: fixed !important;
   bottom: 30px;
   right: 30px;
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #2563eb, #60a5fa 55%, #7dd3fc);
+  width: 54px !important;
+  height: 54px !important;
+  min-width: 54px !important;
+  min-height: 54px !important;
+  max-width: 54px !important;
+  max-height: 54px !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border-radius: 50% !important;
+  /* 图标填满按钮，底色仅作加载前兜底 */
+  background: #eef4ff !important;
   color: white;
-  border: 1px solid rgba(255, 255, 255, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.5) !important;
   cursor: pointer;
-  font-size: 24px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  font-size: 0 !important;
+  line-height: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  overflow: hidden !important;
+  box-sizing: border-box !important;
   box-shadow:
     0 18px 30px rgba(37, 99, 235, 0.34),
     0 6px 16px rgba(14, 165, 233, 0.24),
@@ -23,6 +33,25 @@
   isolation: isolate;
   -webkit-user-select: none;
   user-select: none;
+}
+
+/* 悬浮按钮图标：固定填满，避免原图尺寸撑破按钮 */
+#temp-email-float-btn .temp-email-float-btn-icon {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: cover !important;
+  object-position: center !important;
+  border-radius: inherit !important;
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  pointer-events: none !important;
+  -webkit-user-drag: none !important;
+  user-select: none !important;
+  flex-shrink: 0 !important;
 }
 
 #temp-email-float-btn,
@@ -64,11 +93,15 @@
 }
 
 #temp-email-float-btn[data-style="legacy"] {
-  width: 50px;
-  height: 50px;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #1f6feb, #174ea6);
-  border: 1px solid rgba(12, 46, 109, 0.3);
+  width: 50px !important;
+  height: 50px !important;
+  min-width: 50px !important;
+  min-height: 50px !important;
+  max-width: 50px !important;
+  max-height: 50px !important;
+  border-radius: 16px !important;
+  background: #eef4ff !important;
+  border: 1px solid rgba(12, 46, 109, 0.22) !important;
   box-shadow:
     0 18px 32px rgba(23, 78, 166, 0.28),
     0 8px 20px rgba(15, 23, 42, 0.14);
