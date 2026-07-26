@@ -391,6 +391,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentTempMails = [];
   let currentTempMail = null;
   let tempMailDetailRequestToken = 0;
+  // BUG-2：收件箱列表拉取令牌，防止两次拉取交叠时先发后到，把 A 邮箱的邮件渲染进 B 邮箱
+  let tempInboxFetchToken = 0;
   let tempMailViewMode = 'safe-html';
   let tempMailAllowRemoteImages = false;
   let tempMailTranslationText = '';
@@ -404,6 +406,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   let moeApiUrl = '';
   let moeApiKey = '';
   let moeCurrentEmailId = null;
+  // BUG-2：MoeMail 收件箱列表拉取令牌，作用同 tempInboxFetchToken
+  let moeInboxFetchToken = 0;
   let currentMoeEmails = [];
   let moeUnreadCounts = {};
   let currentMoeMail = null;
@@ -472,6 +476,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     localStorageApi.set(items, resolve);
   });
   const tabsQuery = (query) => new Promise((resolve) => chrome.tabs.query(query, resolve));
+
+  /**
+   * L-4：按 id 安全赋值。
+   * 元素缺失时静默跳过并返回 null，避免初始化 .then 链因单个控件不存在而整体中断
+   * （之前会被外层 catch 吞掉，只留下一句「配置加载失败」）。
+   */
+  function setElementValueById(id, value) {
+    const element = document.getElementById(id);
+    if (!element) {
+      return null;
+    }
+    element.value = value;
+    return element;
+  }
+
+  /**
+   * L-4：按 id 安全取值，元素缺失时回退到默认值而不是抛 TypeError。
+   */
+  function getElementValueById(id, fallback = '') {
+    const element = document.getElementById(id);
+    return element ? element.value : fallback;
+  }
+
+  /**
+   * SEC-13：用 DOM + textContent 渲染列表内的占位/错误提示。
+   * 错误串可能来自用户配置的后端响应，不能直接拼进 innerHTML。
+   */
+  function renderInlineNotice(container, text, tone = 'muted') {
+    if (!container) {
+      return;
+    }
+    container.textContent = '';
+    const notice = document.createElement('div');
+    notice.style.padding = '12px';
+    notice.style.textAlign = 'center';
+    notice.style.color = tone === 'error' ? 'var(--error)' : 'var(--text-muted)';
+    notice.textContent = text;
+    container.appendChild(notice);
+  }
+
+  /**
+   * 统一提取异常信息，保证拿到的一定是字符串。
+   */
+  function getErrorText(error) {
+    const message = typeof error?.message === 'string' ? error.message : String(error ?? '');
+    return message.trim() || '未知错误';
+  }
+
   let clearToolResultState = () => {};
   function splitGeneratedFullName(fullName) {
     const normalizedFullName = typeof fullName === 'string' ? fullName.trim() : '';
@@ -741,7 +793,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         fillBtn.type = 'button';
         fillBtn.className = 'tool-result-action generated-history-fill-action';
         fillBtn.title = action.title || action.label || getFillActionLabel(action.kind);
-        fillBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/><path d="M5 3h14"/></svg><span>${action.label || getFillActionLabel(action.kind)}</span>`;
+        // SEC-13：图标是固定字面量，标签文本走 textContent，避免任何插值进 innerHTML
+        fillBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/><path d="M5 3h14"/></svg><span></span>';
+        const fillBtnLabel = fillBtn.querySelector('span');
+        if (fillBtnLabel) {
+          fillBtnLabel.textContent = action.label || getFillActionLabel(action.kind);
+        }
         fillBtn.addEventListener('click', () => {
           fillGeneratedHistoryAction(action, fillBtn).catch(() => {});
         });
@@ -1207,9 +1264,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   let floatingFieldSelectionActive = false;
   let floatingFieldSelectionLabel = '';
 
+  // L-1：来自宿主页面的 label 只用于文案展示，这里做长度与字符收敛，
+  // 防止超长/含控制字符的字符串把提示条撑爆或插入换行。
+  const FLOAT_SELECT_LABEL_MAX_LENGTH = 40;
+
+  function sanitizeFloatingSelectionLabel(rawLabel) {
+    if (typeof rawLabel !== 'string') {
+      return '';
+    }
+    // eslint-disable-next-line no-control-regex
+    const cleaned = rawLabel.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+    return cleaned.slice(0, FLOAT_SELECT_LABEL_MAX_LENGTH);
+  }
+
   function setFloatingFieldSelectionState(active, label = '') {
     floatingFieldSelectionActive = window.top !== window && Boolean(active);
-    floatingFieldSelectionLabel = floatingFieldSelectionActive ? (label || '输入框') : '';
+    floatingFieldSelectionLabel = floatingFieldSelectionActive
+      ? (sanitizeFloatingSelectionLabel(label) || '输入框')
+      : '';
   }
 
   function notifyFloatingHostSelectState(open) {
@@ -1248,15 +1320,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener('pagehide', () => notifyFloatingHostSelectState(false));
   }
 
+  // L-1：这里刻意【不】校验 event.origin。
+  // popup.html 作为 iframe 嵌在宿主页面里时，window.parent 是宿主页面本身，
+  // content script 又运行在页面 realm，因此 event.origin 永远是宿主页面的 origin
+  // （<all_urls> 下不可枚举），而不是扩展 origin —— 拿扩展 origin 去比对会把正常消息全部误杀。
+  // 加固思路改为：严格的 source 校验 + 严格的数据结构/取值域校验 + label 收敛。
   window.addEventListener('message', (event) => {
-    if (window.top === window || event.source !== window.parent) {
+    // 只有嵌入模式、且确实来自直接父窗口的消息才处理（排除同级 iframe / 更深层窗口）
+    if (window.top === window || !window.parent || event.source !== window.parent) {
       return;
     }
     const data = event.data;
-    if (!data || data.source !== FLOAT_SELECT_MESSAGE_SOURCE || data.type !== 'floating-field-selection-state') {
+    // 必须是普通对象：拒绝数组、字符串、null 等其它形态的载荷
+    if (typeof data !== 'object' || data === null || Array.isArray(data)) {
       return;
     }
-    setFloatingFieldSelectionState(data.active, data.label);
+    if (data.source !== FLOAT_SELECT_MESSAGE_SOURCE || data.type !== 'floating-field-selection-state') {
+      return;
+    }
+    // content.js 发送的是 Boolean(active) 与字符串 label，
+    // 这里把取值域收紧到严格类型，宿主页面伪造出的其它形态一律丢弃。
+    if (typeof data.active !== 'boolean') {
+      return;
+    }
+    if (data.label !== undefined && typeof data.label !== 'string') {
+      return;
+    }
+    setFloatingFieldSelectionState(data.active, data.label || '');
   });
 
   document.addEventListener('keydown', (event) => {
@@ -1380,10 +1470,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  // PERF-4：记录已经写进 storage 的 activeTab，避免同一个值被反复 set
+  // （每次 set 又会触发 onChanged 自回环）。
+  let persistedActiveTab = null;
+
   function switchTab(tab, options = {}) {
     const nextTab = normalizeTabForLayout(tab);
+
+    // BUG-4：来自 chrome.storage.onChanged 的跨实例同步。
+    // 悬浮窗 iframe 与弹窗可能同时存在，另一实例切标签不应打断本实例。
+    if (options.fromRemote === true) {
+      // 目标标签没有实际变化时直接忽略，避免无谓的重渲染与收件箱重置
+      if (nextTab === activeTab) {
+        return;
+      }
+      // 本实例正在看收件箱（列表或邮件详情）时忽略这次同步，
+      // 否则 closeInboxView/closeMoeInboxView 会把用户正在阅读的邮件强行关掉。
+      // 用户手动返回后仍停留在本实例自己的标签上，状态保持自洽。
+      if (currentInboxAddress || moeCurrentEmailId) {
+        return;
+      }
+    }
+
     activeTab = nextTab;
-    if (options.persist !== false) {
+    if (options.persist !== false && nextTab !== persistedActiveTab) {
+      persistedActiveTab = nextTab;
       chrome.storage.local.set({ activeTab: nextTab });
     }
 
@@ -3698,6 +3809,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     syncBlocklistTextarea();
   }
 
+  /**
+   * BUG-3：按「模式匹配」移除名单项。
+   * 名单项可能是通配符 (*.example.com) 或关键词，命中判断走 matchesSitePattern，
+   * 移除却用精确不等过滤的话删不掉 —— 开关会静默失效。
+   * 这里把所有命中当前 origin 的条目一并过滤，并回传被移除的条目用于反馈。
+   */
+  function removeMatchingSitePatterns(list, origin) {
+    const source = Array.isArray(list) ? list : [];
+    const kept = [];
+    const removed = [];
+    source.forEach((pattern) => {
+      if (matchesSitePattern(origin, pattern)) {
+        removed.push(pattern);
+      } else {
+        kept.push(pattern);
+      }
+    });
+    return { kept, removed };
+  }
+
+  /**
+   * 判断名单项是不是「一批域名」级别的规则（通配符或关键词），
+   * 移除这类条目会影响当前站点之外的其它域名，需要额外提示用户。
+   */
+  function isBroadSitePattern(pattern) {
+    const value = String(pattern || '').trim();
+    if (!value) return false;
+    return !(value.startsWith('http://') || value.startsWith('https://'));
+  }
+
   async function handleCurrentSiteToggle() {
     if (!currentSiteOrigin) {
       return;
@@ -3706,14 +3847,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 先同步 textarea 内容，确保基于最新编辑状态判断
     siteBlocklist = parseBlocklistTextarea();
 
-    if (siteAccessMode === 'whitelist') {
-      if (matchesAnySitePattern(currentSiteOrigin, siteAllowlist)) {
-        siteAllowlist = siteAllowlist.filter(origin => origin !== currentSiteOrigin);
-      } else {
-        siteAllowlist = Array.from(new Set([...siteAllowlist, currentSiteOrigin]));
+    const inWhitelistMode = siteAccessMode === 'whitelist';
+    const targetList = inWhitelistMode ? siteAllowlist : siteBlocklist;
+    const listLabel = inWhitelistMode ? '白名单' : '黑名单';
+    const shouldRemove = matchesAnySitePattern(currentSiteOrigin, targetList);
+
+    let removedPatterns = [];
+    if (shouldRemove) {
+      const result = removeMatchingSitePatterns(targetList, currentSiteOrigin);
+      removedPatterns = result.removed;
+
+      // 通配符 / 关键词条目影响的是一批域名，移除前必须让用户知情并确认
+      const broadPatterns = removedPatterns.filter(isBroadSitePattern);
+      if (broadPatterns.length > 0) {
+        const confirmed = window.confirm(
+          `当前站点是被${listLabel}中的规则「批量」命中的：\n\n`
+          + broadPatterns.join('\n')
+          + `\n\n这些是通配符 / 关键词规则，移除后会影响它们覆盖的所有域名，`
+          + `不只是 ${currentSiteOrigin}。\n\n确定要移除吗？`
+        );
+        if (!confirmed) {
+          // 用户取消：恢复 textarea 显示，不做任何写入
+          syncBlocklistTextarea();
+          // 空 type 走中性样式（与「连接测试中...」一致），取消不是错误
+          showMessage(settingsMessage, '已取消，站点名单未改动。', '');
+          return;
+        }
       }
-    } else if (matchesAnySitePattern(currentSiteOrigin, siteBlocklist)) {
-      siteBlocklist = siteBlocklist.filter(origin => origin !== currentSiteOrigin);
+
+      if (inWhitelistMode) {
+        siteAllowlist = result.kept;
+      } else {
+        siteBlocklist = result.kept;
+      }
+    } else if (inWhitelistMode) {
+      siteAllowlist = Array.from(new Set([...siteAllowlist, currentSiteOrigin]));
     } else {
       siteBlocklist = Array.from(new Set([...siteBlocklist, currentSiteOrigin]));
     }
@@ -3725,6 +3893,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     refreshCurrentSiteInfo();
     syncBlocklistTextarea();
+
+    if (removedPatterns.length > 0) {
+      showMessage(
+        settingsMessage,
+        `已从${listLabel}移除 ${removedPatterns.length} 条规则：${removedPatterns.join('、')}`,
+        'success'
+      );
+    }
   }
 
   applyTabLayoutMode();
@@ -3776,15 +3952,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     defaultFfMoeExpiry = result[DEFAULT_FF_MOE_EXPIRY_KEY] || '86400000';
     defaultTempExpiry = result[DEFAULT_TEMP_EXPIRY_KEY] || '86400000';
     defaultMoeExpiry = result[DEFAULT_MOE_EXPIRY_KEY] || '86400000';
-    document.getElementById('setting-ff-temp-expiry').value = defaultFfTempExpiry;
-    document.getElementById('setting-ff-moe-expiry').value = defaultFfMoeExpiry;
-    document.getElementById('setting-temp-expiry').value = defaultTempExpiry;
-    document.getElementById('setting-moe-expiry').value = defaultMoeExpiry;
+    // L-4：走安全赋值，任一控件缺失都不应中断整条初始化链
+    setElementValueById('setting-ff-temp-expiry', defaultFfTempExpiry);
+    setElementValueById('setting-ff-moe-expiry', defaultFfMoeExpiry);
+    setElementValueById('setting-temp-expiry', defaultTempExpiry);
+    setElementValueById('setting-moe-expiry', defaultMoeExpiry);
     // Apply defaults to the active pages
-    tempExpirySelect.value = defaultTempExpiry;
-    moeExpirySelect.value = defaultMoeExpiry;
-    fastFillTempExpiry.value = defaultFfTempExpiry;
-    fastFillMoeExpiry.value = defaultFfMoeExpiry;
+    if (tempExpirySelect) tempExpirySelect.value = defaultTempExpiry;
+    if (moeExpirySelect) moeExpirySelect.value = defaultMoeExpiry;
+    if (fastFillTempExpiry) fastFillTempExpiry.value = defaultFfTempExpiry;
+    if (fastFillMoeExpiry) fastFillMoeExpiry.value = defaultFfMoeExpiry;
 
     renderHistory();
 
@@ -3882,6 +4059,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     restoreGeneratedToolResults();
     renderGeneratedToolHistory();
 
+    // PERF-4：storage 里已经存在的 activeTab 记下来，switchTab 就不会把同一个值再写一遍
+    persistedActiveTab = result.activeTab || null;
+
     // 恢复上次的选项卡（activeTab 优先，否则用 defaultTab）
     let savedTab = normalizeTabForLayout(result.activeTab || savedDefault, tabLayoutMode);
     // 如果首次使用（无任何配置），自动跳转到设置页
@@ -3899,6 +4079,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const emailObj = { id: savedInbox.emailId, address: savedInbox.address || '' };
         moeOpenInbox(emailObj);
       }, 200);
+    } else if (savedInbox) {
+      // PERF-4：closeInboxView 不再无条件清空 activeInbox，
+      // 这里兜底清理无法恢复的残留记录。
+      storageSet({ activeInbox: null }).catch(() => {});
     }
 
     // 初始化完成，显示页面
@@ -3962,11 +4146,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const newSiteAccessMode = siteAccessModeSelect.value || 'all';
 
-    // Default expiry
-    const newDefaultFfTempExpiry = document.getElementById('setting-ff-temp-expiry').value;
-    const newDefaultFfMoeExpiry = document.getElementById('setting-ff-moe-expiry').value;
-    const newDefaultTempExpiry = document.getElementById('setting-temp-expiry').value;
-    const newDefaultMoeExpiry = document.getElementById('setting-moe-expiry').value;
+    // Default expiry（L-4：控件缺失时沿用当前值，不让保存流程整个崩掉）
+    const newDefaultFfTempExpiry = getElementValueById('setting-ff-temp-expiry', defaultFfTempExpiry);
+    const newDefaultFfMoeExpiry = getElementValueById('setting-ff-moe-expiry', defaultFfMoeExpiry);
+    const newDefaultTempExpiry = getElementValueById('setting-temp-expiry', defaultTempExpiry);
+    const newDefaultMoeExpiry = getElementValueById('setting-moe-expiry', defaultMoeExpiry);
 
     // Temp Email 配置更新
     apiUrl = newUrl;
@@ -4217,6 +4401,50 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  /**
+   * SEC-3：MoeMail 的请求走 background 的 proxy-fetch，而 proxy-fetch 只放行
+   * storage 里【已保存】的 apiUrl / moeApiUrl / translationApiBase / mailInsightApiBase 的 origin。
+   * 「测试连接」用的是输入框里尚未保存的地址，直接测会被白名单拒绝。
+   *
+   * 这里不绕过白名单（那会让 SEC-3 的加固失效），而是改成「先保存再测试」：
+   * 当输入的 origin 与已保存的 origin 不一致时，弹确认框征得同意后把地址落库，
+   * 使其合法进入白名单，然后再发起测试。用户拒绝则给出明确引导。
+   */
+  async function ensureMoeApiSavedForTest(targetUrl, targetKey) {
+    const targetOrigin = normalizeOrigin(targetUrl);
+    if (!targetOrigin) {
+      return { ok: false, message: 'MoeMail API 地址无效，请填写以 http:// 或 https:// 开头的完整地址' };
+    }
+
+    // origin 已经在白名单里（key 变化不影响白名单），无需保存即可测试
+    if (normalizeOrigin(moeApiUrl) === targetOrigin) {
+      return { ok: true, saved: false };
+    }
+
+    const confirmed = window.confirm(
+      '测试连接需要经由后台代理发起请求，出于安全限制，后台只允许访问【已保存】的后端地址。\n\n'
+      + `是否先保存下面的 MoeMail 配置，然后再测试？\n\n地址：${targetUrl}\n\n`
+      + '（点「取消」则不保存、也不发起测试。）'
+    );
+    if (!confirmed) {
+      return {
+        ok: false,
+        message: '已取消。请先点「保存全部配置」把 MoeMail 地址保存好，再测试连接。'
+      };
+    }
+
+    // 与「保存全部配置」中 MoeMail 部分保持一致：同步模块变量并重置相关缓存
+    moeApiUrl = targetUrl;
+    moeApiKey = targetKey;
+    moeApiUrlInput.value = targetUrl;
+    moeApiKeyInput.value = targetKey;
+    moeDomainLoader.reset();
+    moeEmailListLoaded = false;
+    fastFillLoadedSources.delete('moe');
+    await storageSet({ moeApiUrl, moeApiKey });
+    return { ok: true, saved: true };
+  }
+
   testMoeConnectionBtn.addEventListener('click', async () => {
     const targetUrl = moeApiUrlInput.value.trim().replace(/\/$/, '');
     const targetKey = moeApiKeyInput.value.trim();
@@ -4225,8 +4453,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    // SEC-3：地址尚未保存时后台会拒绝转发，先走「保存再测试」流程
+    let prepared;
+    try {
+      prepared = await ensureMoeApiSavedForTest(targetUrl, targetKey);
+    } catch (error) {
+      showMessage(moeConnectionMessage, `保存 MoeMail 地址失败: ${getErrorText(error)}`, 'error');
+      return;
+    }
+    if (!prepared.ok) {
+      showMessage(moeConnectionMessage, prepared.message, 'error');
+      return;
+    }
+
     testMoeConnectionBtn.disabled = true;
-    showMessage(moeConnectionMessage, '连接测试中...', '');
+    showMessage(moeConnectionMessage, prepared.saved ? '已保存地址，连接测试中...' : '连接测试中...', '');
     try {
       const res = await moeFetch(`${targetUrl}/api/config`, {
         headers: { 'X-API-Key': targetKey }
@@ -4879,6 +5120,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function closeInboxView() {
+    // PERF-4：本来就没有打开收件箱时不再写 activeInbox: null
+    const hadOpenInbox = Boolean(currentInboxAddress);
     inboxPane.classList.add('hidden');
     backToHomeBtn.classList.add('hidden');
     createPane.classList.remove('hidden');
@@ -4891,7 +5134,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     resetTempMailDetail();
     currentTempMails = [];
     currentInboxAddress = null;
-    storageSet({ activeInbox: null }).catch(() => {});
+    // BUG-2：关闭后让在途的列表请求作废
+    tempInboxFetchToken += 1;
+    if (hadOpenInbox) {
+      storageSet({ activeInbox: null }).catch(() => {});
+    }
   }
 
   backToListBtn.addEventListener('click', () => {
@@ -4982,13 +5229,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   async function fetchMails(address) {
-    mailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
+    // BUG-2：记录本次请求身份，回填前校验收件箱仍然是同一个
+    const requestToken = ++tempInboxFetchToken;
+    const isCurrentRequest = () => requestToken === tempInboxFetchToken && currentInboxAddress === address;
+    renderInlineNotice(mailList, '加载中...');
     try {
       const res = await fetchWithTimeout(`${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=50&offset=0&summary_only=true`, {
         headers: { 'x-admin-auth': adminToken }
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
+      // 收件箱已被切换或关闭时丢弃这次结果，不写全局状态也不渲染
+      if (!isCurrentRequest()) {
+        return;
+      }
       currentTempMails = (data.results || []).map((mail) => ({
         id: mail.id,
         message_id: mail.message_id,
@@ -5002,7 +5256,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       chrome.storage.local.set({ tempUnreadCounts });
       renderTempMails();
     } catch (e) {
-      mailList.innerHTML = `<div style="padding:12px; text-align:center; color:var(--error);">加载失败: ${e.message}</div>`;
+      if (!isCurrentRequest()) {
+        return;
+      }
+      // SEC-13：错误串可能来自后端响应，用 textContent 渲染
+      renderInlineNotice(mailList, `加载失败: ${getErrorText(e)}`, 'error');
     }
   }
 
@@ -5178,7 +5436,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     resetTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, retranslateMailBtn);
     mailInsights.classList.add('hidden');
     mailInsights.innerHTML = '';
-    setMailActionButtonState(translateMailBtn, { icon: 'translate', title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API', disabled: false });
+    // BUG-9：正文还没拉到时 currentTempMail.raw 为空，此时点翻译必然抛
+    // 「当前邮件没有可翻译的文本内容」。先禁用，正文就绪后由
+    // renderCurrentTempMail() → updateMailActionButtons() 统一放开。
+    setMailActionButtonState(translateMailBtn, { icon: 'translate', title: '加载邮件中...', disabled: true });
     setMailActionButtonState(toggleMailViewBtn, { icon: 'plainText', title: '加载邮件中...', disabled: true });
     setMailActionButtonState(toggleMailImagesBtn, { icon: 'noImages', title: '加载邮件中...', disabled: true });
     setMailActionButtonState(deleteMailBtn, {
@@ -5308,7 +5569,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeEmailListLoaded = true;
       renderMoeEmails();
     })().catch((e) => {
-      moeEmailListDiv.innerHTML = `<div style="padding:12px; text-align:center; color:var(--error);">加载失败: ${e.message}</div>`;
+      // SEC-13：错误串可能来自后端响应，用 textContent 渲染
+      renderInlineNotice(moeEmailListDiv, `加载失败: ${getErrorText(e)}`, 'error');
     }).finally(() => {
       moeEmailListLoadPromise = null;
     });
@@ -5591,6 +5853,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function closeMoeInboxView() {
+    // PERF-4：本来就没有打开收件箱时不再写 activeInbox: null
+    const hadOpenInbox = Boolean(moeCurrentEmailId);
     moeInboxPane.classList.add('hidden');
     backToHomeBtn.classList.add('hidden');
     moeCreatePane.classList.remove('hidden');
@@ -5602,7 +5866,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     moeBackToListBtn.classList.add('hidden');
     resetMoeMailDetail();
     moeCurrentEmailId = null;
-    storageSet({ activeInbox: null }).catch(() => {});
+    // BUG-2：关闭后让在途的列表请求作废
+    moeInboxFetchToken += 1;
+    if (hadOpenInbox) {
+      storageSet({ activeInbox: null }).catch(() => {});
+    }
   }
 
   moeBackToListBtn.addEventListener('click', () => {
@@ -5618,20 +5886,28 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   async function moeFetchMails(emailId) {
-    moeMailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
+    // BUG-2：记录本次请求身份，回填前校验收件箱仍然是同一个
+    const requestToken = ++moeInboxFetchToken;
+    const isCurrentRequest = () => requestToken === moeInboxFetchToken
+      && String(moeCurrentEmailId) === String(emailId);
+    renderInlineNotice(moeMailList, '加载中...');
     try {
       const res = await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
         headers: moeHeaders()
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
+      // 收件箱已被切换或关闭时丢弃这次结果
+      if (!isCurrentRequest()) {
+        return;
+      }
       const messages = data.messages || [];
       moeUnreadCounts[String(emailId)] = 0;
       chrome.storage.local.set({ moeUnreadCounts });
 
       moeMailList.innerHTML = '';
       if (messages.length === 0) {
-        moeMailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">收件箱为空</div>';
+        renderInlineNotice(moeMailList, '收件箱为空');
         return;
       }
 
@@ -5648,7 +5924,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         moeMailList.appendChild(item);
       });
     } catch (e) {
-      moeMailList.innerHTML = `<div style="padding:12px; text-align:center; color:var(--error);">加载失败: ${e.message}</div>`;
+      if (!isCurrentRequest()) {
+        return;
+      }
+      // SEC-13：错误串可能来自后端响应，用 textContent 渲染
+      renderInlineNotice(moeMailList, `加载失败: ${getErrorText(e)}`, 'error');
     }
   }
 
@@ -6050,7 +6330,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const importBtn = document.getElementById('import-config-btn');
   const importFileInput = document.getElementById('import-file-input');
   const ioMessage = document.getElementById('io-message');
-  const configChecks = configIOSection.querySelectorAll('.config-check input[type="checkbox"]');
+  // 注意：#export-include-secrets 是「导出明文密钥」开关，不是导出分类，
+  // 必须排除在外，否则会被「全选 / 取消全选」误操作，
+  // 也会被 config-io.js 的 getSelectedCategories() 当成一个分类（value 为空 → 'on'）。
+  const configChecks = configIOSection.querySelectorAll(
+    '.config-check input[type="checkbox"]:not(#export-include-secrets)'
+  );
   const configSelectAllBtn = document.getElementById('config-select-all-btn');
   const configDeselectAllBtn = document.getElementById('config-deselect-all-btn');
 
@@ -6206,6 +6491,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           defaultTabSelect.value = toStore.defaultTab;
         }
         if (toStore.activeTab !== undefined) {
+          // PERF-4：导入时 config-io.js 已经把 activeTab 写进 storage，这里同步记录避免重复写
+          persistedActiveTab = toStore.activeTab || null;
           switchTab(toStore.activeTab, { persist: false });
         }
         if (toStore.emailHistory !== undefined) {
@@ -6509,7 +6796,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       defaultTabSelect.value = changes.defaultTab.newValue || 'temp-email';
     }
     if (changes.activeTab) {
-      switchTab(changes.activeTab.newValue || 'temp-email', { persist: false });
+      // PERF-4：storage 里已经是这个值了，记下来避免本实例再写一次
+      persistedActiveTab = changes.activeTab.newValue || null;
+      // BUG-4：跨实例同步走 fromRemote 分支，不强制关闭本实例已打开的收件箱
+      switchTab(changes.activeTab.newValue || 'temp-email', { persist: false, fromRemote: true });
     }
     if (changes[TAB_LAYOUT_MODE_KEY]) {
       applyTabLayoutMode();

@@ -77,6 +77,11 @@
   let selectionHintTimer = null;
   let floatLifecycleRevision = 0;
   let pageToolsDisposed = false;
+  // SEC-10：站点被黑名单/白名单挡掉时，内容脚本必须真正停用能力，
+  // 而不只是拆掉悬浮窗。默认放行，首次 reconcile 完成后才有权威值。
+  let siteToolsAllowed = true;
+  let siteToolsPermissionReady = null;
+  let focusTrackingBound = false;
   const targetHighlightState = new WeakMap();
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
@@ -88,6 +93,22 @@
 
   function hasChromeStorageLocal() {
     return typeof chrome !== 'undefined' && Boolean(chrome.storage?.local);
+  }
+
+  let cachedExtensionOrigin;
+
+  // 悬浮窗 iframe 的扩展页 origin。收发 postMessage 都要按它校验对端：
+  // iframe 元素挂在页面共享 DOM 里，页面可以改 src 导航后冒充 contentWindow。
+  function getExtensionOrigin() {
+    if (cachedExtensionOrigin !== undefined) {
+      return cachedExtensionOrigin;
+    }
+    try {
+      cachedExtensionOrigin = new URL(chrome.runtime.getURL('popup.html')).origin;
+    } catch {
+      cachedExtensionOrigin = '';
+    }
+    return cachedExtensionOrigin;
   }
 
   function sendRuntimeMessage(message, fallback) {
@@ -161,6 +182,18 @@
     element.style.setProperty(property, value, 'important');
   }
 
+  // BUG-6：页面可能整体清空我方节点的 style，此时缓存仍认为已设置会跳过 setProperty。
+  // 只在重挂 / 兜底检测这类低频路径上主动失效，避免每次调用都退回无缓存的写入。
+  function invalidateFloatStyleCache(elements) {
+    const targets = elements
+      || (floatUi ? [floatUi.button, floatUi.panel, floatUi.overlay] : []);
+    targets.forEach((element) => {
+      if (element) {
+        floatStyleCache.delete(element);
+      }
+    });
+  }
+
   function applyFloatTopLayerStyles() {
     if (!floatUi) {
       return;
@@ -183,29 +216,135 @@
     }
   }
 
-  function bringFloatUiToFront() {
+  function bringFloatUiToFront(options = {}) {
     if (!floatUi || !document.body) {
-      return;
+      return false;
     }
 
     const { button, panel, observer } = floatUi;
-    const detachedNodes = [button, panel].filter((node) => node.parentNode !== document.body);
+    // force 仅由被遮挡兜底检测使用：重挂 iframe 会触发重载与重绘，普通路径绝不能走。
+    const nodesToAttach = options.force === true
+      ? [button, panel]
+      : [button, panel].filter((node) => node.parentNode !== document.body);
 
     // 只补挂确实脱离 body 的节点。按钮与 iframe 面板的前后顺序不参与置顶，
     // 避免开关面板或页面更新时重挂 iframe，导致重绘和入场动画重播。
-    if (detachedNodes.length > 0) {
+    if (nodesToAttach.length > 0) {
       // 暂停 observer 避免 appendChild 自触发
       if (observer) {
         observer.disconnect();
       }
-      detachedNodes.forEach((node) => document.body.appendChild(node));
+      // BUG-6：重挂说明页面动过我方节点，此时 style 也可能被一并清掉，
+      // 缓存必须失效并把布局重新写一遍，否则 setImportantStyle 会误判为已设置。
+      invalidateFloatStyleCache();
+      nodesToAttach.forEach((node) => document.body.appendChild(node));
       if (observer) {
         observer.observe(document.body, { childList: true });
         floatUi.observedBody = document.body;
       }
+      floatUi.buttonLayout = applyButtonLayout(button, floatUi.buttonLayout);
+      floatUi.panelLayout = applyPanelLayout(panel, floatUi.panelLayout);
     }
 
     applyFloatTopLayerStyles();
+    return nodesToAttach.length > 0;
+  }
+
+  // BUG-6：页面清空我方 style 后并不会触发节点移除，这里用内联 position 做廉价探针。
+  // 只在确认被改写时才失效缓存并重新落样式——不重挂 DOM，因此不会引起 iframe 闪烁。
+  function ensureFloatInlineStyles() {
+    if (!floatUi) {
+      return false;
+    }
+    const panelPosition = floatUi.panel.style.getPropertyValue('position');
+    const buttonPosition = floatUi.button.style.getPropertyValue('position');
+    if (panelPosition === 'fixed' && buttonPosition === 'fixed') {
+      return false;
+    }
+
+    invalidateFloatStyleCache();
+    applyFloatTopLayerStyles();
+    floatUi.buttonLayout = applyButtonLayout(floatUi.button, floatUi.buttonLayout);
+    floatUi.panelLayout = applyPanelLayout(floatUi.panel, floatUi.panelLayout);
+    return true;
+  }
+
+  // BUG-5：页面若在我方节点之后插入同为 2147483647 的覆盖层，我方会被遮挡且不自纠。
+  // 兜底检测刻意做得很保守：仅面板可见时运行、数秒一次、且需连续两次命中才重挂，
+  // 避免退回历史上的高频重挂 —— 那会让 iframe 反复重载并重播入场动画（闪烁）。
+  const FLOAT_OCCLUSION_CHECK_INTERVAL = 4000;
+  const FLOAT_OCCLUSION_STRIKES_BEFORE_REATTACH = 2;
+  let floatOcclusionTimer = null;
+  let floatOcclusionStrikes = 0;
+
+  function isFloatPanelOccluded() {
+    if (!floatUi?.panelVisible || !document.body) {
+      return false;
+    }
+
+    const panel = floatUi.panel;
+    const rect = panel.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+
+    // 取标题栏中部一点：既在面板内部，又避开圆角与四周的缩放手柄。
+    const x = Math.round(rect.left + (rect.width / 2));
+    const y = Math.round(rect.top + Math.min(18, rect.height / 2));
+    if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) {
+      return false;
+    }
+
+    let hit = null;
+    try {
+      hit = document.elementFromPoint(x, y);
+    } catch {
+      return false;
+    }
+    // 命中不到元素时按“未被遮挡”处理，宁可漏判也不要误重挂。
+    if (!hit) {
+      return false;
+    }
+    return !panel.contains(hit) && !floatUi.button.contains(hit);
+  }
+
+  function runFloatOcclusionCheck() {
+    if (!floatUi?.panelVisible) {
+      floatOcclusionStrikes = 0;
+      return;
+    }
+
+    ensureFloatInlineStyles();
+
+    if (!isFloatPanelOccluded()) {
+      floatOcclusionStrikes = 0;
+      return;
+    }
+
+    floatOcclusionStrikes += 1;
+    if (floatOcclusionStrikes < FLOAT_OCCLUSION_STRIKES_BEFORE_REATTACH) {
+      return;
+    }
+    floatOcclusionStrikes = 0;
+    // 重挂会重新插入 iframe（内容重载），先清掉入场动画避免顺带重播一次。
+    clearPanelEnterAnimation();
+    bringFloatUiToFront({ force: true });
+  }
+
+  function startFloatOcclusionWatch() {
+    if (floatOcclusionTimer !== null || !floatUi) {
+      return;
+    }
+    floatOcclusionStrikes = 0;
+    floatOcclusionTimer = window.setInterval(runFloatOcclusionCheck, FLOAT_OCCLUSION_CHECK_INTERVAL);
+  }
+
+  function stopFloatOcclusionWatch() {
+    if (floatOcclusionTimer !== null) {
+      window.clearInterval(floatOcclusionTimer);
+      floatOcclusionTimer = null;
+    }
+    floatOcclusionStrikes = 0;
   }
 
   function clearPanelEnterAnimation() {
@@ -269,11 +408,13 @@
       if (!alreadyVisible && options.animate !== false) {
         playPanelEnterAnimation();
       }
+      startFloatOcclusionWatch();
     } else {
       floatUi.panelVisible = false;
       clearPanelEnterAnimation();
       floatUi.panel.classList.remove('visible');
       unlockHostPageScroll();
+      stopFloatOcclusionWatch();
     }
 
     // 状态未变时不必重挂 DOM，避免填充/页面更新时触发“关再开”观感
@@ -380,10 +521,30 @@
     return String(value).replace(/([^\w-])/g, '\\$1');
   }
 
+  // 属性值会拼进 CSS 属性选择器并写入 storage。反斜杠转义在 CSS 里等价于字符本身，
+  // 因此补上 `< > &` 既不改变选择器语义，又能保证页面可控文本不以原样入库（纵深防御）。
   function escapeAttributeValue(value) {
     return String(value)
       .replace(/\\/g, '\\\\')
-      .replace(/"/g, '\\"');
+      .replace(/"/g, '\\"')
+      .replace(/([<>&])/g, '\\$1');
+  }
+
+  const MAX_RULE_DESCRIPTION_LENGTH = 120;
+  const MAX_RULE_DESCRIPTION_LABEL_LENGTH = 40;
+
+  // 规则描述取自页面完全可控的 aria-label/placeholder/name/id，会长期存进 storage
+  // 并在其他上下文里展示：去掉控制字符与尖括号、折叠空白并限制长度（纵深防御）。
+  function sanitizeRuleText(value, maxLength) {
+    const normalized = String(value ?? '')
+      .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+      .replace(/[<>]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!Number.isFinite(maxLength) || normalized.length <= maxLength) {
+      return normalized;
+    }
+    return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
   }
 
   function isEditableElement(element) {
@@ -452,6 +613,19 @@
     const roots = [];
     collectSearchRoots(document, roots, new Set([document]));
     return roots;
+  }
+
+  // PERF-1：getSearchRoots 会对 document 和每个 shadowRoot 跑 querySelectorAll('*')
+  // 并递归同源 iframe，代价很高。这里给出一个短生命周期 memo：
+  // 只在单次目标解析内复用，解析结束即丢弃，因此不会缓存过期的 DOM 快照。
+  function createSearchRootsMemo(initialRoots) {
+    let cachedRoots = Array.isArray(initialRoots) ? initialRoots : null;
+    return () => {
+      if (!cachedRoots) {
+        cachedRoots = getSearchRoots();
+      }
+      return cachedRoots;
+    };
   }
 
   function getAccessibleDocuments() {
@@ -616,14 +790,16 @@
     return root;
   }
 
-  function queryEditableElement(selector, contextPath = null, searchRoots = null) {
+  // getSearchRootsMemo 是 createSearchRootsMemo 产出的取值函数（可为空）。
+  // 命中 contextPath 时不需要全树遍历，因此这里保持惰性调用。
+  function queryEditableElement(selector, contextPath = null, getSearchRootsMemo = null) {
     if (!selector) {
       return null;
     }
 
     const roots = Array.isArray(contextPath) && contextPath.length > 0
       ? [resolveRuleContext(contextPath)].filter(Boolean)
-      : (searchRoots || getSearchRoots());
+      : (typeof getSearchRootsMemo === 'function' ? getSearchRootsMemo() : getSearchRoots());
     for (const root of roots) {
       try {
         const element = root.querySelector(selector);
@@ -637,18 +813,21 @@
     return null;
   }
 
-  function resolveRuleTarget(kind, searchRoots = null) {
+  function resolveRuleTarget(kind, getSearchRootsMemo = null) {
     const rule = getOriginFillRules()[kind];
     if (!rule?.selector) {
       return null;
     }
-    return queryEditableElement(rule.selector, rule.contextPath, searchRoots);
+    return queryEditableElement(rule.selector, rule.contextPath, getSearchRootsMemo);
   }
 
   function resolveFillTarget(kind, options = {}) {
     const exclude = options.exclude || new Set();
     const preferFocused = options.preferFocused !== false;
-    const ruleTarget = options.ignoreRule ? null : resolveRuleTarget(kind, options.searchRoots);
+    // 同一次解析里规则查询与候选枚举共用一次 DOM 遍历（PERF-1），
+    // 但仍是“每次调用都重新遍历”，不会跨字段复用陈旧快照。
+    const getSearchRootsMemo = createSearchRootsMemo(options.searchRoots);
+    const ruleTarget = options.ignoreRule ? null : resolveRuleTarget(kind, getSearchRootsMemo);
 
     if (ruleTarget && !exclude.has(ruleTarget)) {
       return ruleTarget;
@@ -662,7 +841,7 @@
       return lastFocusedElement;
     }
 
-    const candidates = (options.candidates || getEditableCandidates(options.searchRoots))
+    const candidates = (options.candidates || getEditableCandidates(getSearchRootsMemo()))
       .filter((candidate) => !exclude.has(candidate));
     let bestElement = null;
     let bestScore = -1;
@@ -794,22 +973,22 @@
   }
 
   function describeRuleElement(element) {
-    const tag = element.tagName.toLowerCase();
+    const tag = sanitizeRuleText(element.tagName.toLowerCase(), 32);
     const parts = [tag];
     if (element.id) {
-      parts.push(`#${element.id}`);
+      parts.push(`#${sanitizeRuleText(element.id, MAX_RULE_DESCRIPTION_LABEL_LENGTH)}`);
     } else if (element.name) {
-      parts.push(`[name="${element.name}"]`);
+      parts.push(`[name="${sanitizeRuleText(element.name, MAX_RULE_DESCRIPTION_LABEL_LENGTH)}"]`);
     } else if (element.type) {
-      parts.push(`[type="${element.type}"]`);
+      parts.push(`[type="${sanitizeRuleText(element.type, 24)}"]`);
     }
 
-    const label = getElementLabelText(element);
+    const label = sanitizeRuleText(getElementLabelText(element), MAX_RULE_DESCRIPTION_LABEL_LENGTH);
     if (label) {
-      parts.push(`· ${label.slice(0, 40)}`);
+      parts.push(`· ${label}`);
     }
 
-    return parts.join(' ');
+    return sanitizeRuleText(parts.join(' '), MAX_RULE_DESCRIPTION_LENGTH);
   }
 
   async function saveFillRule(kind, element) {
@@ -975,7 +1154,9 @@
 
   function notifyFloatingFieldSelectionState(active, label = '') {
     const iframeWindow = floatUi?.iframe?.contentWindow;
-    if (!iframeWindow) {
+    const extensionOrigin = getExtensionOrigin();
+    // 没拿到扩展 origin 时宁可不发，也不要用 '*' 广播给可能被页面导航过的 iframe。
+    if (!iframeWindow || !extensionOrigin) {
       return;
     }
     try {
@@ -984,7 +1165,7 @@
         type: 'floating-field-selection-state',
         active: Boolean(active),
         label: label || '',
-      }, '*');
+      }, extensionOrigin);
     } catch {
       // iframe 不可用时忽略，不影响页面内直接取消。
     }
@@ -1200,10 +1381,49 @@
     return { ok: true, matched: targets.length };
   }
 
+  // BUG-7：只发 input+change 时，依赖键盘事件的表单不会跑校验。
+  // 顺序按真实输入还原为 keydown → input → keyup → change；
+  // 值已经在调用前用原型 setter 写好，键盘事件只是补信号，不影响 React 受控组件。
   function dispatchInputEvents(element) {
-    const EventConstructor = element.ownerDocument?.defaultView?.Event || Event;
+    const view = element.ownerDocument?.defaultView || window;
+    const EventConstructor = view.Event || Event;
+    const KeyboardEventConstructor = view.KeyboardEvent
+      || (typeof KeyboardEvent !== 'undefined' ? KeyboardEvent : null);
+
+    const dispatchKeyEvent = (type) => {
+      if (!KeyboardEventConstructor) {
+        return;
+      }
+      try {
+        // key 用 Unidentified，避免被页面当成 Enter 之类的功能键触发提交。
+        element.dispatchEvent(new KeyboardEventConstructor(type, {
+          bubbles: true,
+          cancelable: true,
+          key: 'Unidentified',
+        }));
+      } catch {
+        // 个别环境不支持构造 KeyboardEvent，跳过即可。
+      }
+    };
+
+    dispatchKeyEvent('keydown');
     element.dispatchEvent(new EventConstructor('input', { bubbles: true }));
+    dispatchKeyEvent('keyup');
     element.dispatchEvent(new EventConstructor('change', { bubbles: true }));
+  }
+
+  // 只派发 blur/focusout 事件而不真正 element.blur()：
+  // 既能触发依赖失焦的校验（含 React 的 onBlur，它监听 focusout），
+  // 又不会打断多字段连续填充时的焦点顺序。
+  function dispatchBlurEvents(element) {
+    const view = element.ownerDocument?.defaultView || window;
+    const FocusEventConstructor = view.FocusEvent || view.Event || Event;
+    try {
+      element.dispatchEvent(new FocusEventConstructor('blur', { bubbles: false }));
+      element.dispatchEvent(new FocusEventConstructor('focusout', { bubbles: true }));
+    } catch {
+      // 构造失败时忽略，填充本身已经完成。
+    }
   }
 
   function fillElement(element, value) {
@@ -1216,6 +1436,7 @@
     if (element.isContentEditable) {
       element.textContent = value;
       dispatchInputEvents(element);
+      dispatchBlurEvents(element);
       return true;
     }
 
@@ -1226,6 +1447,7 @@
       element.value = value;
     }
     dispatchInputEvents(element);
+    dispatchBlurEvents(element);
     return true;
   }
 
@@ -1255,6 +1477,7 @@
 
       // 实际填充时逐字段重新扫描。前一个 input/change 事件可能让 React/Vue
       // 重绘表单或显示新字段，不能复用预览阶段的一次性 DOM 快照。
+      // 单个字段内部的重复全树遍历由 resolveFillTarget 里的 memo 消除（PERF-1）。
       const target = resolveFillTarget(operation.kind, {
         exclude: usedTargets,
         preferFocused: false,
@@ -1282,6 +1505,7 @@
     stopFieldSelection();
     clearPreviewTargets();
     unlockHostPageScroll();
+    stopFloatOcclusionWatch();
 
     if (!floatUi) {
       return;
@@ -1810,18 +2034,39 @@
     resetButton.addEventListener('click', onResetClick);
     floatUi.cleanup.push(() => resetButton.removeEventListener('click', onResetClick));
 
-    const onWindowResize = () => {
+    // PERF-2：resize 事件在拖动窗口时高频触发，用 rAF 把同一帧内的重算合并成一次。
+    let resizeFrameId = 0;
+    const applyResizeLayout = () => {
+      resizeFrameId = 0;
       if (!floatUi) {
         return;
       }
       floatUi.buttonLayout = applyButtonLayout(button, floatUi.buttonLayout);
       floatUi.panelLayout = applyPanelLayout(panel, floatUi.panelLayout);
     };
+    const onWindowResize = () => {
+      if (!floatUi || resizeFrameId) {
+        return;
+      }
+      resizeFrameId = window.requestAnimationFrame(applyResizeLayout);
+    };
     window.addEventListener('resize', onWindowResize);
-    floatUi.cleanup.push(() => window.removeEventListener('resize', onWindowResize));
+    floatUi.cleanup.push(() => {
+      window.removeEventListener('resize', onWindowResize);
+      if (resizeFrameId) {
+        window.cancelAnimationFrame(resizeFrameId);
+        resizeFrameId = 0;
+      }
+    });
 
     const onWindowMessage = (event) => {
       if (!floatUi || event.source !== iframe.contentWindow) {
+        return;
+      }
+      // 仅校验 source 不够：iframe 元素在页面共享 DOM 里，页面可以改 src 导航后
+      // 用同一个 contentWindow 发消息，必须叠加扩展 origin 校验。
+      const extensionOrigin = getExtensionOrigin();
+      if (!extensionOrigin || event.origin !== extensionOrigin) {
         return;
       }
       const data = event.data;
@@ -1840,26 +2085,54 @@
 
     const reattachIfMissing = () => {
       if (!floatUi || !document.body) {
-        return;
+        return false;
       }
+      let rebound = false;
       if (floatUi.observer && floatUi.observedBody !== document.body) {
         floatUi.observer.disconnect();
         floatUi.observer.observe(document.body, { childList: true });
         floatUi.observedBody = document.body;
+        rebound = true;
       }
-      bringFloatUiToFront();
+      // 页面可能只清空了 style 而没有移除节点，这里顺带纠正（BUG-6）。
+      ensureFloatInlineStyles();
+      const reattached = bringFloatUiToFront();
+      return rebound || reattached;
     };
 
+    // PERF-3：固定 100ms 去抖遇到持续清理 body 的页面会形成 ~10Hz 乒乓。
+    // 只有“真的又重挂了一次”才累计退避；安静一段时间后自动复位回最快响应。
+    const REATTACH_BACKOFF_AFTER = 3;
+    const REATTACH_MAX_DELAY = 3000;
+    const REATTACH_BURST_RESET_MS = 2000;
     let reattachScheduled = false;
+    let reattachBurstCount = 0;
+    let lastReattachTime = 0;
+
     const scheduleReattach = (delay = 150) => {
       if (reattachScheduled || !floatUi) {
         return;
       }
       reattachScheduled = true;
+
+      const now = Date.now();
+      if (now - lastReattachTime > REATTACH_BURST_RESET_MS) {
+        reattachBurstCount = 0;
+      }
+      const backoffDelay = reattachBurstCount >= REATTACH_BACKOFF_AFTER
+        ? Math.min(REATTACH_MAX_DELAY, 100 * (2 ** (reattachBurstCount - REATTACH_BACKOFF_AFTER + 1)))
+        : 0;
+
       window.setTimeout(() => {
         reattachScheduled = false;
-        reattachIfMissing();
-      }, delay);
+        const didReattach = reattachIfMissing();
+        if (didReattach) {
+          reattachBurstCount += 1;
+          lastReattachTime = Date.now();
+        } else {
+          reattachBurstCount = 0;
+        }
+      }, Math.max(delay, backoffDelay));
     };
 
     const observer = new MutationObserver((mutations) => {
@@ -1961,6 +2234,81 @@
     return patterns.some(p => matchesFloatSitePattern(rawUrl, p));
   }
 
+  /**
+   * 站点是否允许页面助手能力（黑名单 / 白名单）。
+   * 注意与 floatWindowEnabled 区分：后者只是用户关掉了悬浮窗 UI，
+   * 从 popup 触发的填充仍然应当可用。
+   */
+  function evaluateSiteToolsAllowed(result) {
+    const origin = (window.location && window.location.origin) || '';
+    if (!origin) {
+      return true;
+    }
+
+    const blocklist = Array.isArray(result.siteBlocklist) ? result.siteBlocklist : [];
+    if (matchesAnyFloatSitePattern(window.location.href, blocklist)) {
+      return false;
+    }
+    if (result.siteAccessMode === 'whitelist') {
+      const allowlist = Array.isArray(result.siteAllowlist) ? result.siteAllowlist : [];
+      if (!matchesAnyFloatSitePattern(window.location.href, allowlist) && !allowlist.includes(origin)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function bindFocusTracking() {
+    if (focusTrackingBound || pageToolsDisposed) {
+      return;
+    }
+    document.addEventListener('focusin', handleDocumentFocusIn, true);
+    focusTrackingBound = true;
+  }
+
+  function unbindFocusTracking() {
+    if (!focusTrackingBound) {
+      return;
+    }
+    document.removeEventListener('focusin', handleDocumentFocusIn, true);
+    focusTrackingBound = false;
+  }
+
+  /**
+   * 应用站点级能力开关。站点被禁用时解绑 focusin 追踪、清空已记录的输入框引用，
+   * 并结束进行中的选取/预览；重新启用时恢复追踪。
+   * storage.onChanged 监听不在这里处理——它必须一直在，否则感知不到重新启用。
+   */
+  function applySiteToolsPermission(allowed) {
+    const next = Boolean(allowed);
+    siteToolsAllowed = next;
+
+    if (next) {
+      bindFocusTracking();
+      return;
+    }
+
+    unbindFocusTracking();
+    lastFocusedElement = null;
+    stopFieldSelection();
+    clearPreviewTargets();
+  }
+
+  /**
+   * 填充/选取类消息的准入判断。首次 reconcile 还没跑完时先等它，
+   * 避免页面刚加载就被一条消息绕过站点黑名单。
+   */
+  async function ensureSiteToolsAllowed() {
+    if (siteToolsPermissionReady) {
+      try {
+        await siteToolsPermissionReady;
+      } catch {
+        // 读取设置失败时沿用当前判定，不阻塞。
+      }
+    }
+    return siteToolsAllowed;
+  }
+
   async function reconcileFloatWindow(revision) {
     const result = await storageGet([
       'floatWindowEnabled', FLOAT_LAYOUT_KEY, FLOAT_WINDOW_STYLE_KEY,
@@ -1972,27 +2320,21 @@
     if (result[FLOAT_WINDOW_STYLE_KEY] !== FIXED_FLOAT_WINDOW_STYLE) {
       storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
     }
-    if (result.floatWindowEnabled === false) {
+
+    // 站点准入要先于 floatWindowEnabled 判断，否则关掉悬浮窗后就再也刷新不到名单变化。
+    const siteAllowed = evaluateSiteToolsAllowed(result);
+    applySiteToolsPermission(siteAllowed);
+
+    if (result.floatWindowEnabled === false || !siteAllowed) {
       teardownFloatWindow();
       return;
     }
-    // Check site-level access control
-    const origin = (window.location && window.location.origin) || '';
-    if (origin) {
-      const blocklist = Array.isArray(result.siteBlocklist) ? result.siteBlocklist : [];
-      if (matchesAnyFloatSitePattern(window.location.href, blocklist)) {
-        teardownFloatWindow();
-        return;
-      }
-      if (result.siteAccessMode === 'whitelist') {
-        const allowlist = Array.isArray(result.siteAllowlist) ? result.siteAllowlist : [];
-        if (!matchesAnyFloatSitePattern(window.location.href, allowlist) && !allowlist.includes(origin)) {
-          teardownFloatWindow();
-          return;
-        }
-      }
-    }
     await initFloatWindow(result[FLOAT_LAYOUT_KEY]);
+  }
+
+  function runFloatWindowReconcile(revision) {
+    siteToolsPermissionReady = reconcileFloatWindow(revision).catch(() => {});
+    return siteToolsPermissionReady;
   }
 
   function scheduleFloatWindowReconcile() {
@@ -2000,7 +2342,7 @@
       return;
     }
     const revision = ++floatLifecycleRevision;
-    reconcileFloatWindow(revision).catch(() => {});
+    runFloatWindowReconcile(revision);
   }
 
   function handleDocumentFocusIn(event) {
@@ -2024,10 +2366,11 @@
       || changes.siteBlocklist) {
       const revision = ++floatLifecycleRevision;
       if (changes.floatWindowEnabled?.newValue === false) {
+        // 先立即拆窗口保证观感即时，随后仍要 reconcile 一次刷新站点能力开关。
         teardownFloatWindow();
-      } else {
-        reconcileFloatWindow(revision).catch(() => {});
       }
+      // 站点名单变化后必须重新评估能力开关（可能是重新启用），走完整 reconcile。
+      runFloatWindowReconcile(revision);
     }
 
     if (changes[FLOAT_LAYOUT_KEY] && floatUi) {
@@ -2050,6 +2393,15 @@
     }
   }
 
+  // 需要站点准入的消息类型（SEC-10）。生命周期与取消/清理类消息不在其中。
+  const SITE_GATED_MESSAGE_TYPES = new Set([
+    'fill-value',
+    'fill-profile',
+    'start-field-selection',
+    'preview-fill-target',
+    'preview-fill-profile',
+  ]);
+
   function handleRuntimeMessage(message, sender, sendResponse) {
     (async () => {
       if (message?.type === 'page-tools-ping') {
@@ -2067,6 +2419,14 @@
       if (message?.type === 'dispose-page-tools') {
         sendResponse({ ok: true, version: PAGE_TOOLS_VERSION });
         disposePageTools();
+        return;
+      }
+
+      // SEC-10：填充 / 字段选取 / 预览属于“对页面动手”的能力，
+      // 站点被禁用时必须直接拒绝，而不是照常扫描并填充整页。
+      // cancel-field-selection、clear-fill-preview 是收尾动作，始终放行。
+      if (SITE_GATED_MESSAGE_TYPES.has(message?.type) && !(await ensureSiteToolsAllowed())) {
+        sendResponse({ ok: false, error: '当前站点已在扩展设置中被禁用，页面填充功能不可用' });
         return;
       }
 
@@ -2127,7 +2487,8 @@
     pageToolsController.disposed = true;
     floatLifecycleRevision += 1;
     teardownFloatWindow();
-    document.removeEventListener('focusin', handleDocumentFocusIn, true);
+    unbindFocusTracking();
+    lastFocusedElement = null;
     if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.removeListener) {
       chrome.storage.onChanged.removeListener(handleStorageChanged);
     }
@@ -2141,7 +2502,9 @@
   }
 
   pageToolsController.dispose = disposePageTools;
-  document.addEventListener('focusin', handleDocumentFocusIn, true);
+  // 先绑上 focusin，随后的首次 reconcile 若判定站点被禁用会立刻解绑并清空引用；
+  // 反过来（等 reconcile 再绑）会在 storage 读取失败时永久丢失焦点追踪。
+  bindFocusTracking();
   if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.addListener) {
     chrome.storage.onChanged.addListener(handleStorageChanged);
   }
