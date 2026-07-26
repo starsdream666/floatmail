@@ -1009,6 +1009,18 @@
             <label class="config-check"><input type="checkbox" value="bookmarks" checked /> 书签数据</label>
             <label class="config-check"><input type="checkbox" value="bookmarkSort" checked /> 书签排序方式</label>
           </div>
+          <!--
+            SEC-5：导出默认对 API 密钥 / 令牌脱敏。
+            勾选后导出文件会包含可直接使用的明文密钥（仍需再确认一次）。
+            注意：这里刻意不带 value，且被 popup.js 的 configChecks 选择器排除，
+            不参与「全选 / 取消全选」，也不会被当成导出分类。
+          -->
+          <label class="config-check config-io-secret-toggle" style="display:block; margin-bottom:4px;">
+            <input type="checkbox" id="export-include-secrets" /> 🚨 导出时包含 API 密钥原文（危险，默认脱敏）
+          </label>
+          <div class="tool-note">
+            勾选后，导出文件将包含<strong>可直接使用的明文 API 密钥 / 令牌</strong>（管理员令牌、MoeMail Key、翻译 / 洞察 API Key）。任何拿到该文件的人都能直接调用你的接口并产生费用，请勿分享、上传网盘或提交到代码仓库。不勾选时密钥只保留首尾各 4 位，导入时会自动跳过、不会覆盖已保存的真实密钥。
+          </div>
           <div class="config-io-btns">
             <button id="export-config-btn" class="btn primary-btn">导出配置</button>
             <button id="import-config-btn" class="btn text-btn">导入配置</button>
