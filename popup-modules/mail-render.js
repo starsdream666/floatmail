@@ -113,6 +113,79 @@
       return false;
     }
 
+    // 浏览器在解析 URL 时会先丢弃前后空白与内嵌的 Tab/换行/控制字符，
+    // 所以 "\tjavascript:..." 与 "java\tscript:..." 都会被当成脚本协议执行。
+    // 判定协议前必须做同样的归一化，否则 startsWith('javascript:') 形同虚设。
+    function normalizeUrlForSchemeCheck(value) {
+      return String(value || '')
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\u0000-\u0020\u007f-\u00a0\u2000-\u200f\u2028-\u202f\ufeff]/g, '')
+        .toLowerCase();
+    }
+
+    // 只放行邮件里真正需要的协议，其余（javascript:/vbscript:/file: 等）一律视为危险。
+    const SAFE_URL_SCHEMES = ['http:', 'https:', 'mailto:', 'cid:', 'tel:', 'data:'];
+
+    // 会被浏览器当作 URL 解析/导航/取资源的属性；危险协议判定只作用于这些属性，
+    // 避免把 style / title / alt 等普通文本属性里的 "word:" 误判为协议。
+    const URL_BEARING_ATTRS = new Set([
+      'href', 'xlink:href', 'src', 'poster', 'background', 'action',
+      'formaction', 'cite', 'data', 'ping', 'longdesc', 'usemap', 'profile'
+    ]);
+
+    function isDangerousUrlValue(value) {
+      const normalized = normalizeUrlForSchemeCheck(value);
+      if (!normalized) return false;
+      const schemeMatch = normalized.match(/^([a-z][a-z0-9+.-]*):/);
+      if (!schemeMatch) return false; // 相对 URL，安全
+      const scheme = schemeMatch[1] + ':';
+      if (!SAFE_URL_SCHEMES.includes(scheme)) return true;
+      // data: 仅允许图片，data:text/html 可承载脚本
+      if (scheme === 'data:' && !/^data:image\//.test(normalized)) return true;
+      return false;
+    }
+
+    function isRemoteUrlValue(value) {
+      return /^(?:https?:)?\/\//i.test(String(value || '').trim());
+    }
+
+    // CSS 里的远程引用有多种写法：url()、image-set()、@import 带或不带分号、
+    // 以及 src: 里的多值列表。原实现只处理了带分号的 @import 与 url()，
+    // 这里统一收敛，避免"已阻止远程图片"被追踪像素绕过。
+    function scrubCssText(css) {
+      return String(css || '')
+        // @import 可以是 @import url(...) / @import "..."，且末尾分号可省略（EOF 或 } 收尾）
+        .replace(/@import\b[^;{}]*(?:;|(?=[}])|$)/gi, '')
+        // image-set() / -webkit-image-set() 的候选项是裸字符串，不含 url(
+        .replace(/(?:-webkit-)?image-set\s*\([^)]*\)/gi, 'none')
+        .replace(/url\(\s*(?!['"]?(?:data:image\/|cid:))[^)]*\)/gi, 'none');
+    }
+
+    // 高度上报脚本（内容固定，勿随意改）。帧继承扩展页 script-src 'self'，
+    // 纯 nonce/inline 都会被拦；固定内容 + sha256 是唯一能"只放行这一段、其余邮件脚本全拦"的办法。
+    // ⚠️ 改动此字符串必须同步更新 MAIL_FRAME_REPORTER_SHA256 与 manifest.json 的 script-src 哈希，
+    //    否则邮件高度自适应会静默失效（回落固定高度）。/tmp 下的 csp-frame 测试可端到端验证。
+    const MAIL_FRAME_HEIGHT_REPORTER = `(function(){
+  function measure(){
+    var w=document.getElementById('__mail-scroll-wrapper');
+    var c=[w&&w.scrollHeight,w&&w.getBoundingClientRect&&w.getBoundingClientRect().height,
+           document.documentElement&&document.documentElement.scrollHeight,
+           document.body&&document.body.scrollHeight];
+    var h=0;for(var i=0;i<c.length;i++){var v=Number(c[i]||0);if(v>h){h=v;}}
+    try{parent.postMessage({source:'floatmail-mail-frame',height:Math.ceil(h)+4},'*');}catch(e){}
+  }
+  measure();
+  if(window.requestAnimationFrame){requestAnimationFrame(measure);}
+  [120,400,1000].forEach(function(d){setTimeout(measure,d);});
+  window.addEventListener('load',measure);
+  if(typeof ResizeObserver==='function'){
+    var t=document.getElementById('__mail-scroll-wrapper')||document.body;
+    if(t){var ro=new ResizeObserver(measure);ro.observe(t);setTimeout(function(){ro.disconnect();},10000);}
+  }
+})();`;
+    // sha256-base64 of MAIL_FRAME_HEIGHT_REPORTER 的 textContent（与 manifest 保持一致）
+    const MAIL_FRAME_REPORTER_SHA256 = "sha256-XMOItWN8ANsTkFoPGsgh4aK8aeo3M1HMcYjb3eLi4w0=";
+
     function sanitizeEmailHtml(html, options = {}) {
       if (!html) return { html: '', remoteImageCount: 0, domTooComplex: false };
       const allowRemoteImages = options.allowRemoteImages === true;
@@ -129,8 +202,11 @@
         'script',
         'iframe',
         'frame',
+        'frameset',
         'object',
         'embed',
+        'applet',
+        'portal',
         'form',
         'input',
         'button',
@@ -139,15 +215,28 @@
         'option',
         'base',
         'link',
-        'meta[http-equiv="refresh"]'
+        // <template> 的内容是独立 DocumentFragment，querySelectorAll('*') 进不去，
+        // 里面的 script / on* 会完整逃过下面的属性清洗，是典型 mXSS 温床，直接整块移除。
+        'template',
+        // <noscript> 在解析与再序列化之间语义会翻转，同样是 mXSS 载体。
+        'noscript',
+        // SVG / MathML 属于 foreign content：命名空间与 HTML 不同，序列化往返容易变形，
+        // 且带有 SMIL 动画（set/animate 可改写 href）等 HTML 里不存在的执行面。
+        'svg',
+        'math',
+        // 邮件自带的 CSP 声明一律移除，避免与我们注入的 frame CSP 混淆
+        'meta[http-equiv="refresh"]',
+        'meta[http-equiv="Content-Security-Policy" i]'
       ];
       blockedTags.forEach((selector) => {
-        doc.querySelectorAll(selector).forEach((node) => node.remove());
+        try {
+          doc.querySelectorAll(selector).forEach((node) => node.remove());
+        } catch (error) {
+          /* 选择器在个别环境下不被支持时跳过，后续属性清洗仍会兜底 */
+        }
       });
       doc.querySelectorAll('style').forEach((node) => {
-        let css = String(node.textContent || '')
-          .replace(/@import[^;]+;/gi, '')
-          .replace(/url\((?!['"]?(?:data:|cid:))[^)]+\)/gi, 'none');
+        let css = scrubCssText(String(node.textContent || ''));
         // Truncate overly large style blocks to prevent renderer overload
         if (css.length > MAX_STYLE_BLOCK_CHARS) {
           css = css.slice(0, MAX_STYLE_BLOCK_CHARS) + '\n/* [style block truncated] */';
@@ -169,16 +258,26 @@
         Array.from(node.attributes).forEach((attr) => {
           const name = attr.name.toLowerCase();
           const value = attr.value || '';
-          if (name.startsWith('on') || value.toLowerCase().startsWith('javascript:')) {
+          // 事件处理器一律删除。
+          if (name.startsWith('on')) {
             node.removeAttribute(attr.name);
             return;
           }
-          const isRemoteUrl = /^(?:https?:)?\/\//i.test(value);
+          // 危险协议（javascript:/vbscript:/data:text/html 等）只对 URL 类属性判定，
+          // 覆盖 "\tjavascript:"、"java\tscript:"、大小写混写等绕过。
+          // 注意：绝不能对全部属性做协议判定 —— style="height:50px"、title="Re: x"
+          // 这类值里的 "height:"、"re:" 会被误判为协议，导致合法属性被整体删除。
+          if (URL_BEARING_ATTRS.has(name) && isDangerousUrlValue(value)) {
+            node.removeAttribute(attr.name);
+            return;
+          }
+          const isRemoteUrl = isRemoteUrlValue(value);
           const tagName = String(node.tagName || '').toUpperCase();
           const isImageLikeTag = tagName === 'IMG' || tagName === 'SOURCE' || tagName === 'IMAGE';
+          // srcset 不只出现在 <img> 上，<source srcset> 同样会真实发起请求
           const srcsetHasRemoteUrl = name === 'srcset'
-            && value.split(',').some((candidate) => /^(?:https?:)?\/\//i.test(candidate.trim().split(/\s+/)[0] || ''));
-          if (srcsetHasRemoteUrl && tagName === 'IMG') {
+            && value.split(',').some((candidate) => isRemoteUrlValue(candidate.trim().split(/\s+/)[0] || ''));
+          if (srcsetHasRemoteUrl) {
             remoteImageCount += 1;
             if (!allowRemoteImages) {
               node.setAttribute('data-blocked-srcset', value);
@@ -200,13 +299,13 @@
               }
             }
           }
-          if (tagName === 'A' && name === 'href' && /^(?:https?:)?\/\//i.test(value)) {
+          if (tagName === 'A' && name === 'href' && isRemoteUrlValue(value)) {
             node.setAttribute('target', '_blank');
             node.setAttribute('rel', 'noopener noreferrer nofollow');
           }
-          if (name === 'style' && /url\(/i.test(value)) {
-            // Only strip url() references from inline styles, keep other properties
-            const cleaned = value.replace(/url\((?!['"]?(?:data:|cid:))[^)]*\)/gi, 'none');
+          if (name === 'style' && /url\(|image-set\s*\(/i.test(value)) {
+            // Only strip remote references from inline styles, keep other properties
+            const cleaned = scrubCssText(value);
             if (cleaned.trim()) {
               node.setAttribute('style', cleaned);
             } else {
@@ -215,6 +314,63 @@
           }
         });
       });
+
+      // ---- 帧内 CSP：把"不许执行脚本 / 不许加载远程资源"交给浏览器强制执行 ----
+      // 正则清洗永远可能被绕过（嵌套括号、编码、新语法……）。这里在净化后的文档最前面
+      // 插入一条 CSP，即便前面某条正则漏了，浏览器仍会拦下脚本执行与远程请求。
+      // 邮件自带的 CSP 已在 blockedTags 里移除；即使漏网也只会让策略"更严"（多条 CSP 取交集），
+      // 攻击者无法借此放宽限制。
+      // 注意：帧还会继承扩展页 manifest 的 script-src 'self'，与本帧 CSP 取交集，
+      // 因此高度上报脚本用固定内容 + sha256 双重 pin（manifest 与本帧 CSP 都放行该哈希）。
+      const imgSources = allowRemoteImages ? "data: https:" : "data:";
+      const csp = [
+        "default-src 'none'",
+        `script-src '${MAIL_FRAME_REPORTER_SHA256}'`,
+        "style-src 'unsafe-inline'",
+        `img-src ${imgSources}`,
+        `media-src ${imgSources}`,
+        "font-src data:",
+        "connect-src 'none'",
+        "frame-src 'none'",
+        "object-src 'none'",
+        "form-action 'none'",
+        "base-uri 'none'"
+      ].join('; ');
+      if (doc.head) {
+        const cspMeta = doc.createElement('meta');
+        cspMeta.setAttribute('http-equiv', 'Content-Security-Policy');
+        cspMeta.setAttribute('content', csp);
+        doc.head.insertBefore(cspMeta, doc.head.firstChild);
+      }
+
+      // ---- 基础排版样式（原先在 iframe load 后经 contentDocument 注入，
+      //      移除 allow-same-origin 后父页面已无法触达帧内文档，故改为随 srcdoc 一起下发）----
+      if (doc.head && options.baseCss) {
+        const baseStyle = doc.createElement('style');
+        baseStyle.textContent = String(options.baseCss);
+        doc.head.appendChild(baseStyle);
+      }
+
+      // ---- 宽度包裹层：很多邮件按 600-640px 设计，窄容器下会错版 ----
+      if (doc.body && options.wrapMinWidth) {
+        const wrapper = doc.createElement('div');
+        wrapper.id = '__mail-scroll-wrapper';
+        wrapper.setAttribute('style', `min-width:${Number(options.wrapMinWidth)}px;`);
+        while (doc.body.firstChild) {
+          wrapper.appendChild(doc.body.firstChild);
+        }
+        doc.body.appendChild(wrapper);
+        doc.body.setAttribute('style', `${doc.body.getAttribute('style') || ''};overflow-x:auto;`);
+      }
+
+      // ---- 高度上报脚本：内容固定并被 CSP 哈希 pin，唯一可在帧内执行的脚本 ----
+      // 帧无 allow-same-origin（opaque origin），父页面读不到 contentDocument，
+      // 因此高度由帧内脚本 postMessage 上报；父侧用 event.source 校验来源。
+      if (doc.body && options.reportHeight) {
+        const reporter = doc.createElement('script');
+        reporter.textContent = MAIL_FRAME_HEIGHT_REPORTER;
+        doc.body.appendChild(reporter);
+      }
 
       return {
         html: `<!DOCTYPE html>${doc.documentElement.outerHTML}`,
@@ -234,9 +390,23 @@
       container.appendChild(pre);
     }
 
+    const MAIL_FRAME_BASE_CSS = `
+              html, body { background: #ffffff !important; color: #202124 !important; }
+              body { margin: 0 !important; padding: 8px !important; word-break: break-word; overflow-wrap: break-word; }
+              img { max-width: 100% !important; height: auto !important; }
+              table { border-collapse: collapse; }
+              td, th { word-break: break-word; }
+`;
+
     function renderSafeHtml(container, html, extraCss = '', options = {}) {
       container.innerHTML = '';
-      const sanitized = sanitizeEmailHtml(html, options);
+      const EMAIL_RENDER_MIN_WIDTH = 640;
+      const sanitized = sanitizeEmailHtml(html, {
+        ...options,
+        reportHeight: true,
+        baseCss: `${MAIL_FRAME_BASE_CSS}\n${extraCss || ''}`,
+        wrapMinWidth: EMAIL_RENDER_MIN_WIDTH
+      });
 
       // If DOM was too complex or srcdoc too large, fall back to plain text
       if (sanitized.domTooComplex || sanitized.html.length > MAX_IFRAME_SRCDOC_CHARS) {
@@ -254,7 +424,11 @@
         360,
         Math.min(MIN_MAIL_IFRAME_HEIGHT, Number(window.innerHeight || 680) - 160)
       );
-      iframe.setAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox allow-same-origin');
+      // 不再使用 allow-same-origin：帧内文档因此获得不透明源，
+      // 即便净化被绕过也读不到扩展的 chrome.storage / chrome.* API。
+      // allow-scripts 仅为让带 nonce 的高度上报脚本运行；帧内 CSP 已把
+      // script-src 限定为该 nonce，邮件自带脚本一律无法执行。
+      iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
       iframe.setAttribute('referrerpolicy', 'no-referrer');
       iframe.className = 'mail-html-frame';
       iframe.style.height = `${minimumIframeHeight}px`;
@@ -264,69 +438,38 @@
       iframe.srcdoc = sanitized.html;
       container.appendChild(iframe);
 
-      iframe.addEventListener('load', () => {
-        try {
-          const doc = iframe.contentDocument;
-          if (doc) {
-            const style = doc.createElement('style');
-            style.textContent = `
-              html, body { background: #ffffff !important; color: #202124 !important; }
-              body { margin: 0 !important; padding: 8px !important; word-break: break-word; overflow-wrap: break-word; }
-              img { max-width: 100% !important; height: auto !important; }
-              table { border-collapse: collapse; }
-              td, th { word-break: break-word; }
-              ${extraCss}
-            `;
-            doc.head.appendChild(style);
+      // 高度改由帧内脚本 postMessage 上报（父页面已无法访问 contentDocument）。
+      // 来源校验只认这个 iframe 的 contentWindow —— 帧内唯一能执行的脚本就是被哈希 pin 的
+      // 高度上报脚本，邮件自带脚本一律被 CSP 拦下，无法伪造消息。
+      let heightReported = false;
+      const onFrameMessage = (event) => {
+        if (event.source !== iframe.contentWindow) return;
+        const data = event.data;
+        if (!data || typeof data !== 'object' || data.source !== 'floatmail-mail-frame') return;
+        const measured = Number(data.height);
+        if (!Number.isFinite(measured) || measured <= 0) return;
+        if (!iframe.isConnected) {
+          window.removeEventListener('message', onFrameMessage);
+          return;
+        }
+        heightReported = true;
+        iframe.style.height = `${Math.min(
+          Math.max(Math.ceil(measured), minimumIframeHeight),
+          MAX_MAIL_IFRAME_HEIGHT
+        )}px`;
+      };
+      window.addEventListener('message', onFrameMessage);
 
-            // Force the email to render at desktop width inside the iframe.
-            // Many HTML emails are designed for 600-640px and break at narrower widths.
-            const EMAIL_RENDER_MIN_WIDTH = 640;
-            const scrollWrapper = doc.createElement('div');
-            scrollWrapper.id = '__mail-scroll-wrapper';
-            scrollWrapper.style.cssText = `min-width:${EMAIL_RENDER_MIN_WIDTH}px;`;
-            while (doc.body.firstChild) {
-              scrollWrapper.appendChild(doc.body.firstChild);
-            }
-            doc.body.appendChild(scrollWrapper);
-            doc.body.style.overflowX = 'auto';
-            const syncIframeHeight = () => {
-              if (!iframe.isConnected) {
-                return false;
-              }
-              const measuredHeight = Math.max(
-                Number(scrollWrapper.scrollHeight || 0),
-                Number(scrollWrapper.getBoundingClientRect?.().height || 0),
-                Number(doc.documentElement?.scrollHeight || 0),
-                Number(doc.body?.scrollHeight || 0),
-                minimumIframeHeight
-              );
-              const nextHeight = Math.min(
-                Math.max(Math.ceil(measuredHeight) + 4, minimumIframeHeight),
-                MAX_MAIL_IFRAME_HEIGHT
-              );
-              iframe.style.height = `${nextHeight}px`;
-              return true;
-            };
-
-            syncIframeHeight();
-            window.requestAnimationFrame(syncIframeHeight);
-            [120, 400, 1000].forEach((delay) => window.setTimeout(syncIframeHeight, delay));
-
-            if (typeof ResizeObserver === 'function') {
-              const resizeObserver = new ResizeObserver(() => {
-                if (!syncIframeHeight()) {
-                  resizeObserver.disconnect();
-                }
-              });
-              resizeObserver.observe(scrollWrapper);
-              window.setTimeout(() => resizeObserver.disconnect(), 10000);
-            }
-          }
-        } catch (error) {
+      // 兜底：若帧内脚本因故未上报（例如被更严格的策略拦下），给一个可用的默认高度；
+      // 12 秒后解绑监听，避免长期累积。
+      window.setTimeout(() => {
+        if (!heightReported && iframe.isConnected) {
           iframe.style.height = `${Math.max(minimumIframeHeight, FALLBACK_MAIL_IFRAME_HEIGHT)}px`;
         }
-      });
+      }, 1500);
+      window.setTimeout(() => {
+        window.removeEventListener('message', onFrameMessage);
+      }, 12000);
 
       return {
         hasRemoteImages: sanitized.remoteImageCount > 0,
