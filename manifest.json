@@ -49,7 +49,8 @@
     {
       "resources": [
         "popup.html",
-        "icons/float-btn.png"
+        "icons/float-btn.png",
+        "popup-modules/mail-frame-reporter.js"
       ],
       "matches": [
         "<all_urls>"
@@ -57,7 +58,7 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'sha256-XMOItWN8ANsTkFoPGsgh4aK8aeo3M1HMcYjb3eLi4w0='; object-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: http:; frame-src 'self' data:; base-uri 'none'; form-action 'none'"
+    "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: http:; frame-src 'self' data:; base-uri 'none'; form-action 'none'"
   },
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr9jpojbGnY1nRaqAZ+e8uP3LXW7/U+WzccM/OUul4mTh7B2OTXBI4d2ppAbRBgMLPRq3+Rv/d5AOsrcm+jStWGdW0ZSqIJB+0fUYQWH/c7WtfAP42migG2CmtWurzfP/U+40bj8yuUN8U95YvclcumNT6Jgvt61See+lGFvEN5MWzHHfamHpv1rxt4H9nyIeDDSb5iKFx4gmg8o3AZLLFicXBf9Nl2vZGZcCLwcZC1Uvg2WUPHXI3j+5P4mYwRm6TIF1Hxau+akzTlLvSDsFvvjKXFIIwH3FPvqK/o441TShn3fa0Z4of8EheKiuRH0k6fIcdSVb/BIvZCdEUdRb2wIDAQAB"
 }

@@ -161,30 +161,22 @@
         .replace(/url\(\s*(?!['"]?(?:data:image\/|cid:))[^)]*\)/gi, 'none');
     }
 
-    // 高度上报脚本（内容固定，勿随意改）。帧继承扩展页 script-src 'self'，
-    // 纯 nonce/inline 都会被拦；固定内容 + sha256 是唯一能"只放行这一段、其余邮件脚本全拦"的办法。
-    // ⚠️ 改动此字符串必须同步更新 MAIL_FRAME_REPORTER_SHA256 与 manifest.json 的 script-src 哈希，
-    //    否则邮件高度自适应会静默失效（回落固定高度）。/tmp 下的 csp-frame 测试可端到端验证。
-    const MAIL_FRAME_HEIGHT_REPORTER = `(function(){
-  function measure(){
-    var w=document.getElementById('__mail-scroll-wrapper');
-    var c=[w&&w.scrollHeight,w&&w.getBoundingClientRect&&w.getBoundingClientRect().height,
-           document.documentElement&&document.documentElement.scrollHeight,
-           document.body&&document.body.scrollHeight];
-    var h=0;for(var i=0;i<c.length;i++){var v=Number(c[i]||0);if(v>h){h=v;}}
-    try{parent.postMessage({source:'floatmail-mail-frame',height:Math.ceil(h)+4},'*');}catch(e){}
-  }
-  measure();
-  if(window.requestAnimationFrame){requestAnimationFrame(measure);}
-  [120,400,1000].forEach(function(d){setTimeout(measure,d);});
-  window.addEventListener('load',measure);
-  if(typeof ResizeObserver==='function'){
-    var t=document.getElementById('__mail-scroll-wrapper')||document.body;
-    if(t){var ro=new ResizeObserver(measure);ro.observe(t);setTimeout(function(){ro.disconnect();},10000);}
-  }
-})();`;
-    // sha256-base64 of MAIL_FRAME_HEIGHT_REPORTER 的 textContent（与 manifest 保持一致）
-    const MAIL_FRAME_REPORTER_SHA256 = "sha256-XMOItWN8ANsTkFoPGsgh4aK8aeo3M1HMcYjb3eLi4w0=";
+    // 高度上报脚本的扩展内 URL 与其源。渲染帧继承扩展页 CSP `script-src 'self'`，
+    // MV3 不允许 hash/nonce 源，所以只有"从扩展自身源加载的外部脚本"能在帧内执行；
+    // 邮件自带脚本一律非本源、被拦。脚本本体见 popup-modules/mail-frame-reporter.js，
+    // 且已登记进 manifest 的 web_accessible_resources。
+    const MAIL_FRAME_REPORTER_URL =
+      (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL)
+        ? chrome.runtime.getURL('popup-modules/mail-frame-reporter.js')
+        : '';
+    let MAIL_FRAME_REPORTER_ORIGIN = '';
+    try {
+      if (MAIL_FRAME_REPORTER_URL) {
+        MAIL_FRAME_REPORTER_ORIGIN = new URL(MAIL_FRAME_REPORTER_URL).origin;
+      }
+    } catch (e) {
+      MAIL_FRAME_REPORTER_ORIGIN = '';
+    }
 
     function sanitizeEmailHtml(html, options = {}) {
       if (!html) return { html: '', remoteImageCount: 0, domTooComplex: false };
@@ -320,12 +312,14 @@
       // 插入一条 CSP，即便前面某条正则漏了，浏览器仍会拦下脚本执行与远程请求。
       // 邮件自带的 CSP 已在 blockedTags 里移除；即使漏网也只会让策略"更严"（多条 CSP 取交集），
       // 攻击者无法借此放宽限制。
-      // 注意：帧还会继承扩展页 manifest 的 script-src 'self'，与本帧 CSP 取交集，
-      // 因此高度上报脚本用固定内容 + sha256 双重 pin（manifest 与本帧 CSP 都放行该哈希）。
+      // 注意：帧还会继承扩展页 manifest 的 script-src 'self'，与本帧 CSP 取交集。
+      // 高度上报脚本从扩展自身源加载（匹配继承的 'self'），本帧 CSP 也显式放行该源；
+      // 拿不到扩展源时退回 script-src 'none'（帧内无脚本，高度走兜底固定值）。
       const imgSources = allowRemoteImages ? "data: https:" : "data:";
+      const scriptSrc = MAIL_FRAME_REPORTER_ORIGIN ? MAIL_FRAME_REPORTER_ORIGIN : "'none'";
       const csp = [
         "default-src 'none'",
-        `script-src '${MAIL_FRAME_REPORTER_SHA256}'`,
+        `script-src ${scriptSrc}`,
         "style-src 'unsafe-inline'",
         `img-src ${imgSources}`,
         `media-src ${imgSources}`,
@@ -363,12 +357,13 @@
         doc.body.setAttribute('style', `${doc.body.getAttribute('style') || ''};overflow-x:auto;`);
       }
 
-      // ---- 高度上报脚本：内容固定并被 CSP 哈希 pin，唯一可在帧内执行的脚本 ----
+      // ---- 高度上报脚本：从扩展自身源加载的外部脚本，唯一可在帧内执行的脚本 ----
       // 帧无 allow-same-origin（opaque origin），父页面读不到 contentDocument，
       // 因此高度由帧内脚本 postMessage 上报；父侧用 event.source 校验来源。
-      if (doc.body && options.reportHeight) {
+      // 拿不到扩展源（非扩展环境）时不注入脚本，父侧兜底用固定高度。
+      if (doc.body && options.reportHeight && MAIL_FRAME_REPORTER_URL) {
         const reporter = doc.createElement('script');
-        reporter.textContent = MAIL_FRAME_HEIGHT_REPORTER;
+        reporter.setAttribute('src', MAIL_FRAME_REPORTER_URL);
         doc.body.appendChild(reporter);
       }
 
