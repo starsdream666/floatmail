@@ -199,6 +199,16 @@
     return min + Math.floor(random() * (max - min + 1));
   }
 
+  const VALID_GENDERS = ['male', 'female'];
+
+  /**
+   * 归一化性别：只认 male / female，其余（含 undefined、'unknown'、'random'）一律回退到 random，
+   * 避免 NAME_DATA[gender] 取到 undefined 后 pickRandom 抛 TypeError。
+   */
+  function normalizeGender(gender) {
+    return VALID_GENDERS.indexOf(gender) !== -1 ? gender : 'random';
+  }
+
   /**
    * 生成姓名数据。调用方通过参数明确普通工具与快填的分布差异。
    */
@@ -206,15 +216,19 @@
     region = 'en',
     gender = 'random',
     zhTwoCharacterProbability = 0.6,
-    fallbackGender = '',
+    fallbackGender = 'random',
     random = Math.random
   } = {}) {
-    const resolvedGender = gender === 'random'
+    const normalizedGender = normalizeGender(gender);
+    const resolvedGender = normalizedGender === 'random'
       ? (random() < 0.5 ? 'male' : 'female')
-      : gender;
+      : normalizedGender;
+    // fallbackGender 非法时退回已解析出的具体性别，保证兜底池一定存在。
+    const normalizedFallback = normalizeGender(fallbackGender);
+    const safeFallbackGender = normalizedFallback === 'random' ? resolvedGender : normalizedFallback;
 
     if (region === 'en') {
-      const firstName = pickRandom(NAME_DATA.en[resolvedGender] || NAME_DATA.en[fallbackGender], random);
+      const firstName = pickRandom(NAME_DATA.en[resolvedGender] || NAME_DATA.en[safeFallbackGender], random);
       const lastName = pickRandom(NAME_DATA.en.last, random);
       return {
         fullName: `${firstName} ${lastName}`,
@@ -226,7 +240,7 @@
     }
 
     const lastName = pickRandom(NAME_DATA.zh.surname, random);
-    const givenPool = NAME_DATA.zh[resolvedGender] || NAME_DATA.zh[fallbackGender];
+    const givenPool = NAME_DATA.zh[resolvedGender] || NAME_DATA.zh[safeFallbackGender];
     const givenLength = random() < zhTwoCharacterProbability ? 2 : 1;
     let firstName = '';
     for (let i = 0; i < givenLength; i += 1) {
@@ -360,6 +374,29 @@
     return '';
   }
 
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  /**
+   * L-5：填充按钮图标用静态 DOM 节点构建，避免 innerHTML 插值外部文案。
+   */
+  function createFillActionIcon() {
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('width', '14');
+    svg.setAttribute('height', '14');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    ['M12 5v14', 'm19 12-7 7-7-7', 'M5 3h14'].forEach((pathData) => {
+      const path = document.createElementNS(SVG_NS, 'path');
+      path.setAttribute('d', pathData);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
   function initGeneratedTools(options) {
     const {
       genPwdBtn,
@@ -460,8 +497,12 @@
         const fillBtn = document.createElement('button');
         fillBtn.type = 'button';
         fillBtn.className = 'tool-result-action';
-        fillBtn.title = action.title || action.label || getFillActionLabel(action.kind);
-        fillBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/><path d="M5 3h14"/></svg><span>${action.label || getFillActionLabel(action.kind)}</span>`;
+        const actionLabel = action.label || getFillActionLabel(action.kind) || '';
+        fillBtn.title = action.title || actionLabel;
+        fillBtn.appendChild(createFillActionIcon());
+        const labelSpan = document.createElement('span');
+        labelSpan.textContent = actionLabel;
+        fillBtn.appendChild(labelSpan);
         fillBtn.onclick = async () => {
           try {
             const fillValue = action.value || text;
