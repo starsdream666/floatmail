@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const PAGE_TOOLS_VERSION = '2026.07.13-lifecycle-v2';
+  const PAGE_TOOLS_VERSION = '2026.07.27-shadow-v3';
   const existingPageToolsController = window.__floatMailPageToolsController;
   if (existingPageToolsController?.version === PAGE_TOOLS_VERSION
     && existingPageToolsController.disposed !== true) {
@@ -25,8 +25,11 @@
   window.__floatMailPageToolsController = pageToolsController;
   window.__tempEmailPageToolsLoaded = true;
 
-  const BUTTON_ID = 'temp-email-float-btn';
-  const PANEL_ID = 'temp-email-float-panel';
+  // 旧版本把固定 ID 暴露在页面 DOM 中，站点可据此跨站识别扩展。
+  // 新版 UI 放进 closed ShadowRoot；这两个 ID 只在封闭样式树内使用。
+  const LEGACY_BUTTON_ID = 'temp-email-float-btn';
+  const LEGACY_PANEL_ID = 'temp-email-float-panel';
+  const FLOAT_HOST_MARKER = Symbol.for('floatmail.page-tools.host');
   const FLOAT_TOP_Z_INDEX = '2147483647';
   const FLOAT_LAYOUT_KEY = 'floatLayout';
   const FLOAT_WINDOW_STYLE_KEY = 'floatWindowStyle';
@@ -37,7 +40,6 @@
   const MIN_PANEL_HEIGHT = 300;
   const PREVIEW_TARGET_CLASS = 'temp-email-fill-preview-target';
   const SELECT_TARGET_CLASS = 'temp-email-fill-select-target';
-  const SELECTION_HINT_ID = 'temp-email-fill-selection-hint';
   const FLOAT_SELECT_MESSAGE_SOURCE = 'temp-email-floating-panel';
   const FIXED_FLOAT_WINDOW_STYLE = 'modern';
   const FLOAT_HOST_EVENT_TYPES = [
@@ -75,6 +77,7 @@
   let shouldReopenFloatPanelAfterSelection = false;
   let lastPanelStateChangeTime = 0;
   let selectionHintTimer = null;
+  let selectionHintElement = null;
   let floatLifecycleRevision = 0;
   let pageToolsDisposed = false;
   // SEC-10：站点被黑名单/白名单挡掉时，内容脚本必须真正停用能力，
@@ -97,14 +100,15 @@
 
   let cachedExtensionOrigin;
 
-  // 悬浮窗 iframe 的扩展页 origin。收发 postMessage 都要按它校验对端：
-  // iframe 元素挂在页面共享 DOM 里，页面可以改 src 导航后冒充 contentWindow。
+  // 悬浮窗 iframe 导航后的实际扩展页 origin。动态 WAR 只把 DOM 中的资源 URL
+  // 换成会话 UUID，页面加载后仍回到 chrome.runtime.id 对应的安全源；不能用
+  // getURL() 的动态 UUID 当 targetOrigin，否则浏览器会直接丢弃 postMessage。
   function getExtensionOrigin() {
     if (cachedExtensionOrigin !== undefined) {
       return cachedExtensionOrigin;
     }
     try {
-      cachedExtensionOrigin = new URL(chrome.runtime.getURL('popup.html')).origin;
+      cachedExtensionOrigin = `chrome-extension://${chrome.runtime.id}`;
     } catch {
       cachedExtensionOrigin = '';
     }
@@ -186,7 +190,7 @@
   // 只在重挂 / 兜底检测这类低频路径上主动失效，避免每次调用都退回无缓存的写入。
   function invalidateFloatStyleCache(elements) {
     const targets = elements
-      || (floatUi ? [floatUi.button, floatUi.panel, floatUi.overlay] : []);
+      || (floatUi ? [floatUi.host, floatUi.button, floatUi.panel, floatUi.overlay] : []);
     targets.forEach((element) => {
       if (element) {
         floatStyleCache.delete(element);
@@ -198,6 +202,9 @@
     if (!floatUi) {
       return;
     }
+
+    setImportantStyle(floatUi.host, 'all', 'initial');
+    setImportantStyle(floatUi.host, 'display', 'contents');
 
     setImportantStyle(floatUi.button, 'position', 'fixed');
     setImportantStyle(floatUi.button, 'z-index', floatUi.panelVisible ? '2147483646' : FLOAT_TOP_Z_INDEX);
@@ -221,15 +228,13 @@
       return false;
     }
 
-    const { button, panel, observer } = floatUi;
+    const { host, button, panel, observer } = floatUi;
     // force 仅由被遮挡兜底检测使用：重挂 iframe 会触发重载与重绘，普通路径绝不能走。
-    const nodesToAttach = options.force === true
-      ? [button, panel]
-      : [button, panel].filter((node) => node.parentNode !== document.body);
+    const shouldAttachHost = options.force === true || host.parentNode !== document.body;
 
-    // 只补挂确实脱离 body 的节点。按钮与 iframe 面板的前后顺序不参与置顶，
-    // 避免开关面板或页面更新时重挂 iframe，导致重绘和入场动画重播。
-    if (nodesToAttach.length > 0) {
+    // 只补挂确实脱离 body 的 Shadow host。按钮与 iframe 面板始终留在同一棵
+    // shadow tree 中，避免开关面板或页面更新时单独重挂 iframe 导致闪烁。
+    if (shouldAttachHost) {
       // 暂停 observer 避免 appendChild 自触发
       if (observer) {
         observer.disconnect();
@@ -237,7 +242,7 @@
       // BUG-6：重挂说明页面动过我方节点，此时 style 也可能被一并清掉，
       // 缓存必须失效并把布局重新写一遍，否则 setImportantStyle 会误判为已设置。
       invalidateFloatStyleCache();
-      nodesToAttach.forEach((node) => document.body.appendChild(node));
+      document.body.appendChild(host);
       if (observer) {
         observer.observe(document.body, { childList: true });
         floatUi.observedBody = document.body;
@@ -247,7 +252,7 @@
     }
 
     applyFloatTopLayerStyles();
-    return nodesToAttach.length > 0;
+    return shouldAttachHost;
   }
 
   // BUG-6：页面清空我方 style 后并不会触发节点移除，这里用内联 position 做廉价探针。
@@ -305,7 +310,8 @@
     if (!hit) {
       return false;
     }
-    return !panel.contains(hit) && !floatUi.button.contains(hit);
+    // closed ShadowRoot 会把命中的内部节点重定向为 host；命中 host 即表示面板在最上层。
+    return hit !== floatUi.host && !panel.contains(hit) && !floatUi.button.contains(hit);
   }
 
   function runFloatOcclusionCheck() {
@@ -1100,21 +1106,21 @@
       window.clearTimeout(selectionHintTimer);
       selectionHintTimer = null;
     }
-    document.getElementById(SELECTION_HINT_ID)?.remove();
+    selectionHintElement?.remove();
+    selectionHintElement = null;
   }
 
   function showSelectionHint(text, tone = 'info', autoRemoveDelay = 0) {
-    if (!document.body) {
+    if (!floatUi?.shadowRoot) {
       return;
     }
-    let hint = document.getElementById(SELECTION_HINT_ID);
-    if (!hint) {
-      hint = document.createElement('div');
-      hint.id = SELECTION_HINT_ID;
-      document.body.appendChild(hint);
+    if (!selectionHintElement) {
+      selectionHintElement = document.createElement('div');
+      selectionHintElement.id = 'temp-email-fill-selection-hint';
+      floatUi.shadowRoot.appendChild(selectionHintElement);
     }
-    hint.textContent = text;
-    hint.dataset.tone = tone;
+    selectionHintElement.textContent = text;
+    selectionHintElement.dataset.tone = tone;
     if (selectionHintTimer !== null) {
       window.clearTimeout(selectionHintTimer);
       selectionHintTimer = null;
@@ -1123,7 +1129,8 @@
       selectionHintTimer = window.setTimeout(() => {
         selectionHintTimer = null;
         if (!fieldSelection) {
-          document.getElementById(SELECTION_HINT_ID)?.remove();
+          selectionHintElement?.remove();
+          selectionHintElement = null;
         }
       }, autoRemoveDelay);
     }
@@ -1529,8 +1536,8 @@
       floatUi.documentObserver.disconnect();
     }
 
-    floatUi.panel.remove();
-    floatUi.button.remove();
+    removeSelectionHint();
+    floatUi.host.remove();
     floatUi = null;
   }
 
@@ -1649,17 +1656,30 @@
       return;
     }
 
+    const host = document.createElement('div');
+    // Symbol expando 只存在于扩展 isolated world，供后台识别升级遗留节点；
+    // 页面主世界看不到稳定属性，也就没有可跨站查询的 DOM 标记。
+    host[FLOAT_HOST_MARKER] = PAGE_TOOLS_VERSION;
+    host.style.setProperty('all', 'initial', 'important');
+    host.style.setProperty('display', 'contents', 'important');
+    const shadowRoot = host.attachShadow({ mode: 'closed' });
+
+    const styleLink = document.createElement('link');
+    styleLink.rel = 'stylesheet';
+    styleLink.href = chrome.runtime.getURL('content.css');
+    shadowRoot.appendChild(styleLink);
+
     const button = document.createElement('button');
-    button.id = BUTTON_ID;
+    button.id = LEGACY_BUTTON_ID;
     button.type = 'button';
     // 方案二图标；HTML 宽高 + CSS 双重约束，避免大图撑破按钮
     const floatIconUrl = chrome.runtime.getURL('icons/float-btn.png');
     button.innerHTML = `<img class="temp-email-float-btn-icon" src="${floatIconUrl}" width="54" height="54" alt="FloatMail" draggable="false" />`;
     button.title = 'FloatMail';
-    document.body.appendChild(button);
+    shadowRoot.appendChild(button);
 
     const panel = document.createElement('div');
-    panel.id = PANEL_ID;
+    panel.id = LEGACY_PANEL_ID;
 
     const header = document.createElement('div');
     header.id = 'temp-email-panel-header';
@@ -1713,9 +1733,12 @@
       panel.appendChild(handle);
     });
 
-    document.body.appendChild(panel);
+    shadowRoot.appendChild(panel);
+    document.body.appendChild(host);
 
     floatUi = {
+      host,
+      shadowRoot,
       button,
       panel,
       iframe,
@@ -1730,6 +1753,7 @@
       documentObserver: null,
       observedBody: null,
       panelEnterCleanup: null,
+      pinButton,
       cleanup: [],
     };
     installFloatHostEventIsolation([button, panel]);
@@ -2140,17 +2164,13 @@
         // 忽略页面普通 DOM 更新；只在悬浮节点被移除/挪出 body 时再挂回。
         // 填充、表单校验、SPA 渲染常会新增节点，旧逻辑会误触发重挂导致闪烁。
         for (const removed of mutation.removedNodes) {
-          if (
-            removed === button
-            || removed === panel
-            || (removed.nodeType === 1 && (removed.contains?.(button) || removed.contains?.(panel)))
-          ) {
+          if (removed === host || (removed.nodeType === 1 && removed.contains?.(host))) {
             scheduleReattach(100);
             return;
           }
         }
 
-        if (button.parentNode !== document.body || panel.parentNode !== document.body) {
+        if (host.parentNode !== document.body) {
           scheduleReattach(100);
           return;
         }
@@ -2378,7 +2398,7 @@
       floatUi.buttonLayout = applyButtonLayout(floatUi.button, nextLayout.button);
       floatUi.panelLayout = applyPanelLayout(floatUi.panel, nextLayout.panel);
       floatUi.isPinned = Boolean(nextLayout.pinned);
-      const pinButton = document.getElementById('temp-email-panel-pin');
+      const pinButton = floatUi.pinButton;
       if (pinButton) {
         pinButton.classList.toggle('pinned', floatUi.isPinned);
         pinButton.title = floatUi.isPinned ? '取消固定窗口' : '固定窗口（点击外部不关闭）';
@@ -2513,7 +2533,7 @@
   }
 
   // 升级或扩展重载后，移除失效上下文遗留的悬浮 DOM。
-  document.getElementById(BUTTON_ID)?.remove();
-  document.getElementById(PANEL_ID)?.remove();
+  document.getElementById(LEGACY_BUTTON_ID)?.remove();
+  document.getElementById(LEGACY_PANEL_ID)?.remove();
   scheduleFloatWindowReconcile();
 })();

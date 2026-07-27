@@ -172,7 +172,11 @@
     let MAIL_FRAME_REPORTER_ORIGIN = '';
     try {
       if (MAIL_FRAME_REPORTER_URL) {
-        MAIL_FRAME_REPORTER_ORIGIN = new URL(MAIL_FRAME_REPORTER_URL).origin;
+        // 动态 WAR URL 使用会话 UUID，但资源重定向后的安全源仍是实际扩展 ID。
+        // srcdoc 帧的 CSP 必须信任后者，不能信任 getURL() 暴露的 UUID origin。
+        MAIL_FRAME_REPORTER_ORIGIN = (typeof chrome !== 'undefined' && chrome.runtime?.id)
+          ? `chrome-extension://${chrome.runtime.id}`
+          : new URL(MAIL_FRAME_REPORTER_URL).origin;
       }
     } catch (e) {
       MAIL_FRAME_REPORTER_ORIGIN = '';
@@ -421,8 +425,8 @@
       );
       // 不再使用 allow-same-origin：帧内文档因此获得不透明源，
       // 即便净化被绕过也读不到扩展的 chrome.storage / chrome.* API。
-      // allow-scripts 仅为让带 nonce 的高度上报脚本运行；帧内 CSP 已把
-      // script-src 限定为该 nonce，邮件自带脚本一律无法执行。
+      // allow-scripts 仅用于扩展自身的高度上报脚本；帧内 CSP 已把
+      // script-src 限定为扩展自身源，邮件自带脚本一律无法执行。
       iframe.setAttribute('sandbox', 'allow-scripts allow-popups allow-popups-to-escape-sandbox');
       iframe.setAttribute('referrerpolicy', 'no-referrer');
       iframe.className = 'mail-html-frame';
@@ -434,7 +438,7 @@
       container.appendChild(iframe);
 
       // 高度改由帧内脚本 postMessage 上报（父页面已无法访问 contentDocument）。
-      // 来源校验只认这个 iframe 的 contentWindow —— 帧内唯一能执行的脚本就是被哈希 pin 的
+      // 来源校验只认这个 iframe 的 contentWindow；帧内唯一能执行的是扩展自身的
       // 高度上报脚本，邮件自带脚本一律被 CSP 拦下，无法伪造消息。
       let heightReported = false;
       const onFrameMessage = (event) => {
