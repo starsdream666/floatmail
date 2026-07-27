@@ -1,3 +1,6 @@
+importScripts('shared-utils.js');
+
+const { buildAddressString, isHttpUrl } = globalThis.FloatMailSharedUtils;
 const VERIFY_ALARM_NAME = 'temp-email-verify';
 const MAIL_ALARM_NAME = 'temp-email-mail-poll';
 const CLEANUP_ALARM_NAME = 'temp-email-expired-cleanup';
@@ -252,18 +255,6 @@ function executeScriptFunction(tabId, func) {
   });
 }
 
-function insertCss(tabId, files) {
-  return new Promise((resolve, reject) => {
-    chrome.scripting.insertCSS({ target: { tabId }, files }, () => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
 function createNotification(notificationId, options) {
   return new Promise((resolve, reject) => {
     chrome.notifications.create(notificationId, options, (createdId) => {
@@ -352,28 +343,6 @@ function resolveIntervalSeconds(rawValue, fallbackSetting = DISABLED_INTERVAL_SE
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isHttpUrl(rawUrl) {
-  try {
-    const url = new URL(rawUrl);
-    return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-function buildAddressString(record) {
-  if (!record || typeof record !== 'object') {
-    return '';
-  }
-  if (record.address) {
-    return String(record.address).trim();
-  }
-  if (record.name && record.domain) {
-    return `${record.name}@${record.domain}`.trim();
-  }
-  return String(record.name || '').trim();
 }
 
 function matchesAddressRecord(record, address) {
@@ -1391,7 +1360,7 @@ function runPollMailNow() {
   return mailPollRunPromise;
 }
 
-const PAGE_TOOLS_VERSION = '2026.07.13-lifecycle-v2';
+const PAGE_TOOLS_VERSION = '2026.07.27-shadow-v3';
 const pageToolsReconcileRuns = new Map();
 
 async function getPageToolsStatus(tabId) {
@@ -1405,12 +1374,17 @@ async function getPageToolsStatus(tabId) {
 
 async function getPageToolsDomState(tabId) {
   try {
-    return await executeScriptFunction(tabId, () => ({
-      buttons: document.querySelectorAll('#temp-email-float-btn').length,
-      panels: document.querySelectorAll('#temp-email-float-panel').length,
-    }));
+    return await executeScriptFunction(tabId, () => {
+      const hostMarker = Symbol.for('floatmail.page-tools.host');
+      return {
+        legacyButtons: document.querySelectorAll('#temp-email-float-btn').length,
+        legacyPanels: document.querySelectorAll('#temp-email-float-panel').length,
+        shadowHosts: Array.from(document.body?.children || [])
+          .filter((node) => Boolean(node[hostMarker])).length,
+      };
+    });
   } catch {
-    return { buttons: 0, panels: 0 };
+    return { legacyButtons: 0, legacyPanels: 0, shadowHosts: 0 };
   }
 }
 
@@ -1442,14 +1416,17 @@ async function reconcilePageToolsInTabInternal(tabId, url) {
 
   const status = await getPageToolsStatus(tabId);
   const domState = await getPageToolsDomState(tabId);
-  const hasLegacyDom = domState.buttons > 0 || domState.panels > 0;
-  const hasDuplicateDom = domState.buttons > 1 || domState.panels > 1;
+  const hasLegacyDom = domState.legacyButtons > 0 || domState.legacyPanels > 0;
+  const hasDuplicateDom = domState.legacyButtons > 1
+    || domState.legacyPanels > 1
+    || domState.shadowHosts > 1;
+  const hasOrphanedDom = !status && (hasLegacyDom || domState.shadowHosts > 0);
 
   // 无版本的旧脚本无法移除匿名监听器，其 observer 会不断复挂遗留 DOM；
   // 这种实例以及已出现重复 UI 的页面只能通过一次整页刷新安全迁移。
   if ((status?.ok && !status.version)
     || hasDuplicateDom
-    || (!status && hasLegacyDom)) {
+    || hasOrphanedDom) {
     return reloadTabForPageToolsMigration(tabId);
   }
 
@@ -1470,12 +1447,6 @@ async function reconcilePageToolsInTabInternal(tabId, url) {
         // 旧实例上下文可能已失效，新脚本会清理遗留 DOM。
       }
     }
-  }
-
-  try {
-    await insertCss(tabId, ['content.css']);
-  } catch (error) {
-    // 重复注入 CSS 时无需中断脚本注入。
   }
 
   await executeScript(tabId, ['content.js']);

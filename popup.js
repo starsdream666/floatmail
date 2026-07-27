@@ -60,7 +60,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.body.classList.remove('js-loading');
   }, 3000);
 
+  const { buildAddressString, isHttpUrl } = globalThis.FloatMailSharedUtils;
   const { createMailRenderer } = window.PopupMailRenderer;
+  const {
+    createMailReaderState,
+    createBatchSelectionController,
+    createInboxController
+  } = window.PopupMailInboxController;
   const { initConfigIO } = window.PopupConfigIO;
   const {
     initGeneratedTools,
@@ -386,39 +392,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   // 验证状态: { [address]: 'valid' | 'invalid' | 'checking' | 'error' }
   let verifyStatus = {};
   let tempUnreadCounts = {};
-  let currentMailId = null;
-  let currentInboxAddress = null;
-  let currentTempMails = [];
-  let currentTempMail = null;
-  let tempMailDetailRequestToken = 0;
-  // BUG-2：收件箱列表拉取令牌，防止两次拉取交叠时先发后到，把 A 邮箱的邮件渲染进 B 邮箱
-  let tempInboxFetchToken = 0;
-  let tempMailViewMode = 'safe-html';
-  let tempMailAllowRemoteImages = false;
-  let tempMailTranslationText = '';
-  let tempMailTranslationRequestToken = 0;
-  let tempMailAiInsights = null;
-  let tempMailInsightStatus = 'idle';
-  let tempMailInsightError = '';
-  let tempMailInsightRequestToken = 0;
+  let tempInboxController = null;
+  let moeInboxController = null;
+  let tempHistoryBatchController = null;
+  let moeHistoryBatchController = null;
 
   // MoeMail 状态
   let moeApiUrl = '';
   let moeApiKey = '';
-  let moeCurrentEmailId = null;
-  // BUG-2：MoeMail 收件箱列表拉取令牌，作用同 tempInboxFetchToken
-  let moeInboxFetchToken = 0;
   let currentMoeEmails = [];
   let moeUnreadCounts = {};
-  let currentMoeMail = null;
-  let moeMailViewMode = 'safe-html';
-  let moeMailAllowRemoteImages = false;
-  let moeMailTranslationText = '';
-  let moeMailTranslationRequestToken = 0;
-  let moeMailAiInsights = null;
-  let moeMailInsightStatus = 'idle';
-  let moeMailInsightError = '';
-  let moeMailInsightRequestToken = 0;
 
   // 书签状态
   let bookmarks = [];
@@ -448,16 +431,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tabLayoutMode = FIXED_TAB_LAYOUT_MODE;
   let currentSiteOrigin = '';
   let pageFillRules = {};
-
-  // 批量删除状态
-  let isTempHistoryBatchMode = false;
-  let selectedTempHistory = new Set();
-  
-  let isTempInboxBatchMode = false;
-  let selectedTempMails = new Set();
-  
-  let isMoeHistoryBatchMode = false;
-  let selectedMoeHistory = new Set();
 
   const storageGet = (keys) => new Promise((resolve) => {
     const localStorageApi = globalThis.chrome?.storage?.local;
@@ -1487,7 +1460,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 本实例正在看收件箱（列表或邮件详情）时忽略这次同步，
       // 否则 closeInboxView/closeMoeInboxView 会把用户正在阅读的邮件强行关掉。
       // 用户手动返回后仍停留在本实例自己的标签上，状态保持自洽。
-      if (currentInboxAddress || moeCurrentEmailId) {
+      if (tempInboxController?.isOpen() || moeInboxController?.isOpen()) {
         return;
       }
     }
@@ -1561,10 +1534,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {
       return '';
     }
-  }
-
-  function isHttpUrl(rawUrl) {
-    return Boolean(normalizeOrigin(rawUrl));
   }
 
   /**
@@ -3468,7 +3437,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         icon: 'delete',
         title: '删除此邮件',
         danger: true,
-        disabled: !hasMail
+        disabled: !hasMail || reader.isDeletePending()
       });
     }
   }
@@ -3481,7 +3450,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setMailActionButtonState(toggleMoeMailViewBtn, { icon: 'plainText', title: '切换邮件视图', disabled: true });
   setMailActionButtonState(toggleMoeMailImagesBtn, { icon: 'noImages', title: '无远程图片', disabled: true });
 
-  const tempMailReader = {
+  const tempMailReader = createMailReaderState({
     elements: {
       body: mailBody,
       insights: mailInsights,
@@ -3495,31 +3464,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       imagesButton: toggleMailImagesBtn,
       deleteButton: deleteMailBtn
     },
-    getMail: () => currentTempMail,
-    setMail: (value) => { currentTempMail = value; },
-    getViewMode: () => tempMailViewMode,
-    setViewMode: (value) => { tempMailViewMode = value; },
-    getAllowRemoteImages: () => tempMailAllowRemoteImages,
-    setAllowRemoteImages: (value) => { tempMailAllowRemoteImages = value; },
-    getTranslationText: () => tempMailTranslationText,
-    setTranslationText: (value) => { tempMailTranslationText = value; },
-    nextTranslationToken: () => ++tempMailTranslationRequestToken,
-    isTranslationTokenCurrent: (token) => token === tempMailTranslationRequestToken,
-    getInsights: () => tempMailAiInsights,
-    setInsights: (value) => { tempMailAiInsights = value; },
-    getInsightStatus: () => tempMailInsightStatus,
-    setInsightStatus: (value) => { tempMailInsightStatus = value; },
-    getInsightError: () => tempMailInsightError,
-    setInsightError: (value) => { tempMailInsightError = value; },
-    nextInsightToken: () => ++tempMailInsightRequestToken,
-    isInsightTokenCurrent: (token) => token === tempMailInsightRequestToken,
-    getIdentity: () => currentMailId,
+    getDefaultRemoteImages: () => defaultRemoteImagesEnabled,
+    isDeletePending: (mail) => tempInboxController?.isMessageDeletePending(mail) === true,
+    getIdentity: (mail) => mail?.id ?? null,
     getTranslationSource: (mail, options) => getTempMailTranslationSource(mail, options),
     getMetadata: (mail) => ({ subject: mail?.subject, from: mail?.source }),
     renderBody: (mail, options) => renderEmailBody(mailBody, mail?.raw || '', options)
-  };
+  });
 
-  const moeMailReader = {
+  function getMoeMailIdentity(mail) {
+    if (!mail) return null;
+    return mail.id ?? mail.message_id
+      ?? `${mail.received_at || ''}|${mail.from_address || ''}|${mail.subject || ''}`;
+  }
+
+  const moeMailReader = createMailReaderState({
     elements: {
       body: moeMailBody,
       insights: moeMailInsights,
@@ -3532,43 +3491,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       viewButton: toggleMoeMailViewBtn,
       imagesButton: toggleMoeMailImagesBtn
     },
-    getMail: () => currentMoeMail,
-    setMail: (value) => { currentMoeMail = value; },
-    getViewMode: () => moeMailViewMode,
-    setViewMode: (value) => { moeMailViewMode = value; },
-    getAllowRemoteImages: () => moeMailAllowRemoteImages,
-    setAllowRemoteImages: (value) => { moeMailAllowRemoteImages = value; },
-    getTranslationText: () => moeMailTranslationText,
-    setTranslationText: (value) => { moeMailTranslationText = value; },
-    nextTranslationToken: () => ++moeMailTranslationRequestToken,
-    isTranslationTokenCurrent: (token) => token === moeMailTranslationRequestToken,
-    getInsights: () => moeMailAiInsights,
-    setInsights: (value) => { moeMailAiInsights = value; },
-    getInsightStatus: () => moeMailInsightStatus,
-    setInsightStatus: (value) => { moeMailInsightStatus = value; },
-    getInsightError: () => moeMailInsightError,
-    setInsightError: (value) => { moeMailInsightError = value; },
-    nextInsightToken: () => ++moeMailInsightRequestToken,
-    isInsightTokenCurrent: (token) => token === moeMailInsightRequestToken,
-    getIdentity: () => currentMoeMail,
+    getDefaultRemoteImages: () => defaultRemoteImagesEnabled,
+    getIdentity: getMoeMailIdentity,
     getTranslationSource: (mail, options) => getMoeMailTranslationSource(mail, options),
     getMetadata: (mail) => ({ subject: mail?.subject, from: mail?.from_address }),
     renderBody: (mail, options) => renderMoeEmailBody(moeMailBody, mail, options)
-  };
+  });
 
-  function resetMailReader(reader) {
-    reader.nextTranslationToken();
-    reader.nextInsightToken();
-    reader.setMail(null);
-    reader.setViewMode('safe-html');
-    reader.setAllowRemoteImages(defaultRemoteImagesEnabled);
-    reader.setTranslationText('');
-    reader.setInsights(null);
-    reader.setInsightStatus('idle');
-    reader.setInsightError('');
+  function beginMailReader(reader, mail = null) {
+    reader.begin(mail);
     reader.elements.insights.classList.add('hidden');
     reader.elements.insights.innerHTML = '';
-    reader.elements.body.innerHTML = '';
     resetTranslationPanel(
       reader.elements.translation,
       reader.elements.translationTitle,
@@ -3576,6 +3509,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       reader.elements.copyTranslationButton,
       reader.elements.retranslateButton
     );
+  }
+
+  function resetMailReader(reader) {
+    beginMailReader(reader);
+    reader.elements.body.innerHTML = '';
     updateMailActionButtons(reader, null);
   }
 
@@ -4072,13 +4010,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // 恢复收件箱视图（悬浮窗页面跳转后保持收件箱状态）
     const savedInbox = result.activeInbox;
-    if (savedInbox && savedInbox.type === 'temp' && savedInbox.address) {
-      setTimeout(() => { openInboxView(savedInbox.address); }, 200);
-    } else if (savedInbox && savedInbox.type === 'moe' && savedInbox.emailId) {
-      setTimeout(() => {
-        const emailObj = { id: savedInbox.emailId, address: savedInbox.address || '' };
-        moeOpenInbox(emailObj);
-      }, 200);
+    if (savedInbox && savedInbox.type === 'temp' && savedInbox.address && activeTab === 'temp-email') {
+      openInboxView(savedInbox.address);
+    } else if (savedInbox && savedInbox.type === 'moe' && savedInbox.emailId && activeTab === 'moe-mail') {
+      const emailObj = { id: savedInbox.emailId, address: savedInbox.address || '' };
+      moeOpenInbox(emailObj);
     } else if (savedInbox) {
       // PERF-4：closeInboxView 不再无条件清空 activeInbox，
       // 这里兜底清理无法恢复的残留记录。
@@ -4656,13 +4592,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   bindFillPreview(fillEmailBtn, { kind: 'email' });
 
-  function buildAddressString(record) {
-    if (!record || typeof record !== 'object') return '';
-    if (record.address) return String(record.address).trim();
-    if (record.name && record.domain) return `${record.name}@${record.domain}`.trim();
-    return String(record.name || '').trim();
-  }
-
   function matchesAddressRecord(record, address) {
     if (!record || !address) return false;
     const normalizedAddress = String(address).trim().toLowerCase();
@@ -4693,6 +4622,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function renderHistory() {
+    const batchMode = tempHistoryBatchController?.isActive() === true;
     historyList.innerHTML = '';
     if (history.length === 0) {
       historyList.innerHTML = '<li style="justify-content:center; color: var(--text-muted); border:none; background:transparent">暂无记录</li>';
@@ -4708,7 +4638,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (hasInvalid) cleanInvalidBtn.classList.remove('hidden');
     else cleanInvalidBtn.classList.add('hidden');
     const hasUnread = history.some((addr) => (tempUnreadCounts[addr] || 0) > 0);
-    tempMarkAllReadBtn.classList.toggle('hidden', !hasUnread || isTempHistoryBatchMode);
+    tempMarkAllReadBtn.classList.toggle('hidden', !hasUnread || batchMode);
 
     history.forEach((addr) => {
       const li = document.createElement('li');
@@ -4716,29 +4646,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       li.style.alignItems = 'center';
 
       // 批量删除复选框
-      if (isTempHistoryBatchMode) {
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.className = 'batch-checkbox';
-        checkbox.checked = selectedTempHistory.has(addr);
-        checkbox.onclick = (e) => {
-          e.stopPropagation(); // 阻止触发查看邮件
-          if (checkbox.checked) {
-            selectedTempHistory.add(addr);
-          } else {
-            selectedTempHistory.delete(addr);
-          }
-          updateTempHistoryBatchBtn();
-        };
-        li.appendChild(checkbox);
-        li.style.cursor = 'default';
-        li.onclick = (e) => {
-          // 点击整行时切换 checkbox，如果不点到按钮
-          if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT' && !e.target.closest('button')) {
-             checkbox.checked = !checkbox.checked;
-             checkbox.onclick({ stopPropagation: () => {} });
-          }
-        };
+      if (batchMode) {
+        tempHistoryBatchController.attachCheckbox(li, addr);
       }
 
       // 验证状态指示点
@@ -4754,7 +4663,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       span.style.minWidth = '0';
       span.style.overflow = 'hidden';
       span.style.textOverflow = 'ellipsis';
-      if (!isTempHistoryBatchMode) {
+      if (!batchMode) {
         span.style.cursor = 'pointer';
         span.onclick = () => openInboxView(addr);
       }
@@ -4765,7 +4674,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnGroup.style.flexShrink = '0';
 
       const unreadCount = tempUnreadCounts[addr] || 0;
-      if (!isTempHistoryBatchMode && unreadCount > 0) {
+      if (!batchMode && unreadCount > 0) {
         const unreadBadge = document.createElement('span');
         unreadBadge.className = 'unread-badge';
         unreadBadge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
@@ -4829,7 +4738,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       delBtn.style.color = 'var(--error)';
       delBtn.onclick = (e) => { e.stopPropagation(); deleteAddress(addr, li); };
 
-      if (!isTempHistoryBatchMode) {
+      if (!batchMode) {
         btnGroup.appendChild(copyBtn);
         btnGroup.appendChild(fillBtn);
         btnGroup.appendChild(viewBtn);
@@ -4866,38 +4775,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // ===================== Temp Email 批量删除逻辑 =====================
-  function updateTempHistoryBatchBtn() {
-    if (selectedTempHistory.size > 0) {
-      tempHistoryBatchDeleteBtn.textContent = `删除所选 (${selectedTempHistory.size})`;
-      tempHistoryBatchDeleteBtn.disabled = false;
-    } else {
-      tempHistoryBatchDeleteBtn.textContent = '删除所选';
-      tempHistoryBatchDeleteBtn.disabled = true;
-    }
-  }
-
-  tempHistoryBatchToggleBtn.addEventListener('click', () => {
-    isTempHistoryBatchMode = !isTempHistoryBatchMode;
-    if (isTempHistoryBatchMode) {
-      tempHistoryBatchToggleBtn.classList.add('batch-mode-active');
-      tempHistoryBatchAction.classList.remove('hidden');
-      selectedTempHistory.clear();
-      updateTempHistoryBatchBtn();
-    } else {
-      tempHistoryBatchToggleBtn.classList.remove('batch-mode-active');
-      tempHistoryBatchAction.classList.add('hidden');
-    }
-    renderHistory();
-  });
-
-  tempHistoryBatchCancelBtn.addEventListener('click', () => {
-    isTempHistoryBatchMode = false;
-    tempHistoryBatchToggleBtn.classList.remove('batch-mode-active');
-    tempHistoryBatchAction.classList.add('hidden');
-    renderHistory();
-  });
-
   tempMarkAllReadBtn.addEventListener('click', () => {
     markAllTempRead().catch((error) => {
       tempMarkAllReadBtn.disabled = false;
@@ -4906,56 +4783,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  tempHistoryBatchDeleteBtn.addEventListener('click', async () => {
-    if (selectedTempHistory.size === 0) return;
-    if (!confirm(`确定要删除选中的 ${selectedTempHistory.size} 个邮箱吗？\n如果 API 配置正确，将尝试从服务器同步删除。`)) return;
-
-    tempHistoryBatchDeleteBtn.disabled = true;
-    tempHistoryBatchDeleteBtn.textContent = '删除中...';
-
-    // 尽量从服务器删除
-    if (apiUrl && adminToken) {
-      for (const addr of selectedTempHistory) {
-        try {
-          const queryRes = await fetchWithTimeout(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
-            headers: { 'x-admin-auth': adminToken }
-          });
-          if (queryRes.ok) {
-            const queryData = await queryRes.json();
-            const match = (queryData.results || []).find(a => matchesAddressRecord(a, addr));
-            if (match) {
-              await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
-                method: 'DELETE',
-                headers: { 'x-admin-auth': adminToken }
-              });
+  tempHistoryBatchController = createBatchSelectionController({
+    toggleButton: tempHistoryBatchToggleBtn,
+    actionBar: tempHistoryBatchAction,
+    deleteButton: tempHistoryBatchDeleteBtn,
+    cancelButton: tempHistoryBatchCancelBtn,
+    render: renderHistory,
+    confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 个邮箱吗？\n如果 API 配置正确，将尝试从服务器同步删除。`,
+    deleteSelected: async (selected) => {
+      if (apiUrl && adminToken) {
+        for (const addr of selected) {
+          try {
+            const queryRes = await fetchWithTimeout(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
+              headers: { 'x-admin-auth': adminToken }
+            });
+            if (queryRes.ok) {
+              const queryData = await queryRes.json();
+              const match = (queryData.results || []).find(a => matchesAddressRecord(a, addr));
+              if (match) {
+                await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
+                  method: 'DELETE',
+                  headers: { 'x-admin-auth': adminToken }
+                });
+              }
             }
+          } catch (error) {
+            console.warn('服务端批量删除失败:', error.message);
           }
-        } catch (e) {
-          console.warn('服务端批量删除失败:', e.message);
         }
       }
+      history = history.filter((addr) => !selected.has(addr));
+      selected.forEach((addr) => {
+        delete verifyStatus[addr];
+        delete tempUnreadCounts[addr];
+        delete tempMailMeta[addr];
+      });
+      chrome.storage.local.set({
+        emailHistory: history,
+        verifyStatusCache: verifyStatus,
+        tempUnreadCounts,
+        [TEMP_MAIL_META_KEY]: tempMailMeta
+      });
     }
-
-    // 从本地删除
-    history = history.filter(a => !selectedTempHistory.has(a));
-    selectedTempHistory.forEach(addr => {
-      delete verifyStatus[addr];
-      delete tempUnreadCounts[addr];
-      delete tempMailMeta[addr];
-    });
-    chrome.storage.local.set({
-      emailHistory: history,
-      verifyStatusCache: verifyStatus,
-      tempUnreadCounts,
-      [TEMP_MAIL_META_KEY]: tempMailMeta
-    });
-    
-    // 退出批量模式并重新渲染
-    isTempHistoryBatchMode = false;
-    tempHistoryBatchToggleBtn.classList.remove('batch-mode-active');
-    tempHistoryBatchAction.classList.add('hidden');
-    selectedTempHistory.clear();
-    renderHistory();
   });
 
   clearHistoryBtn.addEventListener('click', () => {
@@ -5085,106 +4954,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // ===================== Temp Email: 收件箱 =====================
   function openInboxView(address) {
-    resetTempMailDetail();
-    createPane.classList.add('hidden');
-    historySection.classList.add('hidden');
-    inboxPane.classList.remove('hidden');
-    backToHomeBtn.classList.remove('hidden');
-    tabBar.classList.add('hidden');
-    mainTitle.textContent = 'Temp Inbox';
-    if (mainSubtitle) {
-      mainSubtitle.textContent = '查看邮件内容、提取验证码，并处理当前临时邮箱的收件列表。';
-    }
-    inboxAddressTitle.textContent = address;
-    currentInboxAddress = address;
-    currentTempMail = null;
-    tempMailViewMode = 'safe-html';
-    tempMailAllowRemoteImages = defaultRemoteImagesEnabled;
-    tempUnreadCounts[address] = 0;
-    renderHistory();
-    backToHomeBtn.onclick = closeInboxView;
-    runtimeSendMessage({ type: 'clear-temp-unread', address }).catch(() => {});
-    // Save inbox state so it can be restored on iframe reload
-    storageSet({ activeInbox: { type: 'temp', address } }).catch(() => {});
-    fetchMails(address);
-  }
-
-  function resetTempMailDetail() {
-    tempMailDetailRequestToken += 1;
-    currentMailId = null;
-    resetMailReader(tempMailReader);
-  }
-
-  function resetMoeMailDetail() {
-    resetMailReader(moeMailReader);
+    tempInboxController?.open(address);
   }
 
   function closeInboxView() {
-    // PERF-4：本来就没有打开收件箱时不再写 activeInbox: null
-    const hadOpenInbox = Boolean(currentInboxAddress);
-    inboxPane.classList.add('hidden');
-    backToHomeBtn.classList.add('hidden');
-    createPane.classList.remove('hidden');
-    historySection.classList.remove('hidden');
-    tabBar.classList.remove('hidden');
-    updateHeaderForTab(activeTab);
-    mailContent.classList.add('hidden');
-    mailList.classList.remove('hidden');
-    backToListBtn.classList.add('hidden');
-    resetTempMailDetail();
-    currentTempMails = [];
-    currentInboxAddress = null;
-    // BUG-2：关闭后让在途的列表请求作废
-    tempInboxFetchToken += 1;
-    if (hadOpenInbox) {
-      storageSet({ activeInbox: null }).catch(() => {});
-    }
+    tempInboxController?.close();
   }
-
-  backToListBtn.addEventListener('click', () => {
-    mailContent.classList.add('hidden');
-    mailList.classList.remove('hidden');
-    backToListBtn.classList.add('hidden');
-    resetTempMailDetail();
-  });
-
-  // 刷新 Temp Email 收件箱
-  refreshInboxBtn.addEventListener('click', () => {
-    if (currentInboxAddress) fetchMails(currentInboxAddress);
-  });
-
-  deleteMailBtn.addEventListener('click', async () => {
-    if (!currentMailId) return;
-    if (!confirm('确定要删除这封邮件吗？')) return;
-    setMailActionButtonState(deleteMailBtn, {
-      icon: 'loading',
-      title: '删除中...',
-      disabled: true,
-      danger: true
-    });
-    try {
-      const res = await fetchWithTimeout(`${apiUrl}/admin/mails/${currentMailId}`, {
-        method: 'DELETE',
-        headers: { 'x-admin-auth': adminToken }
-      });
-      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      currentMailId = null;
-      currentTempMail = null;
-      mailContent.classList.add('hidden');
-      mailList.classList.remove('hidden');
-      if (currentInboxAddress) {
-        fetchMails(currentInboxAddress);
-      }
-    } catch(e) {
-      alert('删除失败: ' + e.message);
-    } finally {
-      setMailActionButtonState(deleteMailBtn, {
-        icon: 'delete',
-        title: '删除此邮件',
-        danger: true
-      });
-    }
-  });
 
   async function deleteAddress(addr, liElement) {
     if (!confirm(`确定要删除邮箱 ${addr} 及其所有邮件吗？`)) return;
@@ -5228,42 +5003,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     setTimeout(() => renderHistory(), 300);
   }
 
-  async function fetchMails(address) {
-    // BUG-2：记录本次请求身份，回填前校验收件箱仍然是同一个
-    const requestToken = ++tempInboxFetchToken;
-    const isCurrentRequest = () => requestToken === tempInboxFetchToken && currentInboxAddress === address;
-    renderInlineNotice(mailList, '加载中...');
-    try {
-      const res = await fetchWithTimeout(`${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=50&offset=0&summary_only=true`, {
-        headers: { 'x-admin-auth': adminToken }
-      });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const data = await res.json();
-      // 收件箱已被切换或关闭时丢弃这次结果，不写全局状态也不渲染
-      if (!isCurrentRequest()) {
-        return;
-      }
-      currentTempMails = (data.results || []).map((mail) => ({
-        id: mail.id,
-        message_id: mail.message_id,
-        source: mail.source,
-        address: mail.address,
-        created_at: mail.created_at,
-        metadata: mail.metadata,
-        subject: mail.subject
-      }));
-      tempUnreadCounts[address] = 0;
-      chrome.storage.local.set({ tempUnreadCounts });
-      renderTempMails();
-    } catch (e) {
-      if (!isCurrentRequest()) {
-        return;
-      }
-      // SEC-13：错误串可能来自后端响应，用 textContent 渲染
-      renderInlineNotice(mailList, `加载失败: ${getErrorText(e)}`, 'error');
-    }
-  }
-
   async function fetchTempMailById(mailId, address = '') {
     const res = await fetchWithTimeout(`${apiUrl}/admin/mails/${mailId}`, {
       headers: { 'x-admin-auth': adminToken }
@@ -5276,7 +5015,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       throw new Error(`${res.status}`);
     }
 
-    const fallbackAddress = String(address || currentInboxAddress || '').trim();
+    const fallbackAddress = String(address || '').trim();
     if (!fallbackAddress) {
       throw new Error('404');
     }
@@ -5302,184 +5041,128 @@ document.addEventListener('DOMContentLoaded', async () => {
     return matchedMail;
   }
 
-  function renderTempMails() {
-    mailList.innerHTML = '';
-    if (currentTempMails.length === 0) {
-      mailList.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">收件箱为空</div>';
-      return;
-    }
-    currentTempMails.forEach(mail => {
-        const item = document.createElement('div');
-        item.className = 'mail-item';
-        item.style.display = 'flex';
-        item.style.alignItems = 'center';
-
-        // 批量删除复选框
-        if (isTempInboxBatchMode) {
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.className = 'batch-checkbox';
-          checkbox.checked = selectedTempMails.has(mail.id);
-          checkbox.onclick = (e) => {
-            e.stopPropagation();
-            if (checkbox.checked) {
-              selectedTempMails.add(mail.id);
-            } else {
-              selectedTempMails.delete(mail.id);
-            }
-            updateTempInboxBatchBtn();
-          };
-          item.appendChild(checkbox);
-          item.style.cursor = 'default';
-          item.onclick = (e) => {
-            if (e.target.tagName !== 'INPUT') {
-               checkbox.checked = !checkbox.checked;
-               checkbox.onclick({ stopPropagation: () => {} });
-            }
-          };
-        } else {
-          item.addEventListener('click', () => showMailDetail(mail));
-        }
-
-        const contentDiv = document.createElement('div');
-        contentDiv.style.flex = '1';
-        contentDiv.style.minWidth = '0';
-        contentDiv.innerHTML = `
-          <div class="mail-item-header">
-            <div class="mail-subject">${escapeHtml(mail.subject || '(无主题)')}</div>
-            <div class="mail-time">${new Date(mail.created_at).toLocaleString()}</div>
-          </div>
-          <div class="mail-sender">${escapeHtml(mail.source || '未知')}</div>`;
-        item.appendChild(contentDiv);
-        
-        mailList.appendChild(item);
-      });
-  }
-
-  // ===================== Temp Email Inbox 批量删除逻辑 =====================
-  function updateTempInboxBatchBtn() {
-    if (selectedTempMails.size > 0) {
-      tempInboxBatchDeleteBtn.textContent = `删除所选 (${selectedTempMails.size})`;
-      tempInboxBatchDeleteBtn.disabled = false;
-    } else {
-      tempInboxBatchDeleteBtn.textContent = '删除所选';
-      tempInboxBatchDeleteBtn.disabled = true;
-    }
-  }
-
-  tempInboxBatchToggleBtn.addEventListener('click', () => {
-    isTempInboxBatchMode = !isTempInboxBatchMode;
-    if (isTempInboxBatchMode) {
-      tempInboxBatchToggleBtn.classList.add('batch-mode-active');
-      tempInboxBatchAction.classList.remove('hidden');
-      selectedTempMails.clear();
-      updateTempInboxBatchBtn();
-    } else {
-      tempInboxBatchToggleBtn.classList.remove('batch-mode-active');
-      tempInboxBatchAction.classList.add('hidden');
-    }
-    renderTempMails();
-  });
-
-  tempInboxBatchCancelBtn.addEventListener('click', () => {
-    isTempInboxBatchMode = false;
-    tempInboxBatchToggleBtn.classList.remove('batch-mode-active');
-    tempInboxBatchAction.classList.add('hidden');
-    renderTempMails();
-  });
-
-  tempInboxBatchDeleteBtn.addEventListener('click', async () => {
-    if (selectedTempMails.size === 0) return;
-    if (!confirm(`确定要删除选中的 ${selectedTempMails.size} 封邮件吗？`)) return;
-
-    tempInboxBatchDeleteBtn.disabled = true;
-    tempInboxBatchDeleteBtn.textContent = '删除中...';
-
-    for (const mailId of selectedTempMails) {
-      try {
-        await fetchWithTimeout(`${apiUrl}/admin/mails/${mailId}`, {
+  tempInboxController = createInboxController({
+    elements: {
+      pane: inboxPane,
+      homePanes: [createPane, historySection],
+      inboxTitle: inboxAddressTitle,
+      list: mailList,
+      content: mailContent,
+      backToListButton: backToListBtn,
+      refreshButton: refreshInboxBtn,
+      deleteButton: deleteMailBtn,
+      backToHomeButton: backToHomeBtn,
+      tabBar,
+      mainTitle,
+      mainSubtitle
+    },
+    deps: {
+      storageSet,
+      renderInlineNotice,
+      getErrorText,
+      updateHeaderForTab,
+      getActiveTab: () => activeTab
+    },
+    adapter: {
+      type: 'temp',
+      title: 'Temp Inbox',
+      subtitle: '查看邮件内容、提取验证码，并处理当前临时邮箱的收件列表。',
+      getTargetIdentity: (address) => address,
+      getTargetTitle: (address) => address,
+      serializeTarget: (address) => ({ address }),
+      getMessageIdentity: (mail) => mail?.id,
+      getMessageSubject: (mail) => mail?.subject,
+      getMessageSender: (mail) => mail?.source,
+      getMessageTime: (mail) => mail?.created_at,
+      flexMessageItems: true,
+      wrapMessageSummary: true,
+      fetchMessages: async (address) => {
+        const res = await fetchWithTimeout(`${apiUrl}/admin/mails?address=${encodeURIComponent(address)}&limit=50&offset=0&summary_only=true`, {
+          headers: { 'x-admin-auth': adminToken }
+        });
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
+        return (data.results || []).map((mail) => ({
+          id: mail.id,
+          message_id: mail.message_id,
+          source: mail.source,
+          address: mail.address,
+          created_at: mail.created_at,
+          metadata: mail.metadata,
+          subject: mail.subject
+        }));
+      },
+      onOpen: (address) => {
+        tempUnreadCounts[address] = 0;
+        renderHistory();
+        runtimeSendMessage({ type: 'clear-temp-unread', address }).catch(() => {});
+      },
+      onMessagesLoaded: (address) => {
+        tempUnreadCounts[address] = 0;
+        chrome.storage.local.set({ tempUnreadCounts });
+      },
+      resetDetail: () => resetMailReader(tempMailReader),
+      prepareDetail: (mail) => {
+        beginMailReader(tempMailReader, mail);
+        mailFrom.textContent = `发件人: ${mail.source}`;
+        mailSubject.textContent = mail.subject || '(无主题)';
+        mailTime.textContent = `时间: ${new Date(mail.created_at).toLocaleString()}`;
+        renderPlainText(mailBody, '加载邮件内容中...');
+        setMailActionButtonState(translateMailBtn, { icon: 'translate', title: '加载邮件中...', disabled: true });
+        setMailActionButtonState(toggleMailViewBtn, { icon: 'plainText', title: '加载邮件中...', disabled: true });
+        setMailActionButtonState(toggleMailImagesBtn, { icon: 'noImages', title: '加载邮件中...', disabled: true });
+        setMailActionButtonState(deleteMailBtn, { icon: 'delete', title: '删除此邮件', danger: true });
+      },
+      loadMessageDetail: (mail, address) => mail.raw
+        ? mail
+        : fetchTempMailById(mail.id, mail.address || address),
+      mergeMessageDetail: (mail, detail) => ({ ...mail, ...detail }),
+      renderDetail: (mail) => {
+        tempMailReader.setMail(mail);
+        renderCurrentMail(tempMailReader);
+        if (hasMailInsightConfig()) triggerMailAiInsights(tempMailReader);
+      },
+      renderDetailError: (error) => {
+        tempMailReader.setMail(null);
+        renderPlainText(mailBody, `加载邮件失败：${error.message}`);
+        mailInsights.classList.add('hidden');
+        mailInsights.innerHTML = '';
+        updateMailActionButtons(tempMailReader, null);
+      },
+      confirmDeleteMessage: '确定要删除这封邮件吗？',
+      deleteMessage: async (mail) => {
+        const res = await fetchWithTimeout(`${apiUrl}/admin/mails/${mail.id}`, {
           method: 'DELETE',
           headers: { 'x-admin-auth': adminToken }
         });
-      } catch (e) {
-        console.warn('删除邮件失败:', e.message);
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      },
+      setDeletePending: (pending) => setMailActionButtonState(deleteMailBtn, pending
+        ? { icon: 'loading', title: '删除中...', disabled: true, danger: true }
+        : { icon: 'delete', title: '删除此邮件', danger: true })
+    },
+    batch: {
+      toggleButton: tempInboxBatchToggleBtn,
+      actionBar: tempInboxBatchAction,
+      deleteButton: tempInboxBatchDeleteBtn,
+      cancelButton: tempInboxBatchCancelBtn,
+      confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 封邮件吗？`,
+      deleteSelected: async (selected) => {
+        // 批删采用本地优先语义：部分后端会因邮箱后缀过长返回非 2xx，
+        // 此时仍从当前面板移除；仅网络/调用异常记日志并继续处理其余项。
+        for (const mailId of selected) {
+          try {
+            await fetchWithTimeout(`${apiUrl}/admin/mails/${mailId}`, {
+              method: 'DELETE',
+              headers: { 'x-admin-auth': adminToken }
+            });
+          } catch (error) {
+            console.warn('删除邮件失败:', error.message);
+          }
+        }
       }
     }
-    
-    // 退出批量模式并重新渲染
-    isTempInboxBatchMode = false;
-    tempInboxBatchToggleBtn.classList.remove('batch-mode-active');
-    tempInboxBatchAction.classList.add('hidden');
-    selectedTempMails.clear();
-    if (currentInboxAddress) fetchMails(currentInboxAddress);
   });
-
-  async function showMailDetail(mail) {
-    const requestToken = ++tempMailDetailRequestToken;
-    tempMailTranslationRequestToken += 1;
-    tempMailInsightRequestToken += 1;
-    mailList.classList.add('hidden');
-    mailContent.classList.remove('hidden');
-    backToListBtn.classList.remove('hidden');
-    currentTempMail = mail;
-    tempMailViewMode = 'safe-html';
-    tempMailAllowRemoteImages = defaultRemoteImagesEnabled;
-    tempMailTranslationText = '';
-    tempMailAiInsights = null;
-    tempMailInsightStatus = 'idle';
-    tempMailInsightError = '';
-    currentMailId = mail.id;
-    mailFrom.textContent = `发件人: ${mail.source}`;
-    mailSubject.textContent = mail.subject || '(无主题)';
-    mailTime.textContent = `时间: ${new Date(mail.created_at).toLocaleString()}`;
-    renderPlainText(mailBody, '加载邮件内容中...');
-    resetTranslationPanel(mailTranslation, mailTranslationTitle, mailTranslationBody, copyMailTranslationBtn, retranslateMailBtn);
-    mailInsights.classList.add('hidden');
-    mailInsights.innerHTML = '';
-    // BUG-9：正文还没拉到时 currentTempMail.raw 为空，此时点翻译必然抛
-    // 「当前邮件没有可翻译的文本内容」。先禁用，正文就绪后由
-    // renderCurrentTempMail() → updateMailActionButtons() 统一放开。
-    setMailActionButtonState(translateMailBtn, { icon: 'translate', title: '加载邮件中...', disabled: true });
-    setMailActionButtonState(toggleMailViewBtn, { icon: 'plainText', title: '加载邮件中...', disabled: true });
-    setMailActionButtonState(toggleMailImagesBtn, { icon: 'noImages', title: '加载邮件中...', disabled: true });
-    setMailActionButtonState(deleteMailBtn, {
-      icon: 'delete',
-      title: '删除此邮件',
-      danger: true
-    });
-
-    try {
-      const fullMail = mail.raw ? mail : await fetchTempMailById(mail.id, mail.address);
-      if (requestToken !== tempMailDetailRequestToken || currentMailId !== mail.id) {
-        return;
-      }
-      currentTempMail = {
-        ...mail,
-        ...fullMail
-      };
-      renderCurrentTempMail();
-      if (hasMailInsightConfig()) {
-        triggerTempMailAiInsights();
-      }
-    } catch (error) {
-      if (requestToken !== tempMailDetailRequestToken || currentMailId !== mail.id) {
-        return;
-      }
-      currentTempMail = null;
-      renderPlainText(mailBody, `加载邮件失败：${error.message}`);
-      mailInsights.classList.add('hidden');
-      mailInsights.innerHTML = '';
-      updateMailActionButtons(tempMailReader, null);
-    }
-  }
-
-  function renderCurrentTempMail() {
-    renderCurrentMail(tempMailReader);
-  }
-
-  async function triggerTempMailAiInsights(force = false) {
-    return triggerMailAiInsights(tempMailReader, force);
-  }
 
   // MoeMail 保存设置已合并到统一设置页
 
@@ -5579,6 +5262,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function renderMoeEmails() {
+    const batchMode = moeHistoryBatchController?.isActive() === true;
     moeEmailListDiv.innerHTML = '';
     if (currentMoeEmails.length === 0) {
       moeMarkAllReadBtn.classList.add('hidden');
@@ -5587,7 +5271,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const hasUnread = currentMoeEmails.some((email) => (moeUnreadCounts[String(email.id)] || 0) > 0);
-    moeMarkAllReadBtn.classList.toggle('hidden', !hasUnread || isMoeHistoryBatchMode);
+    moeMarkAllReadBtn.classList.toggle('hidden', !hasUnread || batchMode);
 
     currentMoeEmails.forEach(email => {
         const card = document.createElement('div');
@@ -5596,28 +5280,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         card.style.alignItems = 'center';
 
         // 批量删除复选框
-        if (isMoeHistoryBatchMode) {
-          const checkbox = document.createElement('input');
-          checkbox.type = 'checkbox';
-          checkbox.className = 'batch-checkbox';
-          checkbox.checked = selectedMoeHistory.has(email.id);
-          checkbox.onclick = (e) => {
-            e.stopPropagation();
-            if (checkbox.checked) {
-              selectedMoeHistory.add(email.id);
-            } else {
-              selectedMoeHistory.delete(email.id);
-            }
-            updateMoeHistoryBatchBtn();
-          };
-          card.appendChild(checkbox);
-          card.style.cursor = 'default';
-          card.onclick = (e) => {
-            if (e.target.tagName !== 'BUTTON' && e.target.tagName !== 'INPUT' && !e.target.closest('button')) {
-               checkbox.checked = !checkbox.checked;
-               checkbox.onclick({ stopPropagation: () => {} });
-            }
-          };
+        if (batchMode) {
+          moeHistoryBatchController.attachCheckbox(card, email.id);
         }
 
         const contentWrapper = document.createElement('div');
@@ -5633,7 +5297,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         addr.className = 'moe-email-addr';
         addr.textContent = email.address;
         addr.title = email.address;
-        if (!isMoeHistoryBatchMode) {
+        if (!batchMode) {
             addr.style.cursor = 'pointer';
             addr.onclick = (e) => { e.stopPropagation(); moeOpenInbox(email); };
         }
@@ -5651,7 +5315,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         actions.className = 'moe-email-actions';
 
         const unreadCount = moeUnreadCounts[String(email.id)] || 0;
-        if (!isMoeHistoryBatchMode && unreadCount > 0) {
+        if (!batchMode && unreadCount > 0) {
           const unreadBadge = document.createElement('span');
           unreadBadge.className = 'unread-badge';
           unreadBadge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
@@ -5696,7 +5360,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         delBtn.style.color = 'var(--error)';
         delBtn.onclick = (e) => { e.stopPropagation(); moeDeleteEmail(email.id, card); };
 
-        if (!isMoeHistoryBatchMode) {
+        if (!batchMode) {
           actions.appendChild(copyBtn);
           actions.appendChild(fillBtn);
           actions.appendChild(viewBtn);
@@ -5733,38 +5397,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // ===================== MoeMail History 批量删除逻辑 =====================
-  function updateMoeHistoryBatchBtn() {
-    if (selectedMoeHistory.size > 0) {
-      moeHistoryBatchDeleteBtn.textContent = `删除所选 (${selectedMoeHistory.size})`;
-      moeHistoryBatchDeleteBtn.disabled = false;
-    } else {
-      moeHistoryBatchDeleteBtn.textContent = '删除所选';
-      moeHistoryBatchDeleteBtn.disabled = true;
-    }
-  }
-
-  moeHistoryBatchToggleBtn.addEventListener('click', () => {
-    isMoeHistoryBatchMode = !isMoeHistoryBatchMode;
-    if (isMoeHistoryBatchMode) {
-      moeHistoryBatchToggleBtn.classList.add('batch-mode-active');
-      moeHistoryBatchAction.classList.remove('hidden');
-      selectedMoeHistory.clear();
-      updateMoeHistoryBatchBtn();
-    } else {
-      moeHistoryBatchToggleBtn.classList.remove('batch-mode-active');
-      moeHistoryBatchAction.classList.add('hidden');
-    }
-    renderMoeEmails();
-  });
-
-  moeHistoryBatchCancelBtn.addEventListener('click', () => {
-    isMoeHistoryBatchMode = false;
-    moeHistoryBatchToggleBtn.classList.remove('batch-mode-active');
-    moeHistoryBatchAction.classList.add('hidden');
-    renderMoeEmails();
-  });
-
   moeMarkAllReadBtn.addEventListener('click', () => {
     markAllMoeRead().catch((error) => {
       moeMarkAllReadBtn.disabled = false;
@@ -5772,34 +5404,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  moeHistoryBatchDeleteBtn.addEventListener('click', async () => {
-    if (selectedMoeHistory.size === 0) return;
-    if (!confirm(`确定要删除选中的 ${selectedMoeHistory.size} 个邮箱吗？此操作不可恢复。`)) return;
-
-    moeHistoryBatchDeleteBtn.disabled = true;
-    moeHistoryBatchDeleteBtn.textContent = '删除中...';
-
-    for (const emailId of selectedMoeHistory) {
-      try {
-        await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
-          method: 'DELETE',
-          headers: moeHeaders()
-        });
-      } catch (e) {
-        console.warn('删除 MoeMail 失败:', e.message);
+  moeHistoryBatchController = createBatchSelectionController({
+    toggleButton: moeHistoryBatchToggleBtn,
+    actionBar: moeHistoryBatchAction,
+    deleteButton: moeHistoryBatchDeleteBtn,
+    cancelButton: moeHistoryBatchCancelBtn,
+    render: renderMoeEmails,
+    confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 个邮箱吗？此操作不可恢复。`,
+    deleteSelected: async (selected) => {
+      // 与 Temp 批删一致，服务端删除是尽力而为，不以 HTTP 状态阻断本地清理。
+      for (const emailId of selected) {
+        try {
+          await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
+            method: 'DELETE',
+            headers: moeHeaders()
+          });
+        } catch (error) {
+          console.warn('删除 MoeMail 失败:', error.message);
+        }
       }
-    }
-    
-    // 退出批量模式并重新渲染
-    isMoeHistoryBatchMode = false;
-    moeHistoryBatchToggleBtn.classList.remove('batch-mode-active');
-    moeHistoryBatchAction.classList.add('hidden');
-    selectedMoeHistory.forEach(emailId => {
-      delete moeUnreadCounts[String(emailId)];
-    });
-    chrome.storage.local.set({ moeUnreadCounts });
-    selectedMoeHistory.clear();
-    moeLoadEmails({ forceRefresh: true });
+      selected.forEach((emailId) => {
+        delete moeUnreadCounts[String(emailId)];
+      });
+      chrome.storage.local.set({ moeUnreadCounts });
+    },
+    afterDelete: () => moeLoadEmails({ forceRefresh: true })
   });
 
   moeRefreshBtn.addEventListener('click', () => moeLoadEmails({ forceRefresh: true }));
@@ -5829,139 +5458,77 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // ===================== MoeMail: 收件箱 =====================
   function moeOpenInbox(email) {
-    moeCreatePane.classList.add('hidden');
-    moeEmailListSection.classList.add('hidden');
-    moeInboxPane.classList.remove('hidden');
-    backToHomeBtn.classList.remove('hidden');
-    tabBar.classList.add('hidden');
-    mainTitle.textContent = 'Moe Inbox';
-    if (mainSubtitle) {
-      mainSubtitle.textContent = '查看 MoeMail 收件箱、切换邮件视图，并处理远程图片加载。';
-    }
-    moeInboxTitle.textContent = email.address;
-    moeCurrentEmailId = email.id;
-    currentMoeMail = null;
-    moeMailViewMode = 'safe-html';
-    moeMailAllowRemoteImages = defaultRemoteImagesEnabled;
-    moeUnreadCounts[String(email.id)] = 0;
-    renderMoeEmails();
-    backToHomeBtn.onclick = closeMoeInboxView;
-    runtimeSendMessage({ type: 'clear-moe-unread', emailId: email.id }).catch(() => {});
-    // Save inbox state for restore on iframe reload
-    storageSet({ activeInbox: { type: 'moe', emailId: email.id, address: email.address } }).catch(() => {});
-    moeFetchMails(email.id);
+    moeInboxController?.open(email);
   }
 
   function closeMoeInboxView() {
-    // PERF-4：本来就没有打开收件箱时不再写 activeInbox: null
-    const hadOpenInbox = Boolean(moeCurrentEmailId);
-    moeInboxPane.classList.add('hidden');
-    backToHomeBtn.classList.add('hidden');
-    moeCreatePane.classList.remove('hidden');
-    moeEmailListSection.classList.remove('hidden');
-    tabBar.classList.remove('hidden');
-    updateHeaderForTab(activeTab);
-    moeMailContent.classList.add('hidden');
-    moeMailList.classList.remove('hidden');
-    moeBackToListBtn.classList.add('hidden');
-    resetMoeMailDetail();
-    moeCurrentEmailId = null;
-    // BUG-2：关闭后让在途的列表请求作废
-    moeInboxFetchToken += 1;
-    if (hadOpenInbox) {
-      storageSet({ activeInbox: null }).catch(() => {});
-    }
+    moeInboxController?.close();
   }
 
-  moeBackToListBtn.addEventListener('click', () => {
-    moeMailContent.classList.add('hidden');
-    moeMailList.classList.remove('hidden');
-    moeBackToListBtn.classList.add('hidden');
-    resetMoeMailDetail();
+  moeInboxController = createInboxController({
+    elements: {
+      pane: moeInboxPane,
+      homePanes: [moeCreatePane, moeEmailListSection],
+      inboxTitle: moeInboxTitle,
+      list: moeMailList,
+      content: moeMailContent,
+      backToListButton: moeBackToListBtn,
+      refreshButton: moeRefreshInboxBtn,
+      backToHomeButton: backToHomeBtn,
+      tabBar,
+      mainTitle,
+      mainSubtitle
+    },
+    deps: {
+      storageSet,
+      renderInlineNotice,
+      getErrorText,
+      updateHeaderForTab,
+      getActiveTab: () => activeTab
+    },
+    adapter: {
+      type: 'moe',
+      title: 'Moe Inbox',
+      subtitle: '查看 MoeMail 收件箱、切换邮件视图，并处理远程图片加载。',
+      getTargetIdentity: (email) => email?.id,
+      getTargetTitle: (email) => email?.address || '',
+      serializeTarget: (email) => ({ emailId: email.id, address: email.address }),
+      getMessageIdentity: getMoeMailIdentity,
+      getMessageSubject: (mail) => mail?.subject,
+      getMessageSender: (mail) => mail?.from_address,
+      getMessageTime: (mail) => mail?.received_at,
+      fetchMessages: async (email) => {
+        const res = await moeFetch(`${moeApiUrl}/api/emails/${email.id}`, {
+          headers: moeHeaders()
+        });
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
+        return data.messages || [];
+      },
+      onOpen: (email) => {
+        moeUnreadCounts[String(email.id)] = 0;
+        renderMoeEmails();
+        runtimeSendMessage({ type: 'clear-moe-unread', emailId: email.id }).catch(() => {});
+      },
+      onMessagesLoaded: (email) => {
+        moeUnreadCounts[String(email.id)] = 0;
+        chrome.storage.local.set({ moeUnreadCounts });
+      },
+      resetDetail: () => resetMailReader(moeMailReader),
+      prepareDetail: (mail) => {
+        beginMailReader(moeMailReader, mail);
+        moeMailFrom.textContent = `发件人: ${mail.from_address || '未知'}`;
+        moeMailSubject.textContent = mail.subject || '(无主题)';
+        moeMailTime.textContent = `时间: ${new Date(mail.received_at).toLocaleString()}`;
+      },
+      renderDetail: (mail) => {
+        moeMailReader.setMail(mail);
+        renderCurrentMail(moeMailReader);
+        if (hasMailInsightConfig()) triggerMailAiInsights(moeMailReader);
+      },
+      renderDetailError: () => {}
+    }
   });
-
-  // 刷新 MoeMail 收件箱
-  moeRefreshInboxBtn.addEventListener('click', () => {
-    if (moeCurrentEmailId) moeFetchMails(moeCurrentEmailId);
-  });
-
-  async function moeFetchMails(emailId) {
-    // BUG-2：记录本次请求身份，回填前校验收件箱仍然是同一个
-    const requestToken = ++moeInboxFetchToken;
-    const isCurrentRequest = () => requestToken === moeInboxFetchToken
-      && String(moeCurrentEmailId) === String(emailId);
-    renderInlineNotice(moeMailList, '加载中...');
-    try {
-      const res = await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
-        headers: moeHeaders()
-      });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const data = await res.json();
-      // 收件箱已被切换或关闭时丢弃这次结果
-      if (!isCurrentRequest()) {
-        return;
-      }
-      const messages = data.messages || [];
-      moeUnreadCounts[String(emailId)] = 0;
-      chrome.storage.local.set({ moeUnreadCounts });
-
-      moeMailList.innerHTML = '';
-      if (messages.length === 0) {
-        renderInlineNotice(moeMailList, '收件箱为空');
-        return;
-      }
-
-      messages.forEach(msg => {
-        const item = document.createElement('div');
-        item.className = 'mail-item';
-        item.innerHTML = `
-          <div class="mail-item-header">
-            <div class="mail-subject">${escapeHtml(msg.subject || '(无主题)')}</div>
-            <div class="mail-time">${new Date(msg.received_at).toLocaleString()}</div>
-          </div>
-          <div class="mail-sender">${escapeHtml(msg.from_address || '未知')}</div>`;
-        item.addEventListener('click', () => moeShowMailDetail(msg));
-        moeMailList.appendChild(item);
-      });
-    } catch (e) {
-      if (!isCurrentRequest()) {
-        return;
-      }
-      // SEC-13：错误串可能来自后端响应，用 textContent 渲染
-      renderInlineNotice(moeMailList, `加载失败: ${getErrorText(e)}`, 'error');
-    }
-  }
-
-  function moeShowMailDetail(msg) {
-    moeMailList.classList.add('hidden');
-    moeMailContent.classList.remove('hidden');
-    moeBackToListBtn.classList.remove('hidden');
-    currentMoeMail = msg;
-    moeMailViewMode = 'safe-html';
-    moeMailAllowRemoteImages = defaultRemoteImagesEnabled;
-    moeMailTranslationRequestToken += 1;
-    moeMailInsightRequestToken += 1;
-    moeMailTranslationText = '';
-    moeMailAiInsights = null;
-    moeMailInsightStatus = 'idle';
-    moeMailInsightError = '';
-    moeMailFrom.textContent = `发件人: ${msg.from_address || '未知'}`;
-    moeMailSubject.textContent = msg.subject || '(无主题)';
-    moeMailTime.textContent = `时间: ${new Date(msg.received_at).toLocaleString()}`;
-    resetTranslationPanel(moeMailTranslation, moeMailTranslationTitle, moeMailTranslationBody, copyMoeMailTranslationBtn, retranslateMoeMailBtn);
-    renderCurrentMoeMail();
-    if (hasMailInsightConfig()) {
-      triggerMoeMailAiInsights();
-    }
-  }
-
-  function renderCurrentMoeMail() {
-    renderCurrentMail(moeMailReader);
-  }
-
-  async function triggerMoeMailAiInsights(force = false) {
-    return triggerMailAiInsights(moeMailReader, force);
-  }
 
   // ===================== 公共工具函数 =====================
   function showMessage(element, text, type) {

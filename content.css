@@ -1,3 +1,9 @@
+/* 样式表只挂载于 content.js 创建的 closed ShadowRoot。 */
+:host {
+  all: initial !important;
+  display: contents !important;
+}
+
 /* 悬浮按钮 */
 #temp-email-float-btn {
   position: fixed !important;
