@@ -102,6 +102,10 @@ const ALLOWED_STORAGE_KEYS = new Set([
   // 书签
   'bookmarks',
   'bookmarkSort',
+  // 页面悬浮球命令通道（content.js 下发 / 悬浮面板回执）。
+  // 这是瞬时运行态而非配置，刻意不进 config-io 的导出分类。
+  'floatPanelCommand',
+  'floatPanelCommandResult',
 ]);
 
 // content.js 只在 chrome.storage.local 不可用时回退到消息代理，且仅发送这两类消息；
@@ -1360,7 +1364,8 @@ function runPollMailNow() {
   return mailPollRunPromise;
 }
 
-const PAGE_TOOLS_VERSION = '2026.07.27-shadow-v3';
+// 必须与 content.js 顶部的同名常量保持一致，否则版本校验永久失败并反复注入。
+const PAGE_TOOLS_VERSION = '2026.08.23-balls-v1';
 const pageToolsReconcileRuns = new Map();
 
 async function getPageToolsStatus(tabId) {

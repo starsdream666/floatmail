@@ -2417,11 +2417,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     showMessage(fastFillMessage, '', '');
   }
 
+  // 返回结构化结果供页面内的快填悬浮球回执；面板自身仍按原样显示提示。
+  // errorKind 是稳定枚举，页面侧据此本地渲染文案（不回传原始错误文本）。
   async function fastFillGenerateAndFill() {
-    if (fastFillGenerating) return;
+    if (fastFillGenerating) return { ok: false, errorKind: 'busy' };
     if (!currentSiteOrigin) {
       showMessage(fastFillMessage, '请先打开一个网页', 'error');
-      return;
+      return { ok: false, errorKind: 'no-site' };
     }
 
     const rules = getCurrentSiteFillRules();
@@ -2431,13 +2433,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (neededKinds.length === 0) {
       showMessage(fastFillMessage, '请先为当前页面创建至少一条字段规则', 'error');
-      return;
+      return { ok: false, errorKind: 'no-rules' };
     }
 
     const domain = pickRandomDomain();
     if (!domain) {
       showMessage(fastFillMessage, '无可用域名，请检查邮箱配置', 'error');
-      return;
+      return { ok: false, errorKind: 'no-domain' };
     }
 
     fastFillGenerating = true;
@@ -2568,6 +2570,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       saveFastFillHistory({
         time: Date.now(),
         fields: generatedFields,
+        // origin 供页面内的收件悬浮球判断「这次快填是否发生在当前站点」。
+        // 旧条目没有该字段，content.js 会视为不匹配而不显示收件球。
+        origin: currentSiteOrigin,
         emailSource: fastFillEmailSource,
         expiryMs: fastFillEmailSource === 'moe'
           ? (parseInt(fastFillMoeExpiry.value) || 86400000)
@@ -2654,9 +2659,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         refillRow.appendChild(refillBtn);
         fastFillResult.appendChild(refillRow);
       }
+
+      return { ok: true, filled, total: resultItems.length };
     } catch (error) {
       showMessage(fastFillMessage, `生成失败: ${error.message}`, 'error');
       fastFillResult.classList.add('hidden');
+      return { ok: false, errorKind: 'failed' };
     } finally {
       fastFillGenerating = false;
       fastFillGenerateBtn.disabled = false;
@@ -4024,10 +4032,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 初始化完成，显示页面
     clearTimeout(initSafetyTimer);
     document.body.classList.remove('js-loading');
+    // 放行悬浮球命令通道。这个回调是异步执行的，运行时 resolvePanelInitReady
+    // （声明在本文件更下方）早已完成初始化，不存在暂时性死区问题。
+    resolvePanelInitReady();
   }).catch((error) => {
     clearTimeout(initSafetyTimer);
     document.body.classList.remove('js-loading');
     showMessage(settingsMessage, `配置加载失败: ${error.message}`, 'error');
+    // 失败也必须放行，否则悬浮球命令会永久挂起等到超时。
+    resolvePanelInitReady();
   });
 
   // ===================== 统一保存设置 =====================
@@ -6275,6 +6288,117 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (pending.has('moe')) renderMoeEmails();
       if (pending.has('bookmarks')) renderBookmarks();
     });
+  }
+
+  // ===================== 页面悬浮球命令通道 =====================
+  // 命令由 content.js 写入 chrome.storage 下发，而不是 postMessage：
+  // content.js 运行在页面 realm，宿主页面自己也能对本 iframe postMessage，
+  // 且 source/origin 与 content.js 完全一致，面板无法分辨真伪 —— 那会让页面
+  // 伪造 run-fast-fill 在后端真实创建临时邮箱。页面无法写 chrome.storage，
+  // 因此这条通道从根上可信。
+  const PANEL_COMMAND_KEY = 'floatPanelCommand';
+  const PANEL_COMMAND_RESULT_KEY = 'floatPanelCommandResult';
+  const PANEL_COMMAND_MAX_AGE_MS = 10000;
+  // token 随 iframe URL hash 传入，用于在 storage 全局广播里认领属于本面板的命令：
+  // 同一 origin 可能在多个标签页各有一个已加载的面板，只有发起方那个该执行。
+  const floatPanelToken = (() => {
+    const match = /(?:^|[#&])fmtoken=([^&]+)/.exec(window.location.hash || '');
+    if (!match) {
+      return '';
+    }
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  })();
+
+  async function runFloatPanelCommand(command) {
+    if (command === 'open-fill-rules') {
+      // persist:false —— 不把 activeTab 写进 storage，避免污染用户「上次停留的页」。
+      switchTab('fill-rules', { persist: false });
+      return { ok: true };
+    }
+    if (command === 'run-fast-fill') {
+      // 球可能在用户从未进过快填页时就被点击：先把当前站点与域名准备好。
+      await renderFastFillPage();
+      await fastFillLoadDomains().catch(() => {});
+      return await fastFillGenerateAndFill();
+    }
+    if (command === 'open-fast-fill-inbox') {
+      const entry = Array.isArray(fastFillHistory) ? fastFillHistory[0] : null;
+      if (!entry?.fields?.email) {
+        return { ok: false, errorKind: 'no-entry' };
+      }
+      await fastFillJumpToInbox(entry);
+      return { ok: true };
+    }
+    return { ok: false, errorKind: 'unsupported' };
+  }
+  // 首次点击悬浮球时 iframe 才刚开始加载，命令会先落在 storage 里。
+  // storage.onChanged 只对注册之后的变更触发，所以除了监听变更，
+  // 启动时还必须主动补捞一次待处理命令，否则首次点击必然等到超时。
+  const handledPanelCommandIds = new Set();
+  let resolvePanelInitReady = () => {};
+  const panelInitReady = new Promise((resolve) => {
+    resolvePanelInitReady = resolve;
+  });
+
+  function isFreshPanelCommand(request) {
+    // 拒绝陈旧命令：扩展重载或面板重建后，storage 里的旧记录不应被重放执行。
+    const age = Date.now() - Number(request?.createdAt || 0);
+    return Number.isFinite(age) && age >= 0 && age <= PANEL_COMMAND_MAX_AGE_MS;
+  }
+  async function handlePanelCommandRequest(request) {
+    if (!request?.requestId || request.token !== floatPanelToken) {
+      return;
+    }
+    if (!isFreshPanelCommand(request)) {
+      return;
+    }
+    // 变更监听与启动补捞可能拿到同一条命令，按 requestId 去重，避免重复执行
+    // （重复执行 run-fast-fill 会创建两个邮箱）。
+    if (handledPanelCommandIds.has(request.requestId)) {
+      return;
+    }
+    handledPanelCommandIds.add(request.requestId);
+
+    // 必须等本实例初始化完成：apiUrl / moeApiKey 等配置在初始化的 storageGet 里才就位，
+    // 提前执行会因为没有域名而误报「无可用域名」。
+    await panelInitReady;
+
+    let result;
+    try {
+      result = await runFloatPanelCommand(request.command);
+    } catch {
+      result = { ok: false, errorKind: 'failed' };
+    }
+
+    await storageSet({
+      [PANEL_COMMAND_RESULT_KEY]: {
+        requestId: request.requestId,
+        token: floatPanelToken,
+        command: request.command,
+        ok: Boolean(result?.ok),
+        filled: Number(result?.filled) || 0,
+        errorKind: result?.errorKind || '',
+        finishedAt: Date.now(),
+      }
+    }).catch(() => {});
+  }
+
+  // 只有嵌在页面里的悬浮面板才带 token；工具栏弹窗不参与命令通道。
+  if (floatPanelToken) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[PANEL_COMMAND_KEY]) {
+        return;
+      }
+      handlePanelCommandRequest(changes[PANEL_COMMAND_KEY].newValue).catch(() => {});
+    });
+
+    storageGet([PANEL_COMMAND_KEY])
+      .then((result) => handlePanelCommandRequest(result?.[PANEL_COMMAND_KEY]))
+      .catch(() => {});
   }
 
   // 当另一个 popup 实例（如悬浮窗 iframe 或弹窗）修改了 storage，

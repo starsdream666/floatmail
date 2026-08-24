@@ -285,3 +285,119 @@
     opacity: 1;
   }
 }
+
+/* ===== 功能悬浮球组（规则 / 快填 / 收件） ===== */
+#temp-email-ball-group {
+  position: fixed !important;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 10px;
+  /* 球与球之间的空隙不应拦截宿主页面点击，命中区域只在球本身 */
+  pointer-events: none !important;
+  z-index: 2147483646 !important;
+  isolation: isolate;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.temp-email-ball {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  margin: 0;
+  border-radius: 50%;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(226, 240, 255, 0.9));
+  color: rgba(30, 64, 175, 0.95);
+  box-shadow:
+    0 10px 20px rgba(37, 99, 235, 0.26),
+    0 3px 8px rgba(14, 165, 233, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.temp-email-ball.hidden {
+  display: none;
+}
+
+.temp-email-ball svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.temp-email-ball:hover {
+  transform: translateY(-2px) scale(1.06);
+  box-shadow:
+    0 16px 26px rgba(37, 99, 235, 0.34),
+    0 6px 14px rgba(14, 165, 233, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+.temp-email-ball:disabled {
+  cursor: default;
+  opacity: 0.72;
+  transform: none;
+}
+
+.temp-email-ball[data-ball="fast-fill"] {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.96), rgba(14, 165, 233, 0.92));
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.temp-email-ball[data-ball="inbox"] {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.96), rgba(5, 150, 105, 0.92));
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+/* 快填进行中：图标持续旋转，替代面板内不可见的 loading 文案 */
+.temp-email-ball.busy svg {
+  animation: floatmailBallSpin 0.9s linear infinite;
+}
+
+.temp-email-ball-badge {
+  display: none;
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #d93025;
+  color: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  box-sizing: border-box;
+  box-shadow: 0 2px 6px rgba(217, 48, 37, 0.4);
+  pointer-events: none;
+}
+
+.temp-email-ball-badge.visible {
+  display: block;
+}
+
+@keyframes floatmailBallSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

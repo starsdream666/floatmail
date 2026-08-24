@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const PAGE_TOOLS_VERSION = '2026.07.27-shadow-v3';
+  const PAGE_TOOLS_VERSION = '2026.08.23-balls-v1';
   const existingPageToolsController = window.__floatMailPageToolsController;
   if (existingPageToolsController?.version === PAGE_TOOLS_VERSION
     && existingPageToolsController.disposed !== true) {
@@ -42,6 +42,28 @@
   const SELECT_TARGET_CLASS = 'temp-email-fill-select-target';
   const FLOAT_SELECT_MESSAGE_SOURCE = 'temp-email-floating-panel';
   const FIXED_FLOAT_WINDOW_STYLE = 'modern';
+  const FAST_FILL_HISTORY_KEY = 'fastFillHistory';
+  const TEMP_UNREAD_COUNTS_KEY = 'tempUnreadCounts';
+  const MOE_UNREAD_COUNTS_KEY = 'moeUnreadCounts';
+  const MOE_EMAIL_CACHE_KEY = 'moeEmailCache';
+  // 收件球存活时间：按需求硬性 30 秒后隐藏。
+  // 注意后台邮件轮询默认 5 分钟，30 秒内收件箱可能还是空的；
+  // 若要改成「有未读就常驻」，只需在 getInboxBallInfo 里放宽这一处判断。
+  const INBOX_BALL_TTL_MS = 30000;
+  const BALL_SIZE = 40;
+  const BALL_GROUP_GAP = 10;
+  const PANEL_COMMAND_TIMEOUT_MS = 60000;
+  // 面板命令通道走 chrome.storage，而不是 postMessage：
+  // content.js 运行在页面 realm，页面自己也能对 iframe postMessage，
+  // 且 source/origin 与 content.js 完全一致，面板无法分辨真伪 ——
+  // 那会让页面伪造 run-fast-fill 在后端真实创建临时邮箱。
+  // 页面无法写 chrome.storage，因此这条通道从根上可信。
+  const PANEL_COMMAND_KEY = 'floatPanelCommand';
+  const PANEL_COMMAND_RESULT_KEY = 'floatPanelCommandResult';
+  // 同一 origin 可能在多个标签页各有一个已加载的面板 iframe，
+  // 而 storage 变更是全局广播；仅靠 origin 比对会让非活动标签页也执行命令。
+  // 这个 token 随 iframe URL 传给自己的面板，只用于路由（不是密钥，页面可读也无妨）。
+  const FLOAT_INSTANCE_TOKEN = `fm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   const FLOAT_HOST_EVENT_TYPES = [
     'pointerdown',
     'pointerup',
@@ -85,6 +107,15 @@
   let siteToolsAllowed = true;
   let siteToolsPermissionReady = null;
   let focusTrackingBound = false;
+  // 悬浮球依赖的 storage 快照。收件球的显隐完全由 fastFillHistory[0] 的
+  // origin/time 反推，因此刷新、跳转、重开标签页都能自动恢复，不靠内存态。
+  let fastFillHistorySnapshot = [];
+  let tempUnreadSnapshot = {};
+  let moeUnreadSnapshot = {};
+  let moeEmailCacheSnapshot = [];
+  let inboxBallTimer = null;
+  let panelCommandSeq = 0;
+  const pendingPanelCommands = new Map();
   const targetHighlightState = new WeakMap();
   const fillRulesReady = storageGet([PAGE_FILL_RULES_KEY])
     .then((result) => {
@@ -190,7 +221,9 @@
   // 只在重挂 / 兜底检测这类低频路径上主动失效，避免每次调用都退回无缓存的写入。
   function invalidateFloatStyleCache(elements) {
     const targets = elements
-      || (floatUi ? [floatUi.host, floatUi.button, floatUi.panel, floatUi.overlay] : []);
+      || (floatUi
+        ? [floatUi.host, floatUi.button, floatUi.panel, floatUi.overlay, floatUi.ballGroup]
+        : []);
     targets.forEach((element) => {
       if (element) {
         floatStyleCache.delete(element);
@@ -215,6 +248,17 @@
     setImportantStyle(floatUi.panel, 'z-index', FLOAT_TOP_Z_INDEX);
     setImportantStyle(floatUi.panel, 'pointer-events', 'auto');
     setImportantStyle(floatUi.panel, 'isolation', 'isolate');
+
+    if (floatUi.ballGroup) {
+      setImportantStyle(floatUi.ballGroup, 'position', 'fixed');
+      // 球组永远压在面板下面一层：面板打开时整组会隐藏，不需要与面板争顶。
+      setImportantStyle(floatUi.ballGroup, 'z-index', '2147483646');
+      // 球之间的空隙必须让宿主页面可点，命中区域只在球本身（CSS 里球是 auto）。
+      setImportantStyle(floatUi.ballGroup, 'pointer-events', 'none');
+      setImportantStyle(floatUi.ballGroup, 'isolation', 'isolate');
+      // display 从上次计算结果自愈，避免页面清空 style 后球组永久消失。
+      setImportantStyle(floatUi.ballGroup, 'display', floatUi.ballGroupVisible ? 'flex' : 'none');
+    }
 
     setImportantStyle(floatUi.button, 'display', 'flex');
     setImportantStyle(floatUi.panel, 'display', floatUi.panelVisible ? 'flex' : 'none');
@@ -429,6 +473,9 @@
     } else {
       applyFloatTopLayerStyles();
     }
+
+    // 面板开 → 整组隐藏；面板关 → 按三态恢复。
+    updateBallVisibility();
   }
 
   function hideFloatPanelForFieldSelection() {
@@ -1514,6 +1561,13 @@
     unlockHostPageScroll();
     stopFloatOcclusionWatch();
 
+    if (inboxBallTimer !== null) {
+      window.clearTimeout(inboxBallTimer);
+      inboxBallTimer = null;
+    }
+    // 在途命令的 Promise 必须兑现，否则调用方的 finally 不会执行（球会一直转）。
+    rejectAllPanelCommands('悬浮窗已关闭');
+
     if (!floatUi) {
       return;
     }
@@ -1571,6 +1625,9 @@
     setImportantStyle(button, 'bottom', 'auto');
     setImportantStyle(button, 'position', 'fixed');
     setImportantStyle(button, 'z-index', FLOAT_TOP_Z_INDEX);
+
+    // 球组锚在主按钮上，主按钮每次重新落位都要带着球组一起走。
+    applyBallGroupLayout();
 
     return {
       left: Math.round(preferredLeft),
@@ -1649,6 +1706,224 @@
     applyFloatTopLayerStyles();
 
     return FIXED_FLOAT_WINDOW_STYLE;
+  }
+
+  // ===================== 功能悬浮球（规则 / 快填 / 收件） =====================
+
+  // 球组不单独持久化坐标：始终锚在主按钮上，跟随主按钮拖拽与视口变化。
+  // 隐藏的球用 display:none，flex 布局不会留下空位，可见的球自动收拢。
+  function applyBallGroupLayout() {
+    if (!floatUi?.ballGroup) {
+      return;
+    }
+
+    const group = floatUi.ballGroup;
+    const button = floatUi.button;
+    const rect = button.getBoundingClientRect();
+    // 首帧或按钮被页面藏起来时 rect 全 0，退回布局值，避免球组跳到左上角。
+    const buttonWidth = rect.width || button.offsetWidth || 54;
+    const buttonHeight = rect.height || button.offsetHeight || 54;
+    const buttonLeft = rect.width ? rect.left : (floatUi.buttonLayout?.left ?? 0);
+    const buttonTop = rect.height ? rect.top : (floatUi.buttonLayout?.top ?? 0);
+
+    const left = clamp(
+      buttonLeft + ((buttonWidth - BALL_SIZE) / 2),
+      0,
+      Math.max(0, window.innerWidth - BALL_SIZE)
+    );
+    setImportantStyle(group, 'left', `${Math.round(left)}px`);
+
+    // 三球带间距所需高度；上方空间不够就翻到按钮下方展开。
+    const stackHeight = (BALL_SIZE * 3) + (BALL_GROUP_GAP * 3);
+    if (buttonTop - BALL_GROUP_GAP >= stackHeight) {
+      // 底边贴在按钮上方：column-reverse 让第一个球最靠近按钮，整组向上生长。
+      setImportantStyle(group, 'flex-direction', 'column-reverse');
+      setImportantStyle(group, 'bottom', `${Math.round(window.innerHeight - buttonTop + BALL_GROUP_GAP)}px`);
+      setImportantStyle(group, 'top', 'auto');
+    } else {
+      setImportantStyle(group, 'flex-direction', 'column');
+      const top = clamp(
+        buttonTop + buttonHeight + BALL_GROUP_GAP,
+        0,
+        Math.max(0, window.innerHeight - BALL_SIZE)
+      );
+      setImportantStyle(group, 'top', `${Math.round(top)}px`);
+      setImportantStyle(group, 'bottom', 'auto');
+    }
+  }
+  function getUnreadCountForEntry(entry) {
+    const email = entry?.fields?.email;
+    if (!email) {
+      return 0;
+    }
+    if (entry.emailSource === 'moe') {
+      // moeUnreadCounts 以 emailId 为键，快填历史里只有地址，靠邮箱缓存反查。
+      const cached = moeEmailCacheSnapshot.find((item) => item?.address === email);
+      const count = cached?.id ? moeUnreadSnapshot?.[String(cached.id)] : 0;
+      return Number.isFinite(count) ? count : 0;
+    }
+    const count = tempUnreadSnapshot?.[email];
+    return Number.isFinite(count) ? count : 0;
+  }
+
+  // 收件球状态完全从 storage 反推，因此刷新、跳转、重开标签页都能自动恢复。
+  // 不用内存态：注册流程本身就要跳页，content.js 会重新注入，内存态会在最需要时丢失。
+  function getInboxBallInfo() {
+    const entry = Array.isArray(fastFillHistorySnapshot) ? fastFillHistorySnapshot[0] : null;
+    if (!entry?.fields?.email) {
+      return null;
+    }
+    // 旧版历史条目没有 origin，一律不显示，避免跨站误弹。
+    if (entry.origin !== window.location.origin) {
+      return null;
+    }
+    const createdAt = Number(entry.time) || 0;
+    const expiresAt = createdAt + INBOX_BALL_TTL_MS;
+    if (!createdAt || Date.now() >= expiresAt) {
+      return null;
+    }
+    return { entry, expiresAt, unread: getUnreadCountForEntry(entry) };
+  }
+
+  function scheduleInboxBallExpiry(expiresAt) {
+    if (inboxBallTimer !== null) {
+      window.clearTimeout(inboxBallTimer);
+      inboxBallTimer = null;
+    }
+    if (!expiresAt) {
+      return;
+    }
+    inboxBallTimer = window.setTimeout(() => {
+      inboxBallTimer = null;
+      updateBallVisibility();
+    }, Math.max(0, expiresAt - Date.now()) + 50);
+  }
+  function setBallHidden(ball, hidden) {
+    if (ball) {
+      ball.classList.toggle('hidden', hidden);
+    }
+  }
+
+  // 三态显隐：
+  //   无规则         → 只有规则球
+  //   有规则、未快填 → 规则球 + 快填球
+  //   有规则、已快填 → 规则球 + 快填球 + 收件球（30 秒后收件球隐藏）
+  function updateBallVisibility() {
+    if (!floatUi?.ballGroup) {
+      return;
+    }
+
+    const hasRules = Object.keys(getOriginFillRules()).length > 0;
+    // 快填必须有规则才能跑（popup 侧按规则推导要生成的字段），
+    // 因此没有规则时快填球和收件球都没有意义。
+    const inboxInfo = hasRules ? getInboxBallInfo() : null;
+
+    setBallHidden(floatUi.rulesBall, false);
+    setBallHidden(floatUi.fastFillBall, !hasRules);
+    setBallHidden(floatUi.inboxBall, !inboxInfo);
+
+    if (floatUi.inboxBadge) {
+      const unread = inboxInfo?.unread || 0;
+      floatUi.inboxBadge.textContent = unread > 99 ? '99+' : String(unread);
+      floatUi.inboxBadge.classList.toggle('visible', Boolean(inboxInfo) && unread > 0);
+    }
+
+    // 面板打开时整组隐藏：球压在面板上显得杂乱，而面板内已有同样入口。
+    floatUi.ballGroupVisible = !floatUi.panelVisible;
+    setImportantStyle(floatUi.ballGroup, 'display', floatUi.ballGroupVisible ? 'flex' : 'none');
+    if (floatUi.ballGroupVisible) {
+      applyBallGroupLayout();
+    }
+
+    scheduleInboxBallExpiry(inboxInfo?.expiresAt || 0);
+  }
+  // 命令经 storage 下发；面板执行后把结果写回 PANEL_COMMAND_RESULT_KEY，
+  // 由 handleStorageChanged 按 requestId 兑现这里的 Promise。
+  function sendPanelCommand(command) {
+    const requestId = `cmd_${Date.now().toString(36)}_${++panelCommandSeq}`;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        pendingPanelCommands.delete(requestId);
+        reject(new Error('面板未响应'));
+      }, PANEL_COMMAND_TIMEOUT_MS);
+      pendingPanelCommands.set(requestId, { resolve, reject, timer });
+
+      storageSet({
+        [PANEL_COMMAND_KEY]: {
+          command,
+          requestId,
+          token: FLOAT_INSTANCE_TOKEN,
+          origin: window.location.origin,
+          createdAt: Date.now(),
+        },
+      }).catch((error) => {
+        const pending = pendingPanelCommands.get(requestId);
+        if (!pending) {
+          return;
+        }
+        pendingPanelCommands.delete(requestId);
+        window.clearTimeout(pending.timer);
+        reject(error);
+      });
+    });
+  }
+
+  function settlePanelCommandResult(result) {
+    const pending = result?.requestId ? pendingPanelCommands.get(result.requestId) : null;
+    if (!pending) {
+      return;
+    }
+    pendingPanelCommands.delete(result.requestId);
+    window.clearTimeout(pending.timer);
+    pending.resolve(result);
+  }
+
+  function rejectAllPanelCommands(reason) {
+    pendingPanelCommands.forEach((pending) => {
+      window.clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    });
+    pendingPanelCommands.clear();
+  }
+  // 快填失败原因由面板回传 errorKind，文案在页面侧本地渲染。
+  // 面板刻意不回传原始错误文本：那可能带上后端地址等细节。
+  const FAST_FILL_ERROR_TEXT = {
+    'no-rules': '请先为当前页面创建字段规则。',
+    'no-domain': '无可用域名，请检查邮箱配置。',
+    'no-site': '未检测到当前网页。',
+    busy: '快填正在进行中。',
+    failed: '快填失败，可打开面板查看详情。',
+  };
+
+  function setFastFillBallBusy(busy) {
+    if (!floatUi?.fastFillBall) {
+      return;
+    }
+    floatUi.fastFillBusy = Boolean(busy);
+    floatUi.fastFillBall.classList.toggle('busy', Boolean(busy));
+    floatUi.fastFillBall.disabled = Boolean(busy);
+  }
+
+  // 面板 iframe 保持懒加载：只有真正需要面板参与时才加载，不预加载，
+  // 以保住 v3.0.3「消除多标签页请求风暴」的优化。
+  // token 通过 URL hash 传给面板，供它在 storage 广播里认领属于自己的命令。
+  function ensurePanelLoaded() {
+    if (!floatUi || floatUi.iframeLoaded) {
+      return;
+    }
+    floatUi.iframeLoaded = true;
+    floatUi.iframe.src = `${chrome.runtime.getURL('popup.html')}#fmtoken=${encodeURIComponent(FLOAT_INSTANCE_TOKEN)}`;
+  }
+
+  function createFunctionBall(kind, title, iconSvg) {
+    const ball = document.createElement('button');
+    ball.type = 'button';
+    ball.className = 'temp-email-ball hidden';
+    ball.dataset.ball = kind;
+    ball.title = title;
+    ball.setAttribute('aria-label', title);
+    ball.innerHTML = iconSvg;
+    return ball;
   }
 
   async function initFloatWindow(savedLayout) {
@@ -1734,6 +2009,37 @@
     });
 
     shadowRoot.appendChild(panel);
+
+    // 图标用内联 SVG，不新增图片文件：避免扩大 web_accessible_resources 暴露面（SEC-11 方向）。
+    const ballGroup = document.createElement('div');
+    ballGroup.id = 'temp-email-ball-group';
+
+    const rulesBall = createFunctionBall(
+      'rules',
+      '字段规则',
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>'
+    );
+    const fastFillBall = createFunctionBall(
+      'fast-fill',
+      '一键快填',
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
+    );
+    const inboxBall = createFunctionBall(
+      'inbox',
+      '查看收件箱',
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>'
+    );
+
+    const inboxBadge = document.createElement('span');
+    inboxBadge.className = 'temp-email-ball-badge';
+    inboxBall.appendChild(inboxBadge);
+
+    // DOM 顺序即 column-reverse 下由内向外的顺序：规则 → 快填 → 收件
+    ballGroup.appendChild(rulesBall);
+    ballGroup.appendChild(fastFillBall);
+    ballGroup.appendChild(inboxBall);
+    shadowRoot.appendChild(ballGroup);
+
     document.body.appendChild(host);
 
     floatUi = {
@@ -1754,9 +2060,18 @@
       observedBody: null,
       panelEnterCleanup: null,
       pinButton,
+      ballGroup,
+      rulesBall,
+      fastFillBall,
+      inboxBall,
+      inboxBadge,
+      ballGroupVisible: false,
+      fastFillBusy: false,
       cleanup: [],
     };
-    installFloatHostEventIsolation([button, panel]);
+    // 球组一并纳入事件隔离：球上的点击会冒泡到球组，在这里被 stopPropagation，
+    // 否则会触发宿主页面的全局委托监听（也会误触发关闭面板的 document mousedown）。
+    installFloatHostEventIsolation([button, panel, ballGroup]);
     pinButton.classList.toggle('pinned', floatUi.isPinned);
     applyFloatWindowStyle({ reapplyLayout: false });
     floatUi.buttonLayout = applyButtonLayout(button, savedLayout?.button);
@@ -1781,12 +2096,9 @@
       if (!floatUi) {
         return;
       }
-      // 延迟加载：仅在用户首次打开面板时才加载 iframe 内容，
+      // 延迟加载：仅在真正需要面板时才加载 iframe 内容，
       // 避免标签页初始化时批量创建 iframe 导致请求风暴。
-      if (!floatUi.iframeLoaded) {
-        floatUi.iframeLoaded = true;
-        floatUi.iframe.src = chrome.runtime.getURL('popup.html');
-      }
+      ensurePanelLoaded();
       setFloatPanelVisible(true);
     }
 
@@ -1821,6 +2133,59 @@
     };
     button.addEventListener('click', onButtonClick);
     floatUi.cleanup.push(() => button.removeEventListener('click', onButtonClick));
+
+    // 规则球：打开面板并切到字段规则页。刻意不写 activeTab —— 那会污染
+    // 用户「上次停留的页」，而且跨实例同步守卫在面板正看邮件时会静默忽略切页。
+    const onRulesBallClick = (event) => {
+      event.stopPropagation();
+      showPanel();
+      sendPanelCommand('open-fill-rules').catch(() => {
+        showSelectionHint('打开规则页失败，请重试。', 'error', 3000);
+      });
+    };
+    rulesBall.addEventListener('click', onRulesBallClick);
+    floatUi.cleanup.push(() => rulesBall.removeEventListener('click', onRulesBallClick));
+
+    // 快填球：不打开面板（面板会盖住正要填的表单），只让 iframe 在后台加载并执行。
+    const onFastFillBallClick = (event) => {
+      event.stopPropagation();
+      if (floatUi.fastFillBusy) {
+        return;
+      }
+      // 防连点：重复触发会创建两个邮箱，且后一次会覆盖历史首条，让收件球指向错误收件箱。
+      setFastFillBallBusy(true);
+      ensurePanelLoaded();
+      showSelectionHint('正在生成并填入资料...', 'info');
+      sendPanelCommand('run-fast-fill')
+        .then((result) => {
+          if (result?.ok) {
+            showSelectionHint(`已填入 ${result.filled || 0} 个字段。`, 'success', 2400);
+            return;
+          }
+          const text = FAST_FILL_ERROR_TEXT[result?.errorKind] || FAST_FILL_ERROR_TEXT.failed;
+          showSelectionHint(text, 'error', 3600);
+        })
+        .catch(() => {
+          showSelectionHint('快填未完成：面板未响应。', 'error', 3600);
+        })
+        .finally(() => {
+          setFastFillBallBusy(false);
+          updateBallVisibility();
+        });
+    };
+    fastFillBall.addEventListener('click', onFastFillBallClick);
+    floatUi.cleanup.push(() => fastFillBall.removeEventListener('click', onFastFillBallClick));
+
+    // 收件球：交给面板复用 fastFillJumpToInbox（它已处理 Temp/Moe 差异与邮箱重建）。
+    const onInboxBallClick = (event) => {
+      event.stopPropagation();
+      showPanel();
+      sendPanelCommand('open-fast-fill-inbox').catch(() => {
+        showSelectionHint('打开收件箱失败，请重试。', 'error', 3000);
+      });
+    };
+    inboxBall.addEventListener('click', onInboxBallClick);
+    floatUi.cleanup.push(() => inboxBall.removeEventListener('click', onInboxBallClick));
 
     let dragListenersAttached = false;
     function attachDragListeners() {
@@ -1937,6 +2302,8 @@
             left: Math.round(newLeft),
             top: Math.round(newTop),
           };
+          // 拖拽路径直接写 button 样式、不经 applyButtonLayout，需单独跟随。
+          applyBallGroupLayout();
         }
       }
 
@@ -2196,6 +2563,15 @@
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     floatUi.cleanup.push(() => document.removeEventListener('visibilitychange', onVisibilityChange));
+
+    // 首次挂载后按三态露出对应的球。
+    updateBallVisibility();
+    // allFillRules 由独立的 fillRulesReady 加载，可能晚于 reconcile 的 storageGet 完成。
+    // 若不补这一次，「已有规则」的站点首帧会判成无规则而不显示快填球，
+    // 并且要等到下一次 pageFillRules 变更才自愈。
+    ensureFillRulesLoaded()
+      .then(() => updateBallVisibility())
+      .catch(() => {});
   }
 
   /**
@@ -2332,11 +2708,21 @@
   async function reconcileFloatWindow(revision) {
     const result = await storageGet([
       'floatWindowEnabled', FLOAT_LAYOUT_KEY, FLOAT_WINDOW_STYLE_KEY,
-      'siteAccessMode', 'siteAllowlist', 'siteBlocklist'
+      'siteAccessMode', 'siteAllowlist', 'siteBlocklist',
+      FAST_FILL_HISTORY_KEY, TEMP_UNREAD_COUNTS_KEY, MOE_UNREAD_COUNTS_KEY, MOE_EMAIL_CACHE_KEY
     ]);
     if (pageToolsDisposed || revision !== floatLifecycleRevision) {
       return;
     }
+    // 球数据快照必须在 initFloatWindow 之前就位：它末尾会按三态露出对应的球。
+    fastFillHistorySnapshot = Array.isArray(result[FAST_FILL_HISTORY_KEY])
+      ? result[FAST_FILL_HISTORY_KEY]
+      : [];
+    tempUnreadSnapshot = result[TEMP_UNREAD_COUNTS_KEY] || {};
+    moeUnreadSnapshot = result[MOE_UNREAD_COUNTS_KEY] || {};
+    moeEmailCacheSnapshot = Array.isArray(result[MOE_EMAIL_CACHE_KEY])
+      ? result[MOE_EMAIL_CACHE_KEY]
+      : [];
     if (result[FLOAT_WINDOW_STYLE_KEY] !== FIXED_FLOAT_WINDOW_STYLE) {
       storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
     }
@@ -2376,8 +2762,41 @@
       return;
     }
 
+    let ballDataChanged = false;
+
     if (changes[PAGE_FILL_RULES_KEY]) {
       allFillRules = changes[PAGE_FILL_RULES_KEY].newValue || {};
+      // 用户刚加完第一条规则时快填球要立刻出现，不必刷新页面。
+      ballDataChanged = true;
+    }
+
+    if (changes[FAST_FILL_HISTORY_KEY]) {
+      fastFillHistorySnapshot = Array.isArray(changes[FAST_FILL_HISTORY_KEY].newValue)
+        ? changes[FAST_FILL_HISTORY_KEY].newValue
+        : [];
+      ballDataChanged = true;
+    }
+    if (changes[TEMP_UNREAD_COUNTS_KEY]) {
+      tempUnreadSnapshot = changes[TEMP_UNREAD_COUNTS_KEY].newValue || {};
+      ballDataChanged = true;
+    }
+    if (changes[MOE_UNREAD_COUNTS_KEY]) {
+      moeUnreadSnapshot = changes[MOE_UNREAD_COUNTS_KEY].newValue || {};
+      ballDataChanged = true;
+    }
+    if (changes[MOE_EMAIL_CACHE_KEY]) {
+      moeEmailCacheSnapshot = Array.isArray(changes[MOE_EMAIL_CACHE_KEY].newValue)
+        ? changes[MOE_EMAIL_CACHE_KEY].newValue
+        : [];
+      ballDataChanged = true;
+    }
+
+    // 面板回执：只认领带自己 token 的结果（同 origin 可能有多个标签页的面板）。
+    if (changes[PANEL_COMMAND_RESULT_KEY]) {
+      const commandResult = changes[PANEL_COMMAND_RESULT_KEY].newValue;
+      if (commandResult?.token === FLOAT_INSTANCE_TOKEN) {
+        settlePanelCommandResult(commandResult);
+      }
     }
 
     if (changes.floatWindowEnabled
@@ -2410,6 +2829,10 @@
       if (changes[FLOAT_WINDOW_STYLE_KEY].newValue !== FIXED_FLOAT_WINDOW_STYLE) {
         storageSet({ [FLOAT_WINDOW_STYLE_KEY]: FIXED_FLOAT_WINDOW_STYLE }).catch(() => {});
       }
+    }
+
+    if (ballDataChanged) {
+      updateBallVisibility();
     }
   }
 
