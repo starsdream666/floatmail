@@ -33,6 +33,10 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/></svg>
         Moe Mail
       </button>
+      <button class="tab-btn" data-tab="gw-mail" data-title="统一路由" data-subtitle="通过网关主 API 管理全部上游的临时邮箱。">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20"/><path d="m17 5-5-3-5 3"/><path d="m17 19-5 3-5-3"/><circle cx="12" cy="12" r="3"/></svg>
+        <span>统一路由</span>
+      </button>
       <button class="tab-btn" data-tab="bookmarks" data-title="书签" data-subtitle="保存常用网站入口，并支持排序和快速打开。">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
         书签
@@ -265,6 +269,118 @@
       </div>
     </div>
 
+    <!-- ===================== 统一路由（网关主 API）页面 ===================== -->
+    <div id="gw-mail-page" class="hidden">
+
+      <!-- 统一路由 Create Pane -->
+      <div id="gw-create-pane" class="pane page-card page-hero-card">
+        <div class="form-group">
+          <label>邮箱名前缀 (可选, 留空自动生成)</label>
+          <div class="input-row">
+            <input type="text" id="gw-email-name" placeholder="custom-name" />
+            <span class="at-symbol">@</span>
+            <select id="gw-domain-select" disabled>
+              <option value="">加载域名中...</option>
+            </select>
+            <button id="gw-retry-domains-btn" class="icon-btn" title="重新获取域名列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="gw-expiry-select">过期时间</label>
+          <select id="gw-expiry-select">
+            <option value="3600000">1 小时</option>
+            <option value="86400000" selected>1 天</option>
+            <option value="259200000">3 天</option>
+            <option value="0">永久</option>
+          </select>
+        </div>
+        <button id="gw-create-btn" class="btn primary-btn">创建邮箱</button>
+        <div id="gw-create-message" class="message"></div>
+      </div>
+
+      <!-- 统一路由 邮箱列表 -->
+      <div id="gw-email-list-section" class="history-section page-card">
+        <div class="moe-history-header">
+          <h3 class="moe-history-title">我的邮箱</h3>
+          <div class="history-header-btns">
+            <button id="gw-mark-all-read-btn" class="btn text-btn hidden">全部标已读</button>
+            <button id="gw-sync-btn" class="btn text-btn">从网关同步</button>
+            <button id="gw-history-batch-toggle-btn" class="btn text-btn">批量</button>
+            <button id="gw-refresh-btn" class="icon-btn" title="刷新列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+          </div>
+        </div>
+        <div id="gw-email-list"></div>
+        <div id="gw-history-batch-action" class="batch-action-bar hidden">
+          <button id="gw-history-batch-delete-btn" class="btn danger-primary-btn">删除所选</button>
+          <button id="gw-history-batch-cancel-btn" class="btn text-btn">取消</button>
+        </div>
+      </div>
+
+      <!-- 统一路由 Inbox Pane -->
+      <div id="gw-inbox-pane" class="pane page-card hidden">
+        <div class="inbox-header">
+          <h3 id="gw-inbox-title" class="selectable-text"></h3>
+          <div class="inbox-header-btns">
+            <button id="gw-inbox-batch-toggle-btn" class="icon-btn" title="批量操作"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg></button>
+            <button id="gw-refresh-inbox-btn" class="icon-btn" title="刷新邮件列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
+            <button id="gw-back-to-list" class="icon-btn hidden" title="返回列表"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></button>
+          </div>
+        </div>
+        <div id="gw-mail-list" class="mail-list"></div>
+        <div id="gw-inbox-batch-action" class="batch-action-bar hidden">
+          <button id="gw-inbox-batch-delete-btn" class="btn danger-primary-btn">删除所选</button>
+          <button id="gw-inbox-batch-cancel-btn" class="btn text-btn">取消</button>
+        </div>
+        <div id="gw-mail-content" class="mail-content hidden">
+          <div class="mail-reader-shell">
+            <div class="mail-reader-top">
+              <div class="mail-reader-copy">
+                <div id="gw-mail-subject" class="mail-reader-subject"></div>
+                <div class="mail-reader-meta-stack">
+                  <div id="gw-mail-from" class="mail-reader-meta-item"></div>
+                  <div id="gw-mail-time" class="mail-reader-meta-item"></div>
+                </div>
+              </div>
+              <div class="mail-reader-toolbar">
+                <button id="translate-gw-mail-btn" class="icon-btn mail-tool-btn" title="翻译邮件" aria-label="翻译邮件"></button>
+                <button id="toggle-gw-mail-view-btn" class="icon-btn mail-tool-btn" title="切换邮件视图" aria-label="切换邮件视图"></button>
+                <button id="toggle-gw-mail-images-btn" class="icon-btn mail-tool-btn" title="切换图片加载" aria-label="切换图片加载"></button>
+                <button id="gw-delete-mail-btn" class="icon-btn mail-tool-btn is-danger" title="删除此邮件" aria-label="删除此邮件"></button>
+              </div>
+            </div>
+            <div id="gw-mail-translation" class="mail-translation hidden">
+              <div class="mail-translation-header">
+                <div id="gw-mail-translation-title" class="mail-translation-title">AI 翻译</div>
+                <div class="mail-translation-actions">
+                  <button id="retranslate-gw-mail-btn" class="icon-btn mail-tool-btn hidden" title="重新翻译" aria-label="重新翻译"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg></button>
+                  <button id="copy-gw-mail-translation-btn" class="icon-btn mail-tool-btn hidden" title="复制译文" aria-label="复制译文"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+                </div>
+              </div>
+              <div id="gw-mail-translation-body" class="mail-translation-body"></div>
+            </div>
+            <div id="gw-mail-insights" class="mail-insights hidden"></div>
+            <div id="gw-mail-body" class="mail-body"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== 统一路由：从网关同步候选弹层 ===================== -->
+    <div id="gw-sync-modal" class="hidden" style="position: fixed; inset: 0; z-index: 1000; background: rgba(0, 0, 0, 0.45);">
+      <div style="display: flex; align-items: center; justify-content: center; min-height: 100%; padding: 16px; box-sizing: border-box;">
+        <div class="page-card" style="width: 100%; max-width: 360px; padding: 14px; display: flex; flex-direction: column; gap: 10px;">
+          <h4 class="settings-section-title" style="margin-bottom: 0;">从网关同步</h4>
+          <div id="gw-sync-hint" class="tool-note" style="margin: 0;"></div>
+          <label class="config-check"><input type="checkbox" id="gw-include-shared" /> 包含共享邮箱（透传创建）</label>
+          <div id="gw-sync-candidates" class="domain-checklist"></div>
+          <div style="display: flex; justify-content: flex-end; gap: 8px;">
+            <button id="gw-sync-confirm-btn" class="btn primary-btn" style="width: auto; margin: 0; min-height: 36px; padding: 8px 18px;">确定</button>
+            <button id="gw-sync-cancel-btn" class="btn text-btn" style="margin: 0; min-height: 36px; padding: 8px 16px;">取消</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===================== 书签页面 ===================== -->
     <div id="bookmarks-page" class="hidden">
       <div class="form-group page-card">
@@ -447,7 +563,15 @@
         <div id="fill-rules-section" class="tool-section tool-fill-rules-section page-card">
           <h4 class="tool-title"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="tool-svg"><path d="M4 4h16v4H4z"/><path d="M4 12h16v8H4z"/><path d="m9 8 2 2 4-4"/></svg> 页面字段规则</h4>
           <div id="fill-rules-site" class="tool-note">当前站点：未检测到网页</div>
-          <div class="tool-note">点击“选取输入框”后，回到网页中点击目标输入框即可保存规则，按 `Esc` 可取消。</div>
+          <div class="tool-note">注册规则和登录规则均支持全部字段，可按需绑定验证码、姓名、姓、名、生日、年龄、住址等。填入时按实际表单自动匹配，只填已绑定且有数据的字段，不混用两套规则。原有规则保留为注册规则。</div>
+          <div class="fill-rule-mode-row">
+            <label for="fill-rule-mode">当前编辑</label>
+            <select id="fill-rule-mode" aria-label="选择要编辑的规则类型">
+              <option value="register">注册规则</option>
+              <option value="login">登录规则（全部字段）</option>
+            </select>
+          </div>
+          <div class="tool-note">手动绑定可自由选择任意可编辑输入框，不限制字段名称与输入框类型对应；同一套规则中，一个输入框只能绑定一个字段。点击“选取输入框”后回到网页选择，按 Esc 取消。表单匹配仍检查实际字段特征；页面字段变化后请重新绑定。</div>
           <div id="fill-rules-list" class="fill-rules-list"></div>
           <div id="fill-rules-message" class="message"></div>
         </div>
@@ -475,6 +599,7 @@
             <select id="fast-fill-email-source">
               <option value="temp">Temp Mail</option>
               <option value="moe">Moe Mail</option>
+              <option value="gw">统一路由</option>
             </select>
           </div>
           <div class="tool-opt-row">
@@ -503,6 +628,15 @@
           <div id="fast-fill-moe-expiry-row" class="tool-opt-row hidden">
             <label>过期时间</label>
             <select id="fast-fill-moe-expiry">
+              <option value="3600000">1 小时</option>
+              <option value="86400000" selected>1 天</option>
+              <option value="259200000">3 天</option>
+              <option value="0">永久</option>
+            </select>
+          </div>
+          <div id="fast-fill-gw-expiry-row" class="tool-opt-row hidden">
+            <label>过期时间</label>
+            <select id="fast-fill-gw-expiry">
               <option value="3600000">1 小时</option>
               <option value="86400000" selected>1 天</option>
               <option value="259200000">3 天</option>
@@ -810,6 +944,24 @@
         <div id="moe-connection-message" class="message"></div>
       </div>
 
+      <!-- 统一路由（网关主 API）配置 -->
+      <div class="settings-section page-card">
+        <h4 class="settings-section-title">统一路由（网关主 API）</h4>
+        <div class="form-group">
+          <label for="gw-api-url">网关地址</label>
+          <input type="url" id="gw-api-url" placeholder="http://127.0.0.1:8787" />
+          <div class="tool-note" style="margin-top:4px;">支持 localhost 与局域网地址（本频道直连，不经后台代理）</div>
+        </div>
+        <div class="form-group">
+          <label for="gw-api-key">网关 Key</label>
+          <input type="password" id="gw-api-key" placeholder="tmg_xxxxxx..." />
+        </div>
+        <div class="settings-inline-actions">
+          <button id="test-gw-connection-btn" class="btn text-btn">测试网关连接</button>
+        </div>
+        <div id="gw-connection-message" class="message"></div>
+      </div>
+
       <!-- 通用设置 -->
       <div class="settings-section page-card">
         <h4 class="settings-section-title">通用设置</h4>
@@ -822,6 +974,7 @@
           <select id="default-tab-select" title="默认页面" class="settings-select">
             <option value="temp-email">Temp Email</option>
             <option value="moe-mail">Moe Mail</option>
+            <option value="gw-mail">统一路由</option>
           </select>
         </div>
         <div class="form-group">
@@ -940,6 +1093,15 @@
               </select>
             </div>
             <div class="settings-expiry-item">
+              <span>快填统一路由</span>
+              <select id="setting-ff-gw-expiry">
+                <option value="3600000">1 小时</option>
+                <option value="86400000" selected>1 天</option>
+                <option value="259200000">3 天</option>
+                <option value="0">永久</option>
+              </select>
+            </div>
+            <div class="settings-expiry-item">
               <span>Temp Mail 页面</span>
               <select id="setting-temp-expiry">
                 <option value="3600000">1 小时</option>
@@ -952,6 +1114,15 @@
             <div class="settings-expiry-item">
               <span>Moe Mail 页面</span>
               <select id="setting-moe-expiry">
+                <option value="3600000">1 小时</option>
+                <option value="86400000" selected>1 天</option>
+                <option value="259200000">3 天</option>
+                <option value="0">永久</option>
+              </select>
+            </div>
+            <div class="settings-expiry-item">
+              <span>统一路由默认有效期</span>
+              <select id="setting-gw-expiry">
                 <option value="3600000">1 小时</option>
                 <option value="86400000" selected>1 天</option>
                 <option value="259200000">3 天</option>
@@ -998,6 +1169,7 @@
           <div class="config-io-checks">
             <label class="config-check"><input type="checkbox" value="tempEmail" checked /> Temp Email 配置</label>
             <label class="config-check"><input type="checkbox" value="moemail" checked /> Moe Mail 配置</label>
+            <label class="config-check"><input type="checkbox" value="gateway" checked /> 统一路由配置</label>
             <label class="config-check"><input type="checkbox" value="floatWindow" checked /> 悬浮窗设置</label>
             <label class="config-check"><input type="checkbox" value="backgroundMail" checked /> 后台轮询与通知</label>
             <label class="config-check"><input type="checkbox" value="mailDisplay" checked /> 邮件显示偏好</label>
@@ -1005,6 +1177,7 @@
             <label class="config-check"><input type="checkbox" value="pageFillRules" checked /> 页面填写规则与快填配置</label>
             <label class="config-check"><input type="checkbox" value="generatedProfile" checked /> 最近生成资料与历史</label>
             <label class="config-check"><input type="checkbox" value="defaultTab" checked /> 默认页面与布局</label>
+            <label class="config-check"><input type="checkbox" value="themeStyle" checked /> 主题风格（配色与视觉风格）</label>
             <label class="config-check"><input type="checkbox" value="emailHistory" checked /> 邮箱历史记录</label>
             <label class="config-check"><input type="checkbox" value="bookmarks" checked /> 书签数据</label>
             <label class="config-check"><input type="checkbox" value="bookmarkSort" checked /> 书签排序方式</label>

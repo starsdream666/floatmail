@@ -1137,6 +1137,7 @@ body.js-loading {
 #fast-fill-page,
 #temp-email-page,
 #moe-mail-page,
+#gw-mail-page,
 #bookmarks-page,
 #tools-page,
 #generated-history-page,
@@ -1800,6 +1801,18 @@ body.js-loading {
   color: var(--error);
 }
 
+.fill-rule-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.fill-rule-mode-row select {
+  flex: 1;
+  min-width: 0;
+}
+
 .fill-rules-list {
   display: flex;
   flex-direction: column;
@@ -1904,6 +1917,32 @@ body.js-loading {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* 统一路由邮箱列表 —— 与 #moe-email-list 同构。
+   漏掉这条的表现：列表不铺满、不滚动，且没有宽度约束，长地址会把卡片撑宽
+   并把操作按钮推出可视区。min-width:0 让卡片能收缩到容器宽度以内。
+   滚动条按需求隐藏但保留滚动能力（见下方 ::-webkit-scrollbar）。 */
+#gw-email-list {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+
+#gw-email-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* 卡片自身也要能收缩：它是 .history-section（column flex）的 flex 项，
+   长地址会让它按内容宽度膨胀，min-width:0 把它钉回容器宽度。 */
+#gw-email-list .moe-email-card {
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .bm-history-section {
@@ -2446,7 +2485,10 @@ ul#history-list li span {
   font-size: 16px;
   font-weight: bold;
   line-height: 1.35;
-  word-break: break-word;
+  /* 用 overflow-wrap 而非已废弃的 word-break:break-word —— 后者等价于
+     overflow-wrap:anywhere，会参与 min-content 计算，在 flex 布局里能把这一列
+     压到一个字符宽。break-word 只在会溢出时才断词，不影响固有宽度。 */
+  overflow-wrap: break-word;
 }
 
 .mail-reader-meta-stack {
@@ -2459,7 +2501,7 @@ ul#history-list li span {
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.45;
-  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .mail-reader-toolbar {
@@ -2556,7 +2598,10 @@ ul#history-list li span {
   font-size: 13px;
   line-height: 1.6;
   white-space: pre-wrap;
-  word-break: break-word;
+  /* 邮件正文容器。用 overflow-wrap 而非废弃的 word-break:break-word（后者 = anywhere，
+     参与 min-content 计算）。HTML 邮件在 iframe 里另有一套基础样式，见
+     popup-modules/mail-render.js 的 MAIL_FRAME_BASE_CSS。 */
+  overflow-wrap: break-word;
   overflow: hidden;
   padding: 18px 20px;
   background: var(--bg-color);
@@ -2821,6 +2866,7 @@ ul#history-list li span {
 #fast-fill-page,
 #temp-email-page,
 #moe-mail-page,
+#gw-mail-page,
 #bookmarks-page,
 #generated-history-page,
 #fill-rules-page,
@@ -2858,6 +2904,7 @@ ul#history-list li span {
 
 #temp-email-page .page-card,
 #moe-mail-page .page-card,
+#gw-mail-page .page-card,
 #bookmarks-page .page-card,
 #fast-fill-page .page-card,
 #generated-history-page .page-card,
@@ -3112,7 +3159,8 @@ ul#history-list li {
   min-width: 42px;
 }
 .fast-fill-result-value {
-  word-break: break-word;
+  /* 原先 word-break:break-word 与 overflow-wrap:break-word 并存 —— 前者已废弃且
+     会无视后者强行按 anywhere 生效，所以只保留 overflow-wrap。 */
   overflow-wrap: break-word;
   font-size: 13px;
   line-height: 1.4;
@@ -3323,12 +3371,26 @@ body.tab-layout-sidebar .header {
 body.tab-layout-sidebar .tab-bar {
   grid-column: 1;
   grid-row: 2;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   padding: 6px;
   gap: 6px;
   min-height: 0;
+  box-sizing: border-box;
   overflow-y: auto;
+  /* 基础规则里是 overflow-x: auto。侧栏轨道只有 102px，减去 1px 边框与 6px 内边距
+     后内容区 88px，任何一点溢出都会在底部长出一条横向滚动条 —— 竖向条再占 8px 会
+     让溢出更严重。侧栏是单列纵向列表，横向没有可滚内容，直接关掉。 */
+  overflow-x: hidden;
+  /* 滚动条隐藏但保留滚动能力：Firefox 用 scrollbar-width，Chromium 用下面的
+     ::-webkit-scrollbar。不要用 overflow:hidden —— 那会连滚动一起禁掉。 */
+  scrollbar-width: none;
+}
+
+/* 侧栏滚动条只隐藏视觉，滚轮/拖拽/键盘滚动全部照常 */
+body.tab-layout-sidebar .tab-bar::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 body.tab-layout-sidebar .tab-btn {
@@ -3338,6 +3400,14 @@ body.tab-layout-sidebar .tab-btn {
   justify-content: center;
   text-align: center;
   line-height: 1.25;
+  /* 基础 .tab-btn 是 min-width: 80px（横向 tab 栏的下限），侧栏里 80 + 12 内边距
+     = 92px > 88px 可用宽 → 溢出。侧栏单列本就该跟随轨道宽度，这里解除下限。 */
+  min-width: 0;
+  box-sizing: border-box;
+  /* 基础规则是 white-space: nowrap；「Temp Email」这类长标签在窄轨道里需要能换行，
+     否则又会把宽度顶出去。 */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 body.tab-layout-sidebar .tab-btn.active {
@@ -3348,6 +3418,7 @@ body.tab-layout-sidebar .tab-btn.active {
 body.tab-layout-sidebar #fast-fill-page,
 body.tab-layout-sidebar #temp-email-page,
 body.tab-layout-sidebar #moe-mail-page,
+body.tab-layout-sidebar #gw-mail-page,
 body.tab-layout-sidebar #bookmarks-page,
 body.tab-layout-sidebar #tools-page,
 body.tab-layout-sidebar #generated-history-page,
@@ -3369,6 +3440,7 @@ body.tab-layout-sidebar .container:has(#tab-bar.hidden) .header,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #fast-fill-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #temp-email-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #moe-mail-page,
+body.tab-layout-sidebar .container:has(#tab-bar.hidden) #gw-mail-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #bookmarks-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #tools-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #generated-history-page,
@@ -3911,6 +3983,7 @@ body.floating-hosted ::-webkit-scrollbar-thumb {
 
   #temp-email-page,
   #moe-mail-page,
+  #gw-mail-page,
   #bookmarks-page,
   #generated-history-page,
   #fill-rules-page,

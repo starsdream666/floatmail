@@ -18,6 +18,10 @@ const MOE_EMAIL_LIST_CACHE_TTL_MS = 60 * 1000;
 const TEMP_DOMAIN_CACHE_STORAGE_KEY = 'remoteTempDomainCache';
 const MOE_CONFIG_CACHE_STORAGE_KEY = 'remoteMoeConfigCache';
 const MOE_EMAIL_LIST_CACHE_STORAGE_KEY = 'remoteMoeEmailListCache';
+const GW_DOMAIN_CACHE_TTL_MS = 10 * 60 * 1000;
+const GW_MAILBOX_CACHE_TTL_MS = 60 * 1000;
+const GW_DOMAIN_CACHE_STORAGE_KEY = 'remoteGwDomainCache';
+const GW_MAILBOX_CACHE_STORAGE_KEY = 'remoteGwMailboxCache';
 const MAIL_NOTIFICATION_TARGETS_KEY = 'mailNotificationTargets';
 const INTERVAL_UNIT_FACTORS = Object.freeze({
   seconds: 1,
@@ -49,6 +53,15 @@ const ALLOWED_STORAGE_KEYS = new Set([
   'moeKnownMailIds',
   'defaultMoeExpiry',
   'defaultFfMoeExpiry',
+  // 统一路由（网关主 API）
+  'gwApiUrl',
+  'gwApiKey',
+  'gwMailboxCache',
+  'gwUnreadCounts',
+  'gwKnownMailIds',
+  'gwIncludeShared',
+  'defaultGwExpiry',
+  'defaultFfGwExpiry',
   // 后台轮询 / 通知
   'mailPollingInterval',
   'mailPollState',
@@ -60,6 +73,8 @@ const ALLOWED_STORAGE_KEYS = new Set([
   'remoteTempDomainCache',
   'remoteMoeConfigCache',
   'remoteMoeEmailListCache',
+  'remoteGwDomainCache',
+  'remoteGwMailboxCache',
   // 悬浮窗
   'floatWindowEnabled',
   'floatLayout',
@@ -387,6 +402,13 @@ function buildMoeMailKey(message) {
   ].join('|');
 }
 
+function buildGwMailKey(message) {
+  if (message?.id !== undefined && message?.id !== null) {
+    return String(message.id);
+  }
+  return [message?.createdAt || '', message?.from || '', message?.subject || ''].join('|');
+}
+
 async function runWithConcurrency(items, concurrency, worker) {
   const queue = [...items];
   const workers = Array.from(
@@ -630,6 +652,42 @@ async function getMoeEmailList(forceRefresh = false) {
     MOE_EMAIL_LIST_CACHE_TTL_MS,
     forceRefresh,
     MOE_EMAIL_LIST_CACHE_STORAGE_KEY
+  );
+}
+
+async function getGwDomains(forceRefresh = false) {
+  const { gwApiUrl = '', gwApiKey = '' } = await storageGet(['gwApiUrl', 'gwApiKey']);
+  const baseUrl = String(gwApiUrl).trim().replace(/\/$/, '');
+  const apiKey = String(gwApiKey).trim();
+  if (!baseUrl || !apiKey) {
+    return { domains: [] };
+  }
+  return fetchCachedJson(
+    `gw-domains:${baseUrl}:${hashCacheIdentity(apiKey)}`,
+    `${baseUrl}/v1/domains`,
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+    GW_DOMAIN_CACHE_TTL_MS,
+    forceRefresh,
+    GW_DOMAIN_CACHE_STORAGE_KEY
+  );
+}
+
+async function getGwMailboxes(forceRefresh = false, includeShared = false) {
+  const { gwApiUrl = '', gwApiKey = '' } = await storageGet(['gwApiUrl', 'gwApiKey']);
+  const baseUrl = String(gwApiUrl).trim().replace(/\/$/, '');
+  const apiKey = String(gwApiKey).trim();
+  if (!baseUrl || !apiKey) {
+    return { total: 0, mailboxes: [] };
+  }
+  // 同步面板一次最多拉 50 条（F3：候选清单，不是全量镜像）
+  const query = `?limit=50${includeShared ? '&includeShared=1' : ''}`;
+  return fetchCachedJson(
+    `gw-mailboxes:${baseUrl}:${hashCacheIdentity(apiKey)}:${includeShared ? 'shared' : 'own'}`,
+    `${baseUrl}/v1/mailboxes${query}`,
+    { headers: { Authorization: `Bearer ${apiKey}` } },
+    GW_MAILBOX_CACHE_TTL_MS,
+    forceRefresh,
+    GW_MAILBOX_CACHE_STORAGE_KEY
   );
 }
 
@@ -1003,13 +1061,15 @@ function runVerifyAddressesNow() {
 }
 
 async function updateBadgeFromStorage() {
-  const { tempUnreadCounts = {}, moeUnreadCounts = {} } = await storageGet([
+  const { tempUnreadCounts = {}, moeUnreadCounts = {}, gwUnreadCounts = {} } = await storageGet([
     'tempUnreadCounts',
     'moeUnreadCounts',
+    'gwUnreadCounts',
   ]);
 
   const total = Object.values(tempUnreadCounts).reduce((sum, count) => sum + (Number(count) || 0), 0)
-    + Object.values(moeUnreadCounts).reduce((sum, count) => sum + (Number(count) || 0), 0);
+    + Object.values(moeUnreadCounts).reduce((sum, count) => sum + (Number(count) || 0), 0)
+    + Object.values(gwUnreadCounts).reduce((sum, count) => sum + (Number(count) || 0), 0);
 
   // MV3 下这两个 API 返回 Promise，未处理会产生 unhandled rejection。
   await Promise.all([
@@ -1032,6 +1092,11 @@ async function pollMailNow() {
     'moeKnownMailIds',
     'tempUnreadCounts',
     'moeUnreadCounts',
+    'gwApiUrl',
+    'gwApiKey',
+    'gwMailboxCache',
+    'gwKnownMailIds',
+    'gwUnreadCounts',
     'notificationsEnabled',
     'mailPollingInterval',
     'mailPollState',
@@ -1044,6 +1109,9 @@ async function pollMailNow() {
   const moeApiUrl = (settings.moeApiUrl || '').trim().replace(/\/$/, '');
   const moeApiKey = (settings.moeApiKey || '').trim();
   const moeEmailCache = Array.isArray(settings.moeEmailCache) ? settings.moeEmailCache : [];
+  const gwApiUrl = (settings.gwApiUrl || '').trim().replace(/\/$/, '');
+  const gwApiKey = (settings.gwApiKey || '').trim();
+  const gwMailboxCache = Array.isArray(settings.gwMailboxCache) ? settings.gwMailboxCache : [];
   const notificationsEnabled = settings.notificationsEnabled !== false;
   const basePollIntervalMs = resolveIntervalSeconds(
     settings.mailPollingInterval,
@@ -1055,11 +1123,15 @@ async function pollMailNow() {
   const moeKnownMailIds = { ...(settings.moeKnownMailIds || {}) };
   const tempUnreadCounts = { ...(settings.tempUnreadCounts || {}) };
   const moeUnreadCounts = { ...(settings.moeUnreadCounts || {}) };
+  const gwKnownMailIds = { ...(settings.gwKnownMailIds || {}) };
+  const gwUnreadCounts = { ...(settings.gwUnreadCounts || {}) };
   const mailPollState = { ...(settings.mailPollState || {}) };
   const initialTempUnreadCounts = { ...tempUnreadCounts };
   const initialMoeUnreadCounts = { ...moeUnreadCounts };
+  const initialGwUnreadCounts = { ...gwUnreadCounts };
   const updatedTempAddresses = new Set();
   const updatedMoeIds = new Set();
+  const updatedGwIds = new Set();
   const updatedPollStateKeys = new Set();
   const notifications = [];
 
@@ -1080,6 +1152,17 @@ async function pollMailNow() {
       delete moeKnownMailIds[emailId];
       delete moeUnreadCounts[emailId];
       delete mailPollState[`moe:${emailId}`];
+    }
+  });
+
+  // gw 无本地过期清理任务（服务端 expiresAt 权威，见手册 S10.2）；
+  // 但轮询前要丢掉已不在本地关注列表里的 known-ids / 未读 / poll state。
+  const activeGwIds = new Set(gwMailboxCache.map((mailbox) => String(mailbox.id)));
+  Object.keys(gwKnownMailIds).forEach((mailboxId) => {
+    if (!activeGwIds.has(String(mailboxId))) {
+      delete gwKnownMailIds[mailboxId];
+      delete gwUnreadCounts[mailboxId];
+      delete mailPollState[`gw:${mailboxId}`];
     }
   });
 
@@ -1198,6 +1281,56 @@ async function pollMailNow() {
     });
   }
 
+  if (gwApiUrl && gwApiKey) {
+    await runWithConcurrency(gwMailboxCache, 3, async (mailbox) => {
+      const mailboxId = String(mailbox.id);
+      const stateKey = `gw:${mailboxId}`;
+      const isActive = activeInbox?.type === 'gw' && String(activeInbox.mailboxId) === mailboxId;
+      if (!isActive && Number(mailPollState[stateKey]?.nextPollAt) > now) {
+        return;
+      }
+      try {
+        const data = await fetchJson(
+          `${gwApiUrl}/v1/mailboxes/${encodeURIComponent(mailboxId)}/messages`,
+          { headers: { Authorization: `Bearer ${gwApiKey}` } }
+        );
+        const messages = Array.isArray(data.messages) ? data.messages : [];
+        const ids = messages.map(buildGwMailKey);
+        const previousIds = Array.isArray(gwKnownMailIds[mailboxId]) ? gwKnownMailIds[mailboxId] : null;
+        let newMessages = [];
+        if (previousIds) {
+          const previousSet = new Set(previousIds);
+          newMessages = messages.filter((m) => !previousSet.has(buildGwMailKey(m)));
+          if (newMessages.length > 0) {
+            gwUnreadCounts[mailboxId] = (gwUnreadCounts[mailboxId] || 0) + newMessages.length;
+            notifications.push({
+              source: mailbox.address || `Gateway #${mailboxId}`,
+              count: newMessages.length,
+              subject: newMessages[0]?.subject || '(无主题)',
+              inbox: { type: 'gw', mailboxId, address: mailbox.address || '' },
+            });
+          }
+        } else {
+          gwUnreadCounts[mailboxId] = gwUnreadCounts[mailboxId] || 0;
+        }
+        gwKnownMailIds[mailboxId] = ids.slice(0, 50);
+        updatedGwIds.add(mailboxId);
+        updateAddressPollState(mailPollState, stateKey, {
+          hasNewMail: newMessages.length > 0, failed: false, isActive,
+          baseIntervalMs: basePollIntervalMs, now,
+        });
+        updatedPollStateKeys.add(stateKey);
+      } catch (error) {
+        console.warn('统一路由轮询失败:', error.message);
+        updateAddressPollState(mailPollState, stateKey, {
+          hasNewMail: false, failed: true, isActive,
+          baseIntervalMs: basePollIntervalMs, now,
+        });
+        updatedPollStateKeys.add(stateKey);
+      }
+    });
+  }
+
   // 轮询网络请求期间 popup 可能清零未读、删除邮箱或切换服务配置。
   // 提交前基于最新值按地址合并，避免旧快照整对象覆盖用户操作。
   const mergeResult = await runMailStateMutation(async () => {
@@ -1212,6 +1345,11 @@ async function pollMailNow() {
       'moeKnownMailIds',
       'tempUnreadCounts',
       'moeUnreadCounts',
+      'gwApiUrl',
+      'gwApiKey',
+      'gwMailboxCache',
+      'gwKnownMailIds',
+      'gwUnreadCounts',
       'mailPollState',
       'notificationsEnabled',
     ]);
@@ -1219,15 +1357,21 @@ async function pollMailNow() {
     const latestMoeEmailCache = Array.isArray(latest.moeEmailCache) ? latest.moeEmailCache : [];
     const latestTempAddresses = new Set(latestHistory);
     const latestMoeIds = new Set(latestMoeEmailCache.map((email) => String(email.id)));
+    const latestGwMailboxCache = Array.isArray(latest.gwMailboxCache) ? latest.gwMailboxCache : [];
+    const latestGwIds = new Set(latestGwMailboxCache.map((mailbox) => String(mailbox.id)));
     const mergedTempKnownMailIds = { ...(latest.tempKnownMailIds || {}) };
     const mergedMoeKnownMailIds = { ...(latest.moeKnownMailIds || {}) };
     const mergedTempUnreadCounts = { ...(latest.tempUnreadCounts || {}) };
     const mergedMoeUnreadCounts = { ...(latest.moeUnreadCounts || {}) };
+    const mergedGwKnownMailIds = { ...(latest.gwKnownMailIds || {}) };
+    const mergedGwUnreadCounts = { ...(latest.gwUnreadCounts || {}) };
     const mergedMailPollState = { ...(latest.mailPollState || {}) };
     const tempConfigUnchanged = String(latest.apiUrl || '').trim().replace(/\/$/, '') === apiUrl
       && String(latest.adminToken || '').trim() === adminToken;
     const moeConfigUnchanged = String(latest.moeApiUrl || '').trim().replace(/\/$/, '') === moeApiUrl
       && String(latest.moeApiKey || '').trim() === moeApiKey;
+    const gwConfigUnchanged = String(latest.gwApiUrl || '').trim().replace(/\/$/, '') === gwApiUrl
+      && String(latest.gwApiKey || '').trim() === gwApiKey;
 
     Object.keys(mergedTempKnownMailIds).forEach((address) => {
       if (!latestTempAddresses.has(address)) delete mergedTempKnownMailIds[address];
@@ -1241,10 +1385,18 @@ async function pollMailNow() {
     Object.keys(mergedMoeUnreadCounts).forEach((emailId) => {
       if (!latestMoeIds.has(String(emailId))) delete mergedMoeUnreadCounts[emailId];
     });
+    Object.keys(mergedGwKnownMailIds).forEach((mailboxId) => {
+      if (!latestGwIds.has(String(mailboxId))) delete mergedGwKnownMailIds[mailboxId];
+    });
+    Object.keys(mergedGwUnreadCounts).forEach((mailboxId) => {
+      if (!latestGwIds.has(String(mailboxId))) delete mergedGwUnreadCounts[mailboxId];
+    });
     Object.keys(mergedMailPollState).forEach((stateKey) => {
       if (stateKey.startsWith('temp:') && !latestTempAddresses.has(stateKey.slice(5))) {
         delete mergedMailPollState[stateKey];
       } else if (stateKey.startsWith('moe:') && !latestMoeIds.has(stateKey.slice(4))) {
+        delete mergedMailPollState[stateKey];
+      } else if (stateKey.startsWith('gw:') && !latestGwIds.has(stateKey.slice(3))) {
         delete mergedMailPollState[stateKey];
       }
     });
@@ -1275,11 +1427,26 @@ async function pollMailNow() {
         mergedMoeUnreadCounts[emailId] = latestCount + delta;
       }
     }
+    if (gwConfigUnchanged) {
+      for (const mailboxId of updatedGwIds) {
+        if (!latestGwIds.has(mailboxId)) continue;
+        const initialCount = Number(initialGwUnreadCounts[mailboxId]) || 0;
+        const polledCount = Number(gwUnreadCounts[mailboxId]) || 0;
+        const delta = Math.max(0, polledCount - initialCount);
+        const latestCount = Number(mergedGwUnreadCounts[mailboxId]) || 0;
+        mergedGwKnownMailIds[mailboxId] = gwKnownMailIds[mailboxId];
+        mergedGwUnreadCounts[mailboxId] = latestCount + delta;
+      }
+    }
     for (const stateKey of updatedPollStateKeys) {
-      const isTemp = stateKey.startsWith('temp:');
-      const id = stateKey.slice(stateKey.indexOf(':') + 1);
-      if ((isTemp && tempConfigUnchanged && latestTempAddresses.has(id))
-        || (!isTemp && moeConfigUnchanged && latestMoeIds.has(id))) {
+      const colon = stateKey.indexOf(':');
+      const kind = stateKey.slice(0, colon);
+      const id = stateKey.slice(colon + 1);
+      const canCommit =
+        (kind === 'temp' && tempConfigUnchanged && latestTempAddresses.has(id))
+        || (kind === 'moe' && moeConfigUnchanged && latestMoeIds.has(id))
+        || (kind === 'gw' && gwConfigUnchanged && latestGwIds.has(id));
+      if (canCommit) {
         mergedMailPollState[stateKey] = mailPollState[stateKey];
       }
     }
@@ -1289,29 +1456,36 @@ async function pollMailNow() {
       moeKnownMailIds: mergedMoeKnownMailIds,
       tempUnreadCounts: mergedTempUnreadCounts,
       moeUnreadCounts: mergedMoeUnreadCounts,
+      gwKnownMailIds: mergedGwKnownMailIds,
+      gwUnreadCounts: mergedGwUnreadCounts,
       mailPollState: mergedMailPollState,
     });
     return {
       latestTempAddresses,
       latestMoeIds,
+      latestGwIds,
       tempConfigUnchanged,
       moeConfigUnchanged,
+      gwConfigUnchanged,
       latestNotificationsEnabled: latest.notificationsEnabled !== false,
     };
   });
   const {
     latestTempAddresses,
     latestMoeIds,
+    latestGwIds,
     tempConfigUnchanged,
     moeConfigUnchanged,
+    gwConfigUnchanged,
     latestNotificationsEnabled,
   } = mergeResult;
 
   const activeNotifications = notifications.filter((notification) => {
-    if (notification.inbox?.type === 'temp') {
-      return tempConfigUnchanged && latestTempAddresses.has(notification.inbox.address);
-    }
-    return moeConfigUnchanged && latestMoeIds.has(String(notification.inbox?.emailId));
+    const t = notification.inbox?.type;
+    if (t === 'temp') return tempConfigUnchanged && latestTempAddresses.has(notification.inbox.address);
+    if (t === 'moe') return moeConfigUnchanged && latestMoeIds.has(String(notification.inbox?.emailId));
+    if (t === 'gw') return gwConfigUnchanged && latestGwIds.has(String(notification.inbox?.mailboxId));
+    return false;
   });
   if (!notificationsEnabled || !latestNotificationsEnabled) {
     return;
@@ -1365,7 +1539,7 @@ function runPollMailNow() {
 }
 
 // 必须与 content.js 顶部的同名常量保持一致，否则版本校验永久失败并反复注入。
-const PAGE_TOOLS_VERSION = '2026.08.23-balls-v1';
+const PAGE_TOOLS_VERSION = '2026.09.14-login-rules-v3';
 const pageToolsReconcileRuns = new Map();
 
 async function getPageToolsStatus(tabId) {
@@ -1519,6 +1693,9 @@ async function configureMailAlarm() {
     'moeApiUrl',
     'moeApiKey',
     'moeEmailCache',
+    'gwApiUrl',
+    'gwApiKey',
+    'gwMailboxCache',
   ]);
   await clearAlarm(MAIL_ALARM_NAME);
   const mailPollingIntervalSeconds = resolveIntervalSeconds(settings.mailPollingInterval, DEFAULT_MAIL_POLL_INTERVAL);
@@ -1528,7 +1705,10 @@ async function configureMailAlarm() {
   const hasMoeMailSource = Boolean(settings.moeApiUrl && settings.moeApiKey)
     && Array.isArray(settings.moeEmailCache)
     && settings.moeEmailCache.length > 0;
-  if (mailPollingIntervalSeconds > 0 && (hasTempMailSource || hasMoeMailSource)) {
+  const hasGwMailSource = Boolean(settings.gwApiUrl && settings.gwApiKey)
+    && Array.isArray(settings.gwMailboxCache)
+    && settings.gwMailboxCache.length > 0;
+  if (mailPollingIntervalSeconds > 0 && (hasTempMailSource || hasMoeMailSource || hasGwMailSource)) {
     const mailPollingIntervalMinutes = mailPollingIntervalSeconds / 60;
     await chrome.alarms.create(MAIL_ALARM_NAME, {
       delayInMinutes: Math.min(1, mailPollingIntervalMinutes),
@@ -1596,7 +1776,7 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 
     await storageSet({
       activeInbox: target.inbox,
-      activeTab: target.inbox.type === 'moe' ? 'moe-mail' : 'temp-email',
+      activeTab: ({ moe: 'moe-mail', temp: 'temp-email', gw: 'gw-mail' })[target.inbox.type] || 'temp-email',
     });
     chrome.notifications.clear(notificationId);
 
@@ -1634,6 +1814,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
       MOE_EMAIL_LIST_CACHE_STORAGE_KEY,
     ]).catch(() => {});
   }
+  if (changes.gwApiUrl || changes.gwApiKey) {
+    clearRemoteDataCache('gw-');
+    storageRemove([
+      GW_DOMAIN_CACHE_STORAGE_KEY,
+      GW_MAILBOX_CACHE_STORAGE_KEY,
+    ]).catch(() => {});
+  }
 
   const verifyAlarmKeys = [
     'verifyInterval',
@@ -1653,12 +1840,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
     'moeApiUrl',
     'moeApiKey',
     'moeEmailCache',
+    'gwApiUrl',
+    'gwApiKey',
+    'gwMailboxCache',
   ];
   if (mailAlarmKeys.some((key) => changes[key] !== undefined)) {
     configureMailAlarm().catch((error) => console.warn('重新配置邮件告警失败:', error.message));
   }
 
-  if (changes.tempUnreadCounts || changes.moeUnreadCounts) {
+  if (changes.tempUnreadCounts || changes.moeUnreadCounts || changes.gwUnreadCounts) {
     updateBadgeFromStorage().catch((error) => console.warn('更新角标失败:', error.message));
   }
 });
@@ -1776,6 +1966,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    if (message?.type === 'get-gw-domains') {
+      sendResponse({ ok: true, data: await getGwDomains(message.forceRefresh === true) });
+      return;
+    }
+
+    if (message?.type === 'get-gw-mailboxes') {
+      sendResponse({
+        ok: true,
+        data: await getGwMailboxes(message.forceRefresh === true, message.includeShared === true),
+      });
+      return;
+    }
+
     if (message?.type === 'cleanup-expired-temp-addresses') {
       const result = await runCleanupExpiredTempAddresses(message.force === true);
       sendResponse({ ok: true, data: result });
@@ -1801,6 +2004,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (moeUnreadCounts[key]) {
           moeUnreadCounts[key] = 0;
           await storageSet({ moeUnreadCounts });
+        }
+      });
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === 'clear-gw-unread' && message.mailboxId) {
+      const key = String(message.mailboxId);
+      await runMailStateMutation(async () => {
+        const { gwUnreadCounts = {} } = await storageGet(['gwUnreadCounts']);
+        if (gwUnreadCounts[key]) {
+          gwUnreadCounts[key] = 0;
+          await storageSet({ gwUnreadCounts });
         }
       });
       sendResponse({ ok: true });

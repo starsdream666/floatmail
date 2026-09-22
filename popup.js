@@ -179,6 +179,59 @@ document.addEventListener('DOMContentLoaded', async () => {
   const moeHistoryBatchDeleteBtn = document.getElementById('moe-history-batch-delete-btn');
   const moeHistoryBatchCancelBtn = document.getElementById('moe-history-batch-cancel-btn');
 
+  // ===================== 统一路由（网关主 API）元素 =====================
+  const gwPage = document.getElementById('gw-mail-page');
+  const gwCreatePane = document.getElementById('gw-create-pane');
+  const gwEmailNameInput = document.getElementById('gw-email-name');
+  const gwDomainSelect = document.getElementById('gw-domain-select');
+  const gwExpirySelect = document.getElementById('gw-expiry-select');
+  const gwCreateBtn = document.getElementById('gw-create-btn');
+  const gwCreateMessage = document.getElementById('gw-create-message');
+  const gwRetryDomainsBtn = document.getElementById('gw-retry-domains-btn');
+  const gwEmailListSection = document.getElementById('gw-email-list-section');
+  const gwEmailListDiv = document.getElementById('gw-email-list');
+  const gwMarkAllReadBtn = document.getElementById('gw-mark-all-read-btn');
+  const gwSyncBtn = document.getElementById('gw-sync-btn');
+  const gwRefreshBtn = document.getElementById('gw-refresh-btn');
+  const gwInboxPane = document.getElementById('gw-inbox-pane');
+  const gwInboxTitle = document.getElementById('gw-inbox-title');
+  const gwMailList = document.getElementById('gw-mail-list');
+  const gwMailContent = document.getElementById('gw-mail-content');
+  const gwBackToListBtn = document.getElementById('gw-back-to-list');
+  const gwDeleteMailBtn = document.getElementById('gw-delete-mail-btn');
+  const gwMailFrom = document.getElementById('gw-mail-from');
+  const gwMailSubject = document.getElementById('gw-mail-subject');
+  const gwMailTime = document.getElementById('gw-mail-time');
+  const toggleGwMailViewBtn = document.getElementById('toggle-gw-mail-view-btn');
+  const toggleGwMailImagesBtn = document.getElementById('toggle-gw-mail-images-btn');
+  const gwMailInsights = document.getElementById('gw-mail-insights');
+  const gwMailBody = document.getElementById('gw-mail-body');
+  const gwRefreshInboxBtn = document.getElementById('gw-refresh-inbox-btn');
+  const translateGwMailBtn = document.getElementById('translate-gw-mail-btn');
+  const gwMailTranslation = document.getElementById('gw-mail-translation');
+  const gwMailTranslationTitle = document.getElementById('gw-mail-translation-title');
+  const gwMailTranslationBody = document.getElementById('gw-mail-translation-body');
+  const copyGwMailTranslationBtn = document.getElementById('copy-gw-mail-translation-btn');
+  const retranslateGwMailBtn = document.getElementById('retranslate-gw-mail-btn');
+
+  // 统一路由 Batch UI（列表 + 收件箱，与 Temp 对齐）
+  const gwHistoryBatchToggleBtn = document.getElementById('gw-history-batch-toggle-btn');
+  const gwHistoryBatchAction = document.getElementById('gw-history-batch-action');
+  const gwHistoryBatchDeleteBtn = document.getElementById('gw-history-batch-delete-btn');
+  const gwHistoryBatchCancelBtn = document.getElementById('gw-history-batch-cancel-btn');
+  const gwInboxBatchToggleBtn = document.getElementById('gw-inbox-batch-toggle-btn');
+  const gwInboxBatchAction = document.getElementById('gw-inbox-batch-action');
+  const gwInboxBatchDeleteBtn = document.getElementById('gw-inbox-batch-delete-btn');
+  const gwInboxBatchCancelBtn = document.getElementById('gw-inbox-batch-cancel-btn');
+
+  // 统一路由同步弹层元素（S6.4 候选清单弹层，交互逻辑由后续施工段实现）
+  const gwSyncModal = document.getElementById('gw-sync-modal');
+  const gwIncludeSharedCheckbox = document.getElementById('gw-include-shared');
+  const gwSyncCandidates = document.getElementById('gw-sync-candidates');
+  const gwSyncConfirmBtn = document.getElementById('gw-sync-confirm-btn');
+  const gwSyncCancelBtn = document.getElementById('gw-sync-cancel-btn');
+  const gwSyncHint = document.getElementById('gw-sync-hint');
+
   // ===================== 书签元素 =====================
   const bookmarksPage = document.getElementById('bookmarks-page');
   const bmNameInput = document.getElementById('bm-name-input');
@@ -207,6 +260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fillProfileMessage = document.getElementById('fill-profile-message');
   const fillRulesSite = document.getElementById('fill-rules-site');
   const fillRulesList = document.getElementById('fill-rules-list');
+  const fillRuleModeSelect = document.getElementById('fill-rule-mode');
   const fillRulesMessage = document.getElementById('fill-rules-message');
 
   // ===================== 一键填充页面元素 =====================
@@ -224,6 +278,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fastFillMoeExpiry = document.getElementById('fast-fill-moe-expiry');
   const fastFillTempExpiryRow = document.getElementById('fast-fill-temp-expiry-row');
   const fastFillTempExpiry = document.getElementById('fast-fill-temp-expiry');
+  const fastFillGwExpiryRow = document.getElementById('fast-fill-gw-expiry-row');
+  const fastFillGwExpiry = document.getElementById('fast-fill-gw-expiry');
   const fastFillDomainStatus = document.getElementById('fast-fill-domain-status');
   const fastFillGenerateBtn = document.getElementById('fast-fill-generate-btn');
   const fastFillMessage = document.getElementById('fast-fill-message');
@@ -245,6 +301,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const tempConnectionMessage = document.getElementById('temp-connection-message');
   const testMoeConnectionBtn = document.getElementById('test-moe-connection-btn');
   const moeConnectionMessage = document.getElementById('moe-connection-message');
+  const gwApiUrlInput = document.getElementById('gw-api-url');
+  const gwApiKeyInput = document.getElementById('gw-api-key');
+  const testGwConnectionBtn = document.getElementById('test-gw-connection-btn');
+  const gwConnectionMessage = document.getElementById('gw-connection-message');
   const saveSettingsBtn = document.getElementById('save-settings');
   const settingsMessage = document.getElementById('settings-message');
   const floatToggle = document.getElementById('float-toggle');
@@ -330,6 +390,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const DEFAULT_FF_MOE_EXPIRY_KEY = 'defaultFfMoeExpiry';
   const DEFAULT_TEMP_EXPIRY_KEY = 'defaultTempExpiry';
   const DEFAULT_MOE_EXPIRY_KEY = 'defaultMoeExpiry';
+  const DEFAULT_GW_EXPIRY_KEY = 'defaultGwExpiry';
+  const DEFAULT_FF_GW_EXPIRY_KEY = 'defaultFfGwExpiry';
   const THEME_KEY = 'theme';
   const TRANSLATION_API_BASE_KEY = 'translationApiBase';
   const TRANSLATION_API_KEY_KEY = 'translationApiKey';
@@ -402,6 +464,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   let moeApiKey = '';
   let currentMoeEmails = [];
   let moeUnreadCounts = {};
+
+  // 统一路由状态
+  let gwApiUrl = '';
+  let gwApiKey = '';
+  let gwVersion = '';            // /api/info 的 version，用于能力探测（F8）
+  let gwSupportsList = false;    // GET /v1/mailboxes 是否可用（旧网关 404 → 降级纯本地）
+  let gwMailboxes = [];          // 本地关注列表（契约 4），元素形如 {id, address, domain, expiresAt}
+  let gwUnreadCounts = {};       // key = mailbox.id
+  let gwIncludeShared = false;   // 同步面板「包含共享邮箱」
+  let defaultGwExpiry = '86400000';
+  let defaultFfGwExpiry = '86400000';
+  let gwInboxController = null;
+  let gwHistoryBatchController = null;
 
   // 书签状态
   let bookmarks = [];
@@ -1182,8 +1257,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       return String(response?.data?.emailDomains || '').split(',').map((domain) => domain.trim()).filter(Boolean);
     }
   });
+  const gwDomainLoader = createDomainLoader({
+    select: gwDomainSelect,
+    createButton: gwCreateBtn,
+    messageElement: gwCreateMessage,
+    async fetchDomains(forceRefresh) {
+      const response = await runtimeSendMessage({ type: 'get-gw-domains', forceRefresh });
+      const list = response?.data?.domains;
+      // /v1/domains 返回对象数组，取 .domain 字段（与 temp 的字符串数组、moe 的 CSV 都不同）
+      return Array.isArray(list) ? list.map((d) => d?.domain).filter(Boolean) : [];
+    }
+  });
   const loadDomains = tempDomainLoader.load;
   const moeLoadDomains = moeDomainLoader.load;
+  const gwLoadDomains = gwDomainLoader.load;
 
   function bindDomainRetry(button, loader) {
     button.addEventListener('click', async () => {
@@ -1197,6 +1284,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   bindDomainRetry(retryDomainsBtn, tempDomainLoader);
   bindDomainRetry(moeRetryDomainsBtn, moeDomainLoader);
+  bindDomainRetry(gwRetryDomainsBtn, gwDomainLoader);
 
   async function proxiedFetch(url, init = {}) {
     const response = await runtimeSendMessage({
@@ -1218,6 +1306,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
   const moeFetch = (url, init = {}) => proxiedFetch(url, init);
+
+  // ===================== 统一路由（网关主 API）请求辅助 =====================
+  /** 统一路由请求：直连（支持 localhost），Bearer 鉴权，统一错误信封解析 */
+  async function gwFetch(path, init = {}) {
+    const base = String(gwApiUrl || '').trim().replace(/\/$/, '');
+    if (!base) throw new Error('未配置网关地址');
+    const headers = { ...(init.headers || {}) };
+    if (gwApiKey) headers.Authorization = `Bearer ${gwApiKey}`;
+    if (init.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    return fetchWithTimeout(`${base}${path}`, { ...init, headers });
+  }
+
+  /** 解析网关错误信封 {error:{code,message}}；非信封时回退状态码 */
+  async function gwError(res) {
+    try {
+      const body = await res.json();
+      if (body?.error?.message) {
+        const err = new Error(body.error.message);
+        err.code = body.error.code || '';
+        return err;
+      }
+    } catch { /* 非 JSON 响应 */ }
+    return new Error(`${res.status} ${res.statusText}`);
+  }
+
+  /** GET 并解析 JSON，失败抛带 code 的 Error */
+  async function gwGet(path) {
+    const res = await gwFetch(path);
+    if (!res.ok) throw await gwError(res);
+    return res.json();
+  }
+
+  /** 语义化版本比较：a>b 返回正数，相等 0，a<b 负数。只比较 major.minor.patch 数字段 */
+  function compareVersion(a, b) {
+    const pa = String(a || '0').split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = String(b || '0').split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < 3; i += 1) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+    }
+    return 0;
+  }
+
   const tabSendMessage = (tabId, message) => new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response) => {
       if (chrome.runtime.lastError) {
@@ -1343,8 +1473,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, true);
 
   // ===================== 选项卡切换 =====================
-  const allPages = [fastFillPage, tempPage, moePage, bookmarksPage, toolsPage, generatedHistoryPage, fillRulesPage, themesPage, settingsPage, configIOPage];
-  const MAIN_TABS = new Set(['fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools', 'generated-history', 'fill-rules', 'themes', 'settings', 'config-io']);
+  const allPages = [fastFillPage, tempPage, moePage, gwPage, bookmarksPage, toolsPage, generatedHistoryPage, fillRulesPage, themesPage, settingsPage, configIOPage];
+  const MAIN_TABS = new Set(['fast-fill', 'temp-email', 'moe-mail', 'gw-mail', 'bookmarks', 'tools', 'generated-history', 'fill-rules', 'themes', 'settings', 'config-io']);
 
   function normalizeTabForLayout(tab) {
     const fallbackTab = 'temp-email';
@@ -1460,7 +1590,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 本实例正在看收件箱（列表或邮件详情）时忽略这次同步，
       // 否则 closeInboxView/closeMoeInboxView 会把用户正在阅读的邮件强行关掉。
       // 用户手动返回后仍停留在本实例自己的标签上，状态保持自洽。
-      if (tempInboxController?.isOpen() || moeInboxController?.isOpen()) {
+      if (tempInboxController?.isOpen() || moeInboxController?.isOpen() || gwInboxController?.isOpen()) {
         return;
       }
     }
@@ -1479,6 +1609,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 先关闭所有子视图状态
     closeInboxView();
     closeMoeInboxView();
+    closeGwInboxView();
 
     // 隐藏所有页面
     allPages.forEach(p => p.classList.add('hidden'));
@@ -1488,6 +1619,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       'fast-fill': fastFillPage,
       'temp-email': tempPage,
       'moe-mail': moePage,
+      'gw-mail': gwPage,
       'bookmarks': bookmarksPage,
       'tools': toolsPage,
       'generated-history': generatedHistoryPage,
@@ -1515,6 +1647,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     if (tab === 'moe-mail' && moeApiUrl && moeApiKey) {
       Promise.all([moeLoadDomains(), moeLoadEmails()]).catch(() => {});
+      return;
+    }
+    if (tab === 'gw-mail' && gwApiUrl && gwApiKey) {
+      gwLoadDomains().catch(() => {});
       return;
     }
     if (tab === 'fast-fill') {
@@ -1860,8 +1996,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  function getCurrentSiteFillRules() {
-    return pageFillRules?.[currentSiteOrigin] || {};
+  function getCurrentSiteFillRules(mode = 'register') {
+    const rules = pageFillRules?.[currentSiteOrigin] || {};
+    return mode === 'login' ? (rules.login || {}) : rules;
+  }
+
+  function getEditingRuleMode() {
+    return fillRuleModeSelect?.value === 'login' ? 'login' : 'register';
+  }
+
+  fillRuleModeSelect?.addEventListener('change', () => renderFillRuleManager());
+
+  function formatFillResult(response) {
+    const modeLabel = response?.mode === 'login' ? '登录规则' : response?.mode === 'register' ? '注册规则' : '自动识别';
+    return `${modeLabel}：已填入 ${response?.filled || 0} 个字段${response?.partial ? `；${response.error}` : ''}`;
   }
 
   function formatFillRuleSummary(rule) {
@@ -1890,10 +2038,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     fillRulesSite.textContent = `当前站点：${currentSiteOrigin}`;
-    const rules = getCurrentSiteFillRules();
+    const mode = getEditingRuleMode();
+    const rules = getCurrentSiteFillRules(mode);
     const siteEnabled = isSiteAllowed(currentSiteOrigin);
+    // 注册和登录使用相同的字段列表，只在存储和匹配时区分场景。
+    const fieldDefs = PAGE_FILL_FIELD_DEFS;
 
-    PAGE_FILL_FIELD_DEFS.forEach((field) => {
+    fieldDefs.forEach((field) => {
       const card = document.createElement('div');
       card.className = 'fill-rule-card';
 
@@ -1922,7 +2073,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       pickBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        armFieldSelection(field).catch((error) => {
+        armFieldSelection(field, mode).catch((error) => {
           showMessage(fillRulesMessage, `规则创建失败: ${error.message}`, 'error');
         });
       });
@@ -1935,7 +2086,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       clearBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        clearFieldRule(field.kind).catch((error) => {
+        clearFieldRule(field.kind, mode).catch((error) => {
           showMessage(fillRulesMessage, `规则清除失败: ${error.message}`, 'error');
         });
       });
@@ -1952,37 +2103,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  async function armFieldSelection(field) {
-    if (!currentSiteOrigin) {
-      throw new Error('未检测到当前网页');
-    }
-    await sendToActivePage({
-      type: 'start-field-selection',
-      kind: field.kind,
-      label: field.pickLabel
-    });
-    showMessage(fillRulesMessage, `已进入${field.pickLabel}选取模式，请回到网页点击目标输入框，按 Esc 可取消。`, 'success');
+  async function armFieldSelection(field, mode = 'register') {
+    if (!currentSiteOrigin) throw new Error('未检测到当前网页');
+    const label = `${mode === 'login' ? '登录' : '注册'}${field.pickLabel}`;
+    await sendToActivePage({ type: 'start-field-selection', kind: field.kind, label, mode });
+    showMessage(fillRulesMessage, `已进入${label}选取模式，请回到网页点击目标输入框，按 Esc 可取消。`, 'success');
   }
 
-  async function clearFieldRule(kind) {
-    if (!currentSiteOrigin) {
-      throw new Error('未检测到当前网页');
-    }
-
-    const nextRules = { ...pageFillRules };
-    const originRules = { ...(nextRules[currentSiteOrigin] || {}) };
-    delete originRules[kind];
-
-    if (Object.keys(originRules).length > 0) {
-      nextRules[currentSiteOrigin] = originRules;
+  async function clearFieldRule(kind, mode = 'register') {
+    if (!currentSiteOrigin) throw new Error('未检测到当前网页');
+    const origin = currentSiteOrigin;
+    const latest = await storageGet([PAGE_FILL_RULES_KEY]);
+    const nextRules = { ...(latest[PAGE_FILL_RULES_KEY] || pageFillRules) };
+    const originRules = { ...(nextRules[origin] || {}) };
+    if (mode === 'login') {
+      const loginRules = { ...(originRules.login || {}) };
+      delete loginRules[kind];
+      if (Object.keys(loginRules).length) originRules.login = loginRules;
+      else delete originRules.login;
     } else {
-      delete nextRules[currentSiteOrigin];
+      delete originRules[kind];
     }
-
-    pageFillRules = nextRules;
+    if (Object.keys(originRules).length > 0) nextRules[origin] = originRules;
+    else delete nextRules[origin];
     await storageSet({ [PAGE_FILL_RULES_KEY]: nextRules });
+    pageFillRules = nextRules;
     renderFillRuleManager();
-    showMessage(fillRulesMessage, '当前字段规则已清除。', 'success');
+    renderFastFillRulesSummary();
+    showMessage(fillRulesMessage, `当前${mode === 'login' ? '登录' : '注册'}字段规则已清除，另一套规则保持不变。`, 'success');
   }
 
   // ===================== 一键填充页面 =====================
@@ -2001,6 +2149,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let fastFillDomainBlacklist = [];
   let fastFillTempDomains = [];
   let fastFillMoeDomains = [];
+  let fastFillGwDomains = [];
   let fastFillDomainsLoaded = false;
   let fastFillDomainLoadPromise = null;
   let fastFillDomainLoadSource = '';
@@ -2023,7 +2172,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function getFastFillAvailableDomains() {
-    const sourceDomains = fastFillEmailSource === 'moe' ? fastFillMoeDomains : fastFillTempDomains;
+    const sourceDomains = ({ moe: fastFillMoeDomains, gw: fastFillGwDomains, temp: fastFillTempDomains })[fastFillEmailSource] || [];
     if (!sourceDomains.length) return [];
     if (fastFillDomainMode === 'specific') {
       return fastFillDomainSpecific ? [fastFillDomainSpecific] : [];
@@ -2047,7 +2196,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function fastFillLoadDomains(options = {}) {
     const forceRefresh = options.forceRefresh === true;
-    const source = fastFillEmailSource === 'moe' ? 'moe' : 'temp';
+    const source = fastFillEmailSource;
     if (!forceRefresh && fastFillLoadedSources.has(source)) {
       fastFillDomainsLoaded = true;
       fastFillRefreshDomainUI();
@@ -2079,6 +2228,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         const domainStr = response?.data?.emailDomains || '';
         fastFillMoeDomains = String(domainStr).split(',').map(d => d.trim()).filter(Boolean);
+      } else if (source === 'gw') {
+        const response = await runtimeSendMessage({
+          type: 'get-gw-domains',
+          forceRefresh,
+        });
+        // /v1/domains 返回对象数组，取 .domain 字段（与 temp 的字符串数组、moe 的 CSV 都不同）
+        const list = response?.data?.domains;
+        fastFillGwDomains = Array.isArray(list) ? list.map((d) => d?.domain).filter(Boolean) : [];
       }
       fastFillLoadedSources.add(source);
       fastFillDomainsLoaded = true;
@@ -2095,7 +2252,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function fastFillRefreshDomainUI() {
-    const sourceDomains = fastFillEmailSource === 'moe' ? fastFillMoeDomains : fastFillTempDomains;
+    const sourceDomains = ({ moe: fastFillMoeDomains, gw: fastFillGwDomains, temp: fastFillTempDomains })[fastFillEmailSource] || [];
     const available = getFastFillAvailableDomains();
 
     // Update domain select
@@ -2132,10 +2289,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (available.length === 0) {
       fastFillDomainStatus.textContent = '无可用域名，请检查邮箱来源配置或黑白名单';
     } else {
-      fastFillDomainStatus.textContent = `当前可用域名：${available.length} 个 (${fastFillEmailSource === 'moe' ? 'Moe Mail' : 'Temp Mail'})`;
+      fastFillDomainStatus.textContent = `当前可用域名：${available.length} 个 (${({ moe: 'Moe Mail', gw: '统一路由', temp: 'Temp Mail' })[fastFillEmailSource] || 'Temp Mail'})`;
     }
 
-    fastFillGenerateBtn.disabled = available.length === 0 || !currentSiteOrigin;
+    // 登录复用历史凭据，不应被邮箱服务的域名可用性禁用。
+    renderFastFillRulesSummary();
   }
 
   function renderDomainChecklist(container, allDomains, selectedList, onChange) {
@@ -2180,17 +2338,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    const rules = getCurrentSiteFillRules();
-    const configuredKinds = PAGE_FILL_FIELD_DEFS
-      .filter(f => rules[f.kind])
-      .map(f => f.label);
-
-    if (configuredKinds.length === 0) {
+    const registerRules = getCurrentSiteFillRules('register');
+    const loginRules = getCurrentSiteFillRules('login');
+    const registerKinds = PAGE_FILL_FIELD_DEFS.filter(f => registerRules[f.kind]?.selector).map(f => f.label);
+    const loginKinds = PAGE_FILL_FIELD_DEFS.filter(f => loginRules[f.kind]?.selector).map(f => f.label);
+    if (registerKinds.length + loginKinds.length === 0) {
       fastFillRulesSummary.textContent = '暂无规则 — 请先到「规则」页面选取页面输入框';
       fastFillGenerateBtn.disabled = true;
     } else {
-      fastFillRulesSummary.textContent = `已配置 ${configuredKinds.length} 个字段：${configuredKinds.join('、')}`;
-      fastFillGenerateBtn.disabled = getFastFillAvailableDomains().length === 0;
+      fastFillRulesSummary.textContent = `注册：${registerKinds.join('、') || '未绑定'}；登录：${loginKinds.join('、') || '未绑定'}。填入时自动匹配，登录按绑定字段复用本站历史资料；验证码请使用本次有效值。`;
+      fastFillGenerateBtn.disabled = loginKinds.length === 0 && getFastFillAvailableDomains().length === 0;
     }
   }
 
@@ -2219,7 +2376,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       time.textContent = new Date(entry.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
       const source = document.createElement('span');
       source.className = 'fast-fill-history-source';
-      source.textContent = entry.emailSource === 'moe' ? 'Moe Mail' : 'Temp Mail';
+      source.textContent = ({ moe: 'Moe Mail', gw: '统一路由', temp: 'Temp Mail' })[entry.emailSource] || 'Temp Mail';
       header.appendChild(time);
       header.appendChild(source);
 
@@ -2242,49 +2399,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       fillBtn.textContent = '填入';
       fillBtn.addEventListener('click', async () => {
         try {
-          // Only fill fields that have rules configured on the current page
-          const rules = getCurrentSiteFillRules();
-          const fieldMap = {
-            email: 'email',
-            password: 'password',
-            fullName: 'name',
-            birthday: 'birthday',
-            address: 'address'
-          };
-          // Map rule kinds back to history field keys
-          const kindToKey = {};
-          Object.entries(fieldMap).forEach(([key, kind]) => { kindToKey[kind] = key; });
-
-          // Determine which history fields to fill, and their target kinds
-          const fillList = [];
-          Object.entries(entry.fields).forEach(([key, val]) => {
-            const ruleKind = fieldMap[key];
-            if (ruleKind && rules[ruleKind] && val) {
-              fillList.push({ kind: ruleKind, value: val });
-              if (key === 'password') {
-                fillList.push({ kind: 'confirmPassword', value: val });
-              }
-            }
+          fillBtn.disabled = true;
+          // 整组交给页面脚本匹配，不能逐条 fill-value（会丢失目标去重与规则场景）。
+          const response = await sendToActivePage({
+            type: 'fill-profile',
+            fields: entry.fields,
+            rulesOnly: true
           });
-          if (fillList.length === 0) {
-            showMessage(fastFillMessage, '当前页面无匹配的字段规则', 'error');
-            return;
-          }
-          // Send each field individually to avoid target interference
-          let filled = 0;
-          for (const item of fillList) {
-            try {
-              const res = await sendToActivePage({
-                type: 'fill-value',
-                kind: item.kind,
-                value: item.value
-              });
-              if (res?.ok) filled++;
-            } catch { /* skip failed fields */ }
-          }
-          showMessage(fastFillMessage, `已填入 ${filled} 个字段`, filled > 0 ? 'success' : 'error');
+          showMessage(fastFillMessage, formatFillResult(response), response?.partial ? 'info' : 'success');
         } catch (e) {
           showMessage(fastFillMessage, `填入失败: ${e.message}`, 'error');
+        } finally {
+          fillBtn.disabled = false;
         }
       });
       actions.appendChild(fillBtn);
@@ -2364,6 +2490,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         showMessage(fastFillMessage, `重新创建失败: ${e.message}`, 'error');
         return;
       }
+    } else if (source === 'gw') {
+      // 统一路由：只按本地关注列表的 id 校验，绝不重建（重建会烧 60/key/小时配额并撞 409）
+      const mailbox = gwMailboxes.find((m) => m.address === email);
+      if (mailbox) {
+        try {
+          await gwGet(`/v1/mailboxes/${encodeURIComponent(mailbox.id)}`);
+          switchTab('gw-mail');
+          setTimeout(() => { gwOpenInbox(mailbox); }, 400);
+          return;
+        } catch (e) {
+          if (e.code === 'MAILBOX_NOT_FOUND') {
+            showMessage(fastFillMessage, '该邮箱已失效（可能被删除或换过 Key）', 'error');
+            return;
+          }
+        }
+      }
+      showMessage(fastFillMessage, '本地列表里没有这个邮箱，请到「统一路由」页从网关同步', 'error');
+      return;
     } else {
       // Temp Mail
       // Check if email still exists in history
@@ -2426,11 +2570,36 @@ document.addEventListener('DOMContentLoaded', async () => {
       return { ok: false, errorKind: 'no-site' };
     }
 
-    const rules = getCurrentSiteFillRules();
-    const neededKinds = PAGE_FILL_FIELD_DEFS
-      .map(f => f.kind)
-      .filter(k => rules[k]);
-
+    let matchedContext;
+    fastFillGenerating = true;
+    try {
+      matchedContext = await sendToActivePage({ type: 'get-fill-context' });
+      if (matchedContext?.mode === 'login') {
+        // 登录按当前绑定字段复用同一条本站历史，不要求同时具有邮箱和密码，
+        // 也不拼接多个账户的资料或生成新凭据。姓名规则对应历史中的 fullName。
+        const fieldKey = kind => kind === 'name' ? 'fullName' : kind;
+        const hasValue = (fields, kind) => Boolean(fields?.[fieldKey(kind)]
+          || (kind === 'confirmPassword' && fields?.password));
+        const kinds = matchedContext.kinds || [];
+        const entry = fastFillHistory.find(item => item.origin === matchedContext.origin
+          && kinds.some(kind => hasValue(item.fields, kind)));
+        if (!entry) throw new Error('未找到本站与当前登录规则匹配的历史资料，请选择已有资料或使用对应字段的「填入」按钮');
+        const missingLabels = PAGE_FILL_FIELD_DEFS.filter(field => kinds.includes(field.kind)
+          && !hasValue(entry.fields, field.kind)).map(field => field.label);
+        const response = await sendToActivePage({ type: 'fill-profile', fields: entry.fields, rulesOnly: true,
+          expectedMode: 'login', expectedOrigin: matchedContext.origin });
+        const missingNote = missingLabels.length ? `；历史中暂无${missingLabels.join('、')}，请另行填入` : '';
+        showMessage(fastFillMessage, formatFillResult(response) + missingNote,
+          response?.partial || missingLabels.length ? 'info' : 'success');
+        return response;
+      }
+    } catch (error) {
+      showMessage(fastFillMessage, `填入失败: ${error.message}`, 'error');
+      return { ok: false, errorKind: 'no-rules' };
+    } finally {
+      fastFillGenerating = false;
+    }
+    const neededKinds = matchedContext?.kinds || [];
     if (neededKinds.length === 0) {
       showMessage(fastFillMessage, '请先为当前页面创建至少一条字段规则', 'error');
       return { ok: false, errorKind: 'no-rules' };
@@ -2478,6 +2647,23 @@ document.addEventListener('DOMContentLoaded', async () => {
           // 快填创建的邮箱也必须立即进入本地缓存，后台轮询依赖 moeEmailCache。
           // 强制刷新可同时拿到邮箱 id，避免只保存地址后收不到角标和通知。
           await moeLoadEmails({ forceRefresh: true });
+        } else if (fastFillEmailSource === 'gw') {
+          const expiryMs = parseInt(fastFillGwExpiry.value) || 0;
+          const body = { domain };
+          // 网关收秒、UI 存毫秒；0/NaN 表示"跟随上游默认"，不传该字段
+          if (Number.isFinite(expiryMs) && expiryMs > 0) {
+            body.expiresInSeconds = Math.floor(expiryMs / 1000);
+          }
+          const res = await gwFetch('/v1/mailboxes', { method: 'POST', body: JSON.stringify(body) });
+          if (!res.ok) throw await gwError(res);
+          const data = await res.json();
+          const mailbox = data.mailbox;
+          // 契约 1：地址一律取响应值，禁止 `${name}@${domain}` 兜底
+          // （cf 上游会重写 localPart，拼出来的地址收不到信）
+          if (!mailbox?.address) throw new Error('网关未返回邮箱地址');
+          emailAddr = mailbox.address;
+          // 立即进入本地关注列表：后台轮询与「收件箱」跳转都依赖 gwMailboxes
+          gwAddMailbox(mailbox);
         } else {
           const res = await fetchWithTimeout(`${apiUrl}/admin/new_address`, {
             method: 'POST',
@@ -2495,7 +2681,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!emailAddr) throw new Error('未能获取邮箱地址');
         generatedFields.email = emailAddr;
         updateGeneratedProfile({ email: emailAddr });
-        if (fastFillEmailSource !== 'moe' && typeof addHistory === 'function') {
+        if (fastFillEmailSource === 'temp' && typeof addHistory === 'function') {
           const tempExpiryMs = parseInt(fastFillTempExpiry.value) || 0;
           addHistory(emailAddr, tempExpiryMs);
         }
@@ -2562,7 +2748,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Fill into the page
       const fillResponse = await sendToActivePage({
         type: 'fill-profile',
-        fields: generatedFields
+        fields: generatedFields,
+        rulesOnly: true,
+        expectedMode: 'register',
+        expectedOrigin: matchedContext.origin
       });
       const filled = fillResponse?.filled || 0;
 
@@ -2576,7 +2765,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         emailSource: fastFillEmailSource,
         expiryMs: fastFillEmailSource === 'moe'
           ? (parseInt(fastFillMoeExpiry.value) || 86400000)
-          : (parseInt(fastFillTempExpiry.value) || 0)
+          : fastFillEmailSource === 'gw'
+            ? (parseInt(fastFillGwExpiry.value) || 86400000)
+            : (parseInt(fastFillTempExpiry.value) || 0)
       });
 
       // Render result
@@ -2622,6 +2813,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                   }
                 }
               } catch { /* fall through to just showing the tab */ }
+            } else if (fastFillEmailSource === 'gw') {
+              switchTab('gw-mail');
+              // 建箱时已通过 gwAddMailbox 进入本地关注列表，按地址找回即可
+              const gwMailbox = gwMailboxes.find((m) => m.address === item.value);
+              if (gwMailbox) {
+                setTimeout(() => { gwOpenInbox(gwMailbox); }, 400);
+              }
             } else {
               switchTab('temp-email');
               setTimeout(() => {
@@ -2634,7 +2832,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         fastFillResult.appendChild(row);
       });
 
-      showMessage(fastFillMessage, `已生成 ${resultItems.length} 项信息，成功填入 ${filled} 个字段`, 'success');
+      showMessage(fastFillMessage, `已生成 ${resultItems.length} 项信息，${formatFillResult(fillResponse)}`, fillResponse?.partial ? 'info' : 'success');
 
       // If some fields weren't filled (e.g., multi-step form), show refill button
       if (filled < resultItems.length) {
@@ -2648,10 +2846,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           try {
             const reResponse = await sendToActivePage({
               type: 'fill-profile',
-              fields: generatedProfile
+              fields: generatedFields,
+              rulesOnly: true
             });
-            const reFilled = reResponse?.filled || 0;
-            showMessage(fastFillMessage, `补充填入 ${reFilled} 个字段`, reFilled > 0 ? 'success' : 'error');
+            showMessage(fastFillMessage, formatFillResult(reResponse), reResponse?.partial ? 'info' : 'success');
           } catch (e) {
             showMessage(fastFillMessage, `填入失败: ${e.message}`, 'error');
           }
@@ -3226,6 +3424,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       : normalizeTranslationSource(text);
   }
 
+  function getGwMailTranslationSource(mail, options = {}) {
+    if (!mail) return '';
+    // 网关归一化正文是 {text, html[]}，翻译源先把多段 html 合并成一段再转纯文本
+    const html = Array.isArray(mail.html) ? mail.html.join('\n') : (mail.html || '');
+    const text = mail.text || htmlToText(html) || '';
+    return options.includeOriginalLinks
+      ? appendOriginalLinksToInsightSource(text, html)
+      : normalizeTranslationSource(text);
+  }
+
   function normalizeTranslationSource(text) {
     if (typeof text !== 'string') {
       return '';
@@ -3457,6 +3665,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   setMailActionButtonState(translateMoeMailBtn, { icon: 'translate', title: '翻译邮件', disabled: true });
   setMailActionButtonState(toggleMoeMailViewBtn, { icon: 'plainText', title: '切换邮件视图', disabled: true });
   setMailActionButtonState(toggleMoeMailImagesBtn, { icon: 'noImages', title: '无远程图片', disabled: true });
+  // 统一路由（网关）阅读按钮 priming —— 与 temp 频道一致，含删除按钮
+  setMailActionButtonState(translateGwMailBtn, { icon: 'translate', title: '翻译邮件', disabled: true });
+  setMailActionButtonState(toggleGwMailViewBtn, { icon: 'plainText', title: '切换邮件视图', disabled: true });
+  setMailActionButtonState(toggleGwMailImagesBtn, { icon: 'noImages', title: '无远程图片', disabled: true });
+  setMailActionButtonState(gwDeleteMailBtn, { icon: 'delete', title: '删除此邮件', danger: true, disabled: true });
 
   const tempMailReader = createMailReaderState({
     elements: {
@@ -3484,6 +3697,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!mail) return null;
     return mail.id ?? mail.message_id
       ?? `${mail.received_at || ''}|${mail.from_address || ''}|${mail.subject || ''}`;
+  }
+
+  function getGwMailIdentity(mail) {
+    if (!mail) return null;
+    return mail.id ?? `${mail.createdAt || ''}|${mail.from || ''}|${mail.subject || ''}`;
   }
 
   const moeMailReader = createMailReaderState({
@@ -3675,6 +3893,45 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindMailReaderActions(tempMailReader);
   bindMailReaderActions(moeMailReader);
 
+  // ===================== 统一路由（网关主 API）阅读器 =====================
+  // 记录收到 501（上游不支持删除单封邮件）的邮箱 id：置灰删除按钮，而不是反复弹错
+  const gwDeleteUnsupportedMailboxIds = new Set();
+
+  const gwMailReader = createMailReaderState({
+    elements: {
+      body: gwMailBody,
+      insights: gwMailInsights,
+      translation: gwMailTranslation,
+      translationTitle: gwMailTranslationTitle,
+      translationBody: gwMailTranslationBody,
+      translateButton: translateGwMailBtn,
+      retranslateButton: retranslateGwMailBtn,
+      copyTranslationButton: copyGwMailTranslationBtn,
+      viewButton: toggleGwMailViewBtn,
+      imagesButton: toggleGwMailImagesBtn,
+      deleteButton: gwDeleteMailBtn
+    },
+    getDefaultRemoteImages: () => defaultRemoteImagesEnabled,
+    isDeletePending: (mail) => {
+      if (gwInboxController?.isMessageDeletePending(mail) === true) return true;
+      // 该邮箱所在上游不支持删单封（501）时，删除按钮保持置灰
+      const target = gwInboxController?.getTarget?.();
+      return Boolean(target && gwDeleteUnsupportedMailboxIds.has(String(target.id)));
+    },
+    getIdentity: getGwMailIdentity,
+    getTranslationSource: (mail, options) => getGwMailTranslationSource(mail, options),
+    getMetadata: (mail) => ({ subject: mail?.subject, from: mail?.from }),
+    renderBody: (mail, options) => {
+      // 网关归一化正文是 {text, html[]}，映射成 moe 渲染器期望的 {content, html}（html 取第一段）
+      const mapped = {
+        content: mail?.text || '',
+        html: Array.isArray(mail?.html) ? (mail.html[0] || '') : (mail?.html || '')
+      };
+      return renderMoeEmailBody(gwMailBody, mapped, options);
+    }
+  });
+  bindMailReaderActions(gwMailReader);
+
   bindFloatingSelectScrollBridge();
 
   bindIntervalControl(
@@ -3863,6 +4120,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     FAST_FILL_HISTORY_KEY,
     TEMP_MAIL_META_KEY,
     DEFAULT_FF_TEMP_EXPIRY_KEY, DEFAULT_FF_MOE_EXPIRY_KEY, DEFAULT_TEMP_EXPIRY_KEY, DEFAULT_MOE_EXPIRY_KEY,
+    'gwApiUrl', 'gwApiKey', 'gwMailboxCache', 'gwUnreadCounts', 'gwIncludeShared',
+    DEFAULT_GW_EXPIRY_KEY, DEFAULT_FF_GW_EXPIRY_KEY,
     'activeInbox'
   ]).then((result) => {
     // Temp Email 配置
@@ -3898,16 +4157,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     defaultFfMoeExpiry = result[DEFAULT_FF_MOE_EXPIRY_KEY] || '86400000';
     defaultTempExpiry = result[DEFAULT_TEMP_EXPIRY_KEY] || '86400000';
     defaultMoeExpiry = result[DEFAULT_MOE_EXPIRY_KEY] || '86400000';
+    defaultGwExpiry = result[DEFAULT_GW_EXPIRY_KEY] || '86400000';
+    defaultFfGwExpiry = result[DEFAULT_FF_GW_EXPIRY_KEY] || '86400000';
     // L-4：走安全赋值，任一控件缺失都不应中断整条初始化链
     setElementValueById('setting-ff-temp-expiry', defaultFfTempExpiry);
     setElementValueById('setting-ff-moe-expiry', defaultFfMoeExpiry);
     setElementValueById('setting-temp-expiry', defaultTempExpiry);
     setElementValueById('setting-moe-expiry', defaultMoeExpiry);
+    setElementValueById('setting-gw-expiry', defaultGwExpiry);
+    setElementValueById('setting-ff-gw-expiry', defaultFfGwExpiry);
     // Apply defaults to the active pages
     if (tempExpirySelect) tempExpirySelect.value = defaultTempExpiry;
     if (moeExpirySelect) moeExpirySelect.value = defaultMoeExpiry;
     if (fastFillTempExpiry) fastFillTempExpiry.value = defaultFfTempExpiry;
     if (fastFillMoeExpiry) fastFillMoeExpiry.value = defaultFfMoeExpiry;
+    if (gwExpirySelect) gwExpirySelect.value = defaultGwExpiry;
+    if (fastFillGwExpiry) fastFillGwExpiry.value = defaultFfGwExpiry;
 
     renderHistory();
 
@@ -3924,6 +4189,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentMoeEmails = Array.isArray(result.moeEmailCache) ? result.moeEmailCache : [];
     moeUnreadCounts = result.moeUnreadCounts || {};
     renderMoeEmails();
+
+    // 统一路由配置
+    gwApiUrlInput.value = result.gwApiUrl || '';
+    gwApiKeyInput.value = result.gwApiKey || '';
+    gwApiUrl = result.gwApiUrl || '';
+    gwApiKey = result.gwApiKey || '';
+    gwMailboxes = Array.isArray(result.gwMailboxCache) ? result.gwMailboxCache : [];
+    gwUnreadCounts = result.gwUnreadCounts || {};
+    gwIncludeShared = result.gwIncludeShared === true;
+    renderGwMailboxes();
 
     // 书签
     if (result.bookmarks) {
@@ -3997,6 +4272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     fastFillDomainModeEl.value = fastFillDomainMode;
     if (fastFillDomainSpecific) fastFillDomainSelect.value = fastFillDomainSpecific;
     fastFillMoeExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'moe');
+    fastFillGwExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'gw');
     fastFillTempExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'temp');
     fastFillRefreshDomainModeUI();
     siteAccessModeSelect.value = siteAccessMode;
@@ -4011,7 +4287,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 恢复上次的选项卡（activeTab 优先，否则用 defaultTab）
     let savedTab = normalizeTabForLayout(result.activeTab || savedDefault, tabLayoutMode);
     // 如果首次使用（无任何配置），自动跳转到设置页
-    if (!apiUrl && !adminToken && !moeApiUrl && !moeApiKey && !result.activeTab) {
+    if (!apiUrl && !adminToken && !moeApiUrl && !moeApiKey && !gwApiUrl && !gwApiKey && !result.activeTab) {
       savedTab = 'settings';
     }
     switchTab(savedTab);
@@ -4023,6 +4299,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else if (savedInbox && savedInbox.type === 'moe' && savedInbox.emailId && activeTab === 'moe-mail') {
       const emailObj = { id: savedInbox.emailId, address: savedInbox.address || '' };
       moeOpenInbox(emailObj);
+    } else if (savedInbox && savedInbox.type === 'gw' && savedInbox.mailboxId && activeTab === 'gw-mail') {
+      const mailbox = gwMailboxes.find((m) => m.id === savedInbox.mailboxId)
+        || { id: savedInbox.mailboxId, address: savedInbox.address || '' };
+      gwOpenInbox(mailbox);
     } else if (savedInbox) {
       // PERF-4：closeInboxView 不再无条件清空 activeInbox，
       // 这里兜底清理无法恢复的残留记录。
@@ -4049,8 +4329,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newToken = adminTokenInput.value.trim();
     const newMoeUrl = moeApiUrlInput.value.trim().replace(/\/$/, "");
     const newMoeKey = moeApiKeyInput.value.trim();
+    const newGwUrl = gwApiUrlInput.value.trim().replace(/\/$/, "");
+    const newGwKey = gwApiKeyInput.value.trim();
     const tempConfigChanged = newUrl !== apiUrl || newToken !== adminToken;
     const moeConfigChanged = newMoeUrl !== moeApiUrl || newMoeKey !== moeApiKey;
+    const gwConfigChanged = newGwUrl !== gwApiUrl || newGwKey !== gwApiKey;
     const floatEnabled = floatToggle.checked;
     const newFloatWindowStyle = FIXED_FLOAT_WINDOW_STYLE;
     const newDefaultTab = defaultTabSelect.value;
@@ -4100,6 +4383,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newDefaultFfMoeExpiry = getElementValueById('setting-ff-moe-expiry', defaultFfMoeExpiry);
     const newDefaultTempExpiry = getElementValueById('setting-temp-expiry', defaultTempExpiry);
     const newDefaultMoeExpiry = getElementValueById('setting-moe-expiry', defaultMoeExpiry);
+    const newDefaultGwExpiry = getElementValueById('setting-gw-expiry', defaultGwExpiry);
+    const newDefaultFfGwExpiry = getElementValueById('setting-ff-gw-expiry', defaultFfGwExpiry);
 
     // Temp Email 配置更新
     apiUrl = newUrl;
@@ -4115,6 +4400,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeDomainLoader.reset();
       moeEmailListLoaded = false;
       fastFillLoadedSources.delete('moe');
+    }
+    // 统一路由配置更新
+    gwApiUrl = newGwUrl;
+    gwApiKey = newGwKey;
+    if (gwConfigChanged) {
+      gwDomainLoader.reset();
+      fastFillLoadedSources.delete('gw');
     }
     mailPollingInterval = newMailPollingInterval;
     notificationsEnabled = newNotificationsEnabled;
@@ -4135,11 +4427,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     defaultFfMoeExpiry = newDefaultFfMoeExpiry;
     defaultTempExpiry = newDefaultTempExpiry;
     defaultMoeExpiry = newDefaultMoeExpiry;
+    defaultGwExpiry = newDefaultGwExpiry;
+    defaultFfGwExpiry = newDefaultFfGwExpiry;
     syncMailInsightApiFieldsVisibility();
 
     chrome.storage.local.set({
       apiUrl, adminToken,
       moeApiUrl, moeApiKey,
+      gwApiUrl, gwApiKey,
       floatWindowEnabled: floatEnabled,
       [FLOAT_WINDOW_STYLE_KEY]: newFloatWindowStyle,
       defaultTab: newDefaultTab,
@@ -4163,7 +4458,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       [DEFAULT_FF_TEMP_EXPIRY_KEY]: defaultFfTempExpiry,
       [DEFAULT_FF_MOE_EXPIRY_KEY]: defaultFfMoeExpiry,
       [DEFAULT_TEMP_EXPIRY_KEY]: defaultTempExpiry,
-      [DEFAULT_MOE_EXPIRY_KEY]: defaultMoeExpiry
+      [DEFAULT_MOE_EXPIRY_KEY]: defaultMoeExpiry,
+      [DEFAULT_GW_EXPIRY_KEY]: defaultGwExpiry,
+      [DEFAULT_FF_GW_EXPIRY_KEY]: defaultFfGwExpiry
     }, () => {
       setupAutoVerify(verifyInterval);
       showMessage(settingsMessage, '配置已保存成功！', 'success');
@@ -4432,6 +4729,46 @@ document.addEventListener('DOMContentLoaded', async () => {
       showMessage(moeConnectionMessage, `连接失败: ${error.message}`, 'error');
     } finally {
       testMoeConnectionBtn.disabled = false;
+    }
+  });
+
+  testGwConnectionBtn.addEventListener('click', async () => {
+    const targetUrl = gwApiUrlInput.value.trim().replace(/\/$/, '');
+    const targetKey = gwApiKeyInput.value.trim();
+    if (!targetUrl) {
+      showMessage(gwConnectionMessage, '请先填写网关地址', 'error');
+      return;
+    }
+
+    testGwConnectionBtn.disabled = true;
+    showMessage(gwConnectionMessage, '连接测试中...', '');
+    try {
+      // 第一步：/api/info 免鉴权，先确认是网关且版本达标（F8 兼容探测）
+      const infoRes = await fetchWithTimeout(`${targetUrl}/api/info`);
+      if (!infoRes.ok) throw new Error(`${infoRes.status} ${infoRes.statusText}`);
+      const info = await infoRes.json();
+      if (info?.name !== 'temp-mail-gateway') {
+        throw new Error('该地址不是 temp-mail-gateway（/api/info 未返回预期标识）');
+      }
+      const versionOk = compareVersion(info.version, '0.2.0') >= 0;
+
+      // 第二步：/v1/domains 验证 key
+      if (!targetKey) {
+        showMessage(gwConnectionMessage, `网关可达（v${info.version}），但未填 Key，无法验证权限`, 'error');
+        return;
+      }
+      const domRes = await fetchWithTimeout(`${targetUrl}/v1/domains`, {
+        headers: { Authorization: `Bearer ${targetKey}` }
+      });
+      if (!domRes.ok) throw await gwError(domRes);
+      const domData = await domRes.json();
+      const count = Array.isArray(domData.domains) ? domData.domains.length : 0;
+      const warn = versionOk ? '' : `；⚠️ 版本 ${info.version} 偏低，邮箱列表与接管功能需 0.2.0+`;
+      showMessage(gwConnectionMessage, `连接正常（v${info.version}），可用域名 ${count} 个${warn}`, versionOk ? 'success' : 'error');
+    } catch (error) {
+      showMessage(gwConnectionMessage, `连接失败: ${getErrorText(error)}`, 'error');
+    } finally {
+      testGwConnectionBtn.disabled = false;
     }
   });
 
@@ -5302,14 +5639,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         contentWrapper.style.display = 'flex';
         contentWrapper.style.justifyContent = 'space-between';
         contentWrapper.style.alignItems = 'center';
+        // 与 gw 同一处缺陷：flex 项默认 min-width:auto，长地址会把这层顶宽并把
+        // 操作按钮推出可视区。域名很长（如 microsoftazure…cisco.xxx）时才会暴露。
+        contentWrapper.style.minWidth = '0';
+        contentWrapper.style.gap = '8px';
 
         const info = document.createElement('div');
         info.className = 'moe-email-info';
+        info.style.minWidth = '0';
 
         const addr = document.createElement('div');
         addr.className = 'moe-email-addr';
         addr.textContent = email.address;
         addr.title = email.address;
+        addr.style.minWidth = '0';
+        addr.style.overflow = 'hidden';
+        addr.style.textOverflow = 'ellipsis';
+        addr.style.whiteSpace = 'nowrap';
         if (!batchMode) {
             addr.style.cursor = 'pointer';
             addr.onclick = (e) => { e.stopPropagation(); moeOpenInbox(email); };
@@ -5326,6 +5672,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const actions = document.createElement('div');
         actions.className = 'moe-email-actions';
+        // 按钮列不参与收缩：地址再长也只截断地址，不挤压/推走按钮
+        actions.style.flexShrink = '0';
 
         const unreadCount = moeUnreadCounts[String(email.id)] || 0;
         if (!batchMode && unreadCount > 0) {
@@ -5540,6 +5888,615 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (hasMailInsightConfig()) triggerMailAiInsights(moeMailReader);
       },
       renderDetailError: () => {}
+    }
+  });
+
+  // ===================== 统一路由（网关主 API）频道 =====================
+  // 本地关注列表上限：后台轮询会遍历全表，无上限会放大成几百个请求（风险 R8）
+  const GW_MAX_MAILBOXES = 20;
+
+  // ===================== 统一路由: 创建邮箱 =====================
+  gwCreateBtn.addEventListener('click', async () => {
+    const localPart = gwEmailNameInput.value.trim();
+    const domain = gwDomainSelect.value;
+    const expiryMs = parseInt(gwExpirySelect.value, 10);
+
+    if (!domain) {
+      showMessage(gwCreateMessage, '错误：无可用域名', 'error');
+      return;
+    }
+
+    gwCreateBtn.disabled = true;
+    gwCreateBtn.textContent = '创建中...';
+    showMessage(gwCreateMessage, '', '');
+
+    try {
+      const body = { domain };
+      if (localPart) body.localPart = localPart;
+      // 网关收秒、UI 存毫秒；0/NaN 表示"跟随上游默认"，不传该字段
+      if (Number.isFinite(expiryMs) && expiryMs > 0) {
+        body.expiresInSeconds = Math.floor(expiryMs / 1000);
+      }
+
+      const res = await gwFetch('/v1/mailboxes', { method: 'POST', body: JSON.stringify(body) });
+      if (!res.ok) throw await gwError(res);
+      const data = await res.json();
+      const mailbox = data.mailbox;
+      // 契约 1：地址一律取响应值，禁止 `${localPart}@${domain}` 兜底
+      // （cf 上游会重写 localPart：gwlive-cf-01 → gwlivecf01，拼出来的地址收不到信）
+      if (!mailbox?.address) throw new Error('网关未返回邮箱地址');
+
+      gwAddMailbox(mailbox);
+      updateGeneratedProfile({ email: mailbox.address });
+      gwEmailNameInput.value = '';
+      // 契约 2：有效期以响应为准，无 expiresAt 视为永久有效
+      const expiryNote = mailbox.expiresAt
+        ? `，有效期至 ${new Date(mailbox.expiresAt).toLocaleString()}`
+        : '，永久有效';
+      showMessage(gwCreateMessage, `创建成功: ${mailbox.address}${expiryNote}`, 'success');
+    } catch (e) {
+      showMessage(gwCreateMessage, `创建失败: ${getErrorText(e)}`, 'error');
+    } finally {
+      gwCreateBtn.disabled = false;
+      gwCreateBtn.textContent = '创建邮箱';
+    }
+  });
+
+  // ===================== 统一路由: 本地关注列表增删与持久化 =====================
+  function gwPersistMailboxes() {
+    // 只存轮询与渲染必需的字段，与 moeEmailCache 的做法一致
+    const cache = gwMailboxes.slice(0, GW_MAX_MAILBOXES).map((m) => ({
+      id: m.id,
+      address: m.address,
+      domain: m.domain || '',
+      expiresAt: m.expiresAt || null
+    }));
+    chrome.storage.local.set({ gwMailboxCache: cache });
+  }
+
+  /** 新建/同步进来的邮箱进入本地关注列表（去重，新的在前，超限截断） */
+  function gwAddMailbox(mailbox) {
+    if (!mailbox?.id) return;
+    gwMailboxes = [
+      { id: mailbox.id, address: mailbox.address, domain: mailbox.domain || '', expiresAt: mailbox.expiresAt || null },
+      ...gwMailboxes.filter((m) => m.id !== mailbox.id)
+    ].slice(0, GW_MAX_MAILBOXES);
+    gwPersistMailboxes();
+    renderGwMailboxes();
+  }
+
+  function gwRemoveMailboxLocal(mailboxId) {
+    gwMailboxes = gwMailboxes.filter((m) => m.id !== mailboxId);
+    delete gwUnreadCounts[String(mailboxId)];
+    gwPersistMailboxes();
+    chrome.storage.local.set({ gwUnreadCounts });
+    renderGwMailboxes();
+  }
+
+  // ===================== 统一路由: 邮箱列表渲染 =====================
+  function renderGwMailboxes() {
+    const batchMode = gwHistoryBatchController?.isActive() === true;
+    gwEmailListDiv.innerHTML = '';
+    if (gwMailboxes.length === 0) {
+      gwMarkAllReadBtn.classList.add('hidden');
+      gwEmailListDiv.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">暂无邮箱，创建一个或点「从网关同步」找回</div>';
+      return;
+    }
+
+    const hasUnread = gwMailboxes.some((m) => (gwUnreadCounts[String(m.id)] || 0) > 0);
+    gwMarkAllReadBtn.classList.toggle('hidden', !hasUnread || batchMode);
+
+    gwMailboxes.forEach((mailbox) => {
+      const card = document.createElement('div');
+      card.className = 'moe-email-card'; // 复用 moe 卡片样式，避免新写 CSS
+      card.style.display = 'flex';
+      card.style.alignItems = 'center';
+
+      // 批量删除复选框
+      if (batchMode) {
+        gwHistoryBatchController.attachCheckbox(card, mailbox.id);
+      }
+
+      const contentWrapper = document.createElement('div');
+      contentWrapper.style.flex = '1';
+      contentWrapper.style.display = 'flex';
+      contentWrapper.style.justifyContent = 'space-between';
+      contentWrapper.style.alignItems = 'center';
+      // flex 项默认 min-width:auto —— 长地址会把这层顶宽，把操作按钮整体推出可视区
+      // 且无法点击。子级 .moe-email-info 的 min-width:0 救不回来：父级不能收缩时，
+      // 子级的收缩许可到不了地址那一行。gap 给按钮留出与地址的间隔。
+      contentWrapper.style.minWidth = '0';
+      contentWrapper.style.gap = '8px';
+
+      const info = document.createElement('div');
+      info.className = 'moe-email-info';
+      // 兜底：即使 CSS 未加载/被主题覆盖，也保证地址列可收缩
+      info.style.minWidth = '0';
+
+      const addr = document.createElement('div');
+      addr.className = 'moe-email-addr';
+      addr.textContent = mailbox.address;
+      addr.title = mailbox.address;
+      // .moe-email-addr 已有 nowrap + ellipsis，但它依赖祖先链每一层都能收缩；
+      // 这里连同上面两处 min-width:0 一起兜住，长地址一律截断而不是撑开卡片。
+      addr.style.minWidth = '0';
+      addr.style.overflow = 'hidden';
+      addr.style.textOverflow = 'ellipsis';
+      addr.style.whiteSpace = 'nowrap';
+      if (!batchMode) {
+        addr.style.cursor = 'pointer';
+        addr.onclick = (e) => { e.stopPropagation(); gwOpenInbox(mailbox); };
+      }
+
+      const meta = document.createElement('div');
+      meta.className = 'moe-email-meta';
+      // 契约 2：有效期以服务端 expiresAt 为准；无该字段 = 永久有效
+      if (!mailbox.expiresAt) {
+        meta.textContent = '永久有效';
+      } else {
+        const expiresAt = new Date(mailbox.expiresAt);
+        const expired = expiresAt.getTime() <= Date.now();
+        meta.textContent = expired ? '已过期' : `过期: ${expiresAt.toLocaleString()}`;
+        if (expired) meta.style.color = 'var(--error)';
+      }
+
+      info.appendChild(addr);
+      info.appendChild(meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'moe-email-actions';
+      // 按钮列不参与收缩：地址再长也只截断地址，不挤压/推走按钮
+      actions.style.flexShrink = '0';
+
+      const unreadCount = gwUnreadCounts[String(mailbox.id)] || 0;
+      if (!batchMode && unreadCount > 0) {
+        const unreadBadge = document.createElement('span');
+        unreadBadge.className = 'unread-badge';
+        unreadBadge.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
+        unreadBadge.title = `${unreadCount} 封未读邮件`;
+        actions.appendChild(unreadBadge);
+      }
+
+      // 复制按钮
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'icon-btn';
+      copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      copyBtn.title = '复制地址';
+      copyBtn.onclick = (e) => { e.stopPropagation(); copyToClipboard(mailbox.address, copyBtn); };
+
+      // 填入按钮
+      const fillBtn = document.createElement('button');
+      fillBtn.className = 'icon-btn';
+      fillBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/><path d="M5 3h14"/></svg>';
+      fillBtn.title = '填入当前页面';
+      fillBtn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          await sendToActivePage({ type: 'fill-value', kind: 'email', value: mailbox.address });
+          copyToClipboard(mailbox.address, fillBtn);
+        } catch (error) {
+          showMessage(gwCreateMessage, `填充失败: ${error.message}`, 'error');
+        }
+      };
+      bindFillPreview(fillBtn, { kind: 'email' });
+
+      // 查看邮件按钮
+      const viewBtn = document.createElement('button');
+      viewBtn.className = 'icon-btn';
+      viewBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>';
+      viewBtn.title = '查看邮件';
+      viewBtn.onclick = (e) => { e.stopPropagation(); gwOpenInbox(mailbox); };
+
+      // 删除按钮
+      const delBtn = document.createElement('button');
+      delBtn.className = 'icon-btn';
+      delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
+      delBtn.title = '删除此邮箱';
+      delBtn.style.color = 'var(--error)';
+      delBtn.onclick = (e) => { e.stopPropagation(); gwDeleteMailbox(mailbox, card); };
+
+      if (!batchMode) {
+        actions.appendChild(copyBtn);
+        actions.appendChild(fillBtn);
+        actions.appendChild(viewBtn);
+        actions.appendChild(delBtn);
+      }
+
+      contentWrapper.appendChild(info);
+      contentWrapper.appendChild(actions);
+      card.appendChild(contentWrapper);
+      gwEmailListDiv.appendChild(card);
+    });
+  }
+
+  // ===================== 统一路由: 删除邮箱（force + 409 分档） =====================
+  async function gwDeleteMailbox(mailbox, cardElement) {
+    if (!confirm(`确定要删除 ${mailbox.address} 吗？`)) return;
+    try {
+      // 契约 5：尽力删除——上游删不掉也移除本地与网关记录
+      const res = await gwFetch(`/v1/mailboxes/${encodeURIComponent(mailbox.id)}?force=1`, { method: 'DELETE' });
+
+      if (res.status === 409) {
+        // FORCE_DELETE_UNSAFE：凭证型上游（DuckMail）。网关刻意保留记录以便重试，
+        // 本地也必须保留，否则用户再也没有入口去重试删除。
+        const err = await gwError(res);
+        showMessage(gwCreateMessage, `暂时无法删除：${err.message}`, 'error');
+        return;
+      }
+      if (!res.ok && res.status !== 204) throw await gwError(res);
+
+      let note = '';
+      if (res.status === 200) {
+        const body = await res.json().catch(() => ({}));
+        if (body?.upstreamDeleted === false) {
+          note = '（已从列表移除，上游可能仍保留）';
+        }
+      }
+
+      gwRemoveMailboxLocal(mailbox.id);
+      runtimeSendMessage({ type: 'get-gw-mailboxes', forceRefresh: true }).catch(() => {});
+      if (cardElement) {
+        cardElement.style.transition = 'opacity 0.3s, transform 0.3s';
+        cardElement.style.opacity = '0';
+        cardElement.style.transform = 'translateX(20px)';
+      }
+      if (note) showMessage(gwCreateMessage, `已删除 ${mailbox.address} ${note}`, 'success');
+    } catch (e) {
+      alert('删除失败: ' + getErrorText(e));
+    }
+  }
+
+  // ===================== 统一路由: 从网关同步（候选清单 + 勾选导入） =====================
+  async function gwSyncFromGateway() {
+    gwSyncBtn.disabled = true;
+    gwSyncBtn.textContent = '同步中...';
+    try {
+      const res = await runtimeSendMessage({
+        type: 'get-gw-mailboxes',
+        forceRefresh: true,
+        includeShared: gwIncludeShared,
+      });
+      const list = res?.data?.mailboxes;
+      if (!Array.isArray(list)) {
+        // F8 降级：旧网关没有这个端点 → 提示升级，不再尝试
+        gwSupportsList = false;
+        showMessage(gwCreateMessage, '当前网关不支持邮箱列表（需 0.2.0+），请升级网关后重试', 'error');
+        return;
+      }
+      gwSupportsList = true;
+
+      const known = new Set(gwMailboxes.map((m) => m.id));
+      const candidates = list.filter((m) => !known.has(m.id));
+      if (candidates.length === 0) {
+        showMessage(gwCreateMessage, `网关上没有新的邮箱（共 ${list.length} 条，均已在列表中）`, 'success');
+        return;
+      }
+
+      // 勾选式导入：默认全不选，用户自己挑（本地只需要几个）。绝不自动合并（契约 4）
+      const picked = await gwPickMailboxes(candidates);
+      if (!picked || picked.length === 0) return;
+      picked.forEach((m) => gwAddMailbox(m));
+      showMessage(gwCreateMessage, `已导入 ${picked.length} 个邮箱`, 'success');
+    } catch (e) {
+      showMessage(gwCreateMessage, `同步失败: ${getErrorText(e)}`, 'error');
+    } finally {
+      gwSyncBtn.disabled = false;
+      gwSyncBtn.textContent = '从网关同步';
+    }
+  }
+
+  /**
+   * 「从网关同步」候选弹层：展示候选邮箱供勾选，返回 Promise<mailbox[]>（取消返回 []）。
+   * 「包含共享邮箱」复选框绑定 gwIncludeShared，改变时重新拉取候选
+   * （includeShared 已进后台缓存 key，必须带 forceRefresh 一起传）。
+   */
+  function gwPickMailboxes(initialCandidates) {
+    return new Promise((resolve) => {
+      let candidates = initialCandidates;
+      const selected = new Set();
+      let fetching = false;
+      let settled = false;
+
+      const updateHint = (extra = '') => {
+        // 共享邮箱走透传创建，网关注册的 DuckMail 记录没有凭证，统一 API 可能读不了信
+        const note = gwIncludeShared ? '透传创建的邮箱可能无法读信' : '';
+        gwSyncHint.textContent = [extra, note].filter(Boolean).join('；');
+      };
+
+      const renderCandidates = () => {
+        gwSyncCandidates.innerHTML = '';
+        if (candidates.length === 0) {
+          gwSyncCandidates.innerHTML = '<div class="domain-checklist-empty">暂无新的邮箱可导入</div>';
+          return;
+        }
+        candidates.forEach((mailbox) => {
+          const label = document.createElement('label');
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = selected.has(String(mailbox.id));
+          cb.addEventListener('change', () => {
+            if (cb.checked) selected.add(String(mailbox.id));
+            else selected.delete(String(mailbox.id));
+          });
+          const text = document.createElement('span');
+          text.textContent = mailbox.address || mailbox.id || '';
+          text.title = mailbox.address || '';
+          label.appendChild(cb);
+          label.appendChild(text);
+          gwSyncCandidates.appendChild(label);
+        });
+      };
+
+      const refreshCandidates = async () => {
+        if (fetching) return;
+        fetching = true;
+        updateHint('重新拉取候选列表...');
+        try {
+          const res = await runtimeSendMessage({
+            type: 'get-gw-mailboxes',
+            forceRefresh: true,
+            includeShared: gwIncludeShared,
+          });
+          const list = res?.data?.mailboxes;
+          if (!Array.isArray(list)) {
+            updateHint('当前网关不支持邮箱列表（需 0.2.0+）');
+            return;
+          }
+          const known = new Set(gwMailboxes.map((m) => m.id));
+          candidates = list.filter((m) => !known.has(m.id));
+          selected.clear();
+          updateHint();
+          renderCandidates();
+        } catch (error) {
+          updateHint(`拉取失败: ${getErrorText(error)}`);
+        } finally {
+          fetching = false;
+        }
+      };
+
+      const onIncludeSharedChange = () => {
+        gwIncludeShared = gwIncludeSharedCheckbox.checked === true;
+        chrome.storage.local.set({ gwIncludeShared });
+        refreshCandidates().catch(() => {});
+      };
+
+      const onConfirm = () => {
+        if (fetching) return;
+        const picked = candidates.filter((m) => selected.has(String(m.id)));
+        settle(picked);
+      };
+
+      const onCancel = () => settle([]);
+
+      const cleanup = () => {
+        gwSyncCancelBtn.removeEventListener('click', onCancel);
+        gwSyncConfirmBtn.removeEventListener('click', onConfirm);
+        gwIncludeSharedCheckbox.removeEventListener('change', onIncludeSharedChange);
+      };
+
+      const settle = (result) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        gwSyncModal.classList.add('hidden');
+        resolve(result);
+      };
+
+      gwIncludeSharedCheckbox.checked = gwIncludeShared === true;
+      gwSyncConfirmBtn.disabled = false;
+      updateHint();
+      renderCandidates();
+      gwSyncModal.classList.remove('hidden');
+      gwSyncCancelBtn.addEventListener('click', onCancel);
+      gwSyncConfirmBtn.addEventListener('click', onConfirm);
+      gwIncludeSharedCheckbox.addEventListener('change', onIncludeSharedChange);
+    });
+  }
+
+  gwSyncBtn.addEventListener('click', () => { gwSyncFromGateway().catch(() => {}); });
+  gwRefreshBtn.addEventListener('click', () => { renderGwMailboxes(); });
+
+  // ===================== 统一路由: 全部标已读 + 列表批量删除 =====================
+  async function markAllGwRead() {
+    const unread = gwMailboxes.filter((m) => (gwUnreadCounts[String(m.id)] || 0) > 0);
+    if (unread.length === 0) return;
+    gwMarkAllReadBtn.disabled = true;
+    const next = { ...gwUnreadCounts };
+    unread.forEach((m) => { next[String(m.id)] = 0; });
+    gwUnreadCounts = next;
+    chrome.storage.local.set({ gwUnreadCounts });
+    renderGwMailboxes();
+    showMessage(gwCreateMessage, `已将 ${unread.length} 个邮箱标为已读`, 'success');
+    try {
+      await Promise.all(unread.map((m) =>
+        runtimeSendMessage({ type: 'clear-gw-unread', mailboxId: m.id }).catch(() => null)));
+    } finally {
+      gwMarkAllReadBtn.disabled = false;
+    }
+  }
+
+  gwMarkAllReadBtn.addEventListener('click', () => {
+    markAllGwRead().catch((error) => {
+      gwMarkAllReadBtn.disabled = false;
+      showMessage(gwCreateMessage, `一键已读失败: ${getErrorText(error)}`, 'error');
+    });
+  });
+
+  gwHistoryBatchController = createBatchSelectionController({
+    toggleButton: gwHistoryBatchToggleBtn,
+    actionBar: gwHistoryBatchAction,
+    deleteButton: gwHistoryBatchDeleteBtn,
+    cancelButton: gwHistoryBatchCancelBtn,
+    render: renderGwMailboxes,
+    confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 个邮箱吗？此操作不可恢复。`,
+    deleteSelected: async (selected) => {
+      // 与另两个频道一致：服务端删除尽力而为，不以 HTTP 状态阻断本地清理
+      // （REVIEW.md:166 明确了这条设计约束）
+      for (const mailboxId of selected) {
+        try {
+          await gwFetch(`/v1/mailboxes/${encodeURIComponent(mailboxId)}?force=1`, { method: 'DELETE' });
+        } catch (error) {
+          console.warn('删除统一路由邮箱失败:', error.message);
+        }
+      }
+      selected.forEach((id) => { delete gwUnreadCounts[String(id)]; });
+      chrome.storage.local.set({ gwUnreadCounts });
+      gwMailboxes = gwMailboxes.filter((m) => !selected.has(m.id));
+      gwPersistMailboxes();
+    },
+    afterDelete: () => { renderGwMailboxes(); }
+  });
+
+  // ===================== 统一路由: 收件箱 =====================
+  // gwOpenInbox / closeGwInboxView 必须写成 function 声明：switchTab（本文件前部）要在
+  // 控制器赋值（下方）之前调用它们，靠函数提升（与 moeOpenInbox / closeMoeInboxView 同理）。
+  function gwOpenInbox(mailbox) {
+    gwInboxController?.open(mailbox);
+  }
+
+  function closeGwInboxView() {
+    gwInboxController?.close();
+  }
+
+  // 单封删除收到 501（该上游不支持）时记入 gwDeleteUnsupportedMailboxIds，
+  // 阅读器与 setDeletePending 据此把删除按钮置灰，而不是反复报错
+  function gwMarkMailDeleteUnsupported(mailboxId) {
+    gwDeleteUnsupportedMailboxIds.add(String(mailboxId));
+  }
+
+  gwInboxController = createInboxController({
+    elements: {
+      pane: gwInboxPane,
+      homePanes: [gwCreatePane, gwEmailListSection],
+      inboxTitle: gwInboxTitle,
+      list: gwMailList,
+      content: gwMailContent,
+      backToListButton: gwBackToListBtn,
+      refreshButton: gwRefreshInboxBtn,
+      deleteButton: gwDeleteMailBtn,
+      backToHomeButton: backToHomeBtn,
+      tabBar,
+      mainTitle,
+      mainSubtitle
+    },
+    deps: {
+      storageSet,
+      renderInlineNotice,
+      getErrorText,
+      updateHeaderForTab,
+      getActiveTab: () => activeTab
+    },
+    adapter: {
+      type: 'gw',
+      title: '统一路由 Inbox',
+      subtitle: '通过网关主 API 查看全部上游的收件箱。',
+      getTargetIdentity: (mailbox) => mailbox?.id,
+      getTargetTitle: (mailbox) => mailbox?.address || '',
+      serializeTarget: (mailbox) => ({ mailboxId: mailbox.id, address: mailbox.address }),
+      getMessageIdentity: getGwMailIdentity,
+      getMessageSubject: (mail) => mail?.subject,
+      getMessageSender: (mail) => mail?.from,
+      getMessageTime: (mail) => mail?.createdAt,
+      fetchMessages: async (mailbox) => {
+        const data = await gwGet(`/v1/mailboxes/${encodeURIComponent(mailbox.id)}/messages`);
+        return Array.isArray(data.messages) ? data.messages : [];
+      },
+      loadMessageDetail: async (mail, mailbox) => {
+        // 注意参数顺序与 temp 一致：(message, target) —— 控制器以 (message, target) 调用
+        const data = await gwGet(
+          `/v1/mailboxes/${encodeURIComponent(mailbox.id)}/messages/${encodeURIComponent(mail.id)}`
+        );
+        return data.message || mail;
+      },
+      mergeMessageDetail: (summary, detail) => ({ ...summary, ...detail }),
+      deleteMessage: async (mail, mailbox) => {
+        const res = await gwFetch(
+          `/v1/mailboxes/${encodeURIComponent(mailbox.id)}/messages/${encodeURIComponent(mail.id)}`,
+          { method: 'DELETE' }
+        );
+        if (res.status === 501) {
+          // 该上游不支持删除单封邮件：置灰按钮而不是反复报错（错误 code 供上层判断）
+          gwMarkMailDeleteUnsupported(mailbox.id);
+          setMailActionButtonState(gwDeleteMailBtn, {
+            icon: 'delete',
+            title: '该上游不支持删除单封邮件',
+            danger: true,
+            disabled: true
+          });
+          throw Object.assign(new Error('该上游不支持删除单封邮件'), { code: 'CAPABILITY_MISSING' });
+        }
+        if (!res.ok && res.status !== 204) throw await gwError(res);
+      },
+      confirmDeleteMessage: '确定要删除这封邮件吗？',
+      onOpen: (mailbox) => {
+        gwUnreadCounts[String(mailbox.id)] = 0;
+        renderGwMailboxes();
+        runtimeSendMessage({ type: 'clear-gw-unread', mailboxId: mailbox.id }).catch(() => {});
+      },
+      onMessagesLoaded: (mailbox) => {
+        gwUnreadCounts[String(mailbox.id)] = 0;
+        chrome.storage.local.set({ gwUnreadCounts });
+      },
+      resetDetail: () => resetMailReader(gwMailReader),
+      prepareDetail: (mail) => {
+        beginMailReader(gwMailReader, mail);
+        gwMailFrom.textContent = `发件人: ${mail.from || '未知'}`;
+        gwMailSubject.textContent = mail.subject || '(无主题)';
+        const t = mail.createdAt ? new Date(mail.createdAt) : new Date();
+        gwMailTime.textContent = `时间: ${t.toLocaleString()}`;
+        // 摘要是单独端点取的，详情加载期间先清空正文并给出加载态（与 temp 一致）
+        renderPlainText(gwMailBody, '加载邮件内容中...');
+        setMailActionButtonState(translateGwMailBtn, { icon: 'translate', title: '加载邮件中...', disabled: true });
+        setMailActionButtonState(toggleGwMailViewBtn, { icon: 'plainText', title: '加载邮件中...', disabled: true });
+        setMailActionButtonState(toggleGwMailImagesBtn, { icon: 'noImages', title: '加载邮件中...', disabled: true });
+        setMailActionButtonState(gwDeleteMailBtn, { icon: 'delete', title: '删除此邮件', danger: true });
+      },
+      renderDetail: (mail) => {
+        gwMailReader.setMail(mail);
+        renderCurrentMail(gwMailReader);
+        if (hasMailInsightConfig()) triggerMailAiInsights(gwMailReader);
+      },
+      renderDetailError: (error) => {
+        gwMailReader.setMail(null);
+        renderPlainText(gwMailBody, `加载邮件失败：${error.message}`);
+        gwMailInsights.classList.add('hidden');
+        gwMailInsights.innerHTML = '';
+        updateMailActionButtons(gwMailReader, null);
+      },
+      setDeletePending: (pending) => {
+        const target = gwInboxController?.getTarget?.();
+        const unsupported = Boolean(target && gwDeleteUnsupportedMailboxIds.has(String(target.id)));
+        setMailActionButtonState(gwDeleteMailBtn, pending
+          ? { icon: 'loading', title: '删除中...', disabled: true, danger: true }
+          : {
+              icon: 'delete',
+              title: unsupported ? '该上游不支持删除单封邮件' : '删除此邮件',
+              danger: true,
+              disabled: unsupported
+            });
+      }
+    },
+    batch: {
+      toggleButton: gwInboxBatchToggleBtn,
+      actionBar: gwInboxBatchAction,
+      deleteButton: gwInboxBatchDeleteBtn,
+      cancelButton: gwInboxBatchCancelBtn,
+      confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 封邮件吗？`,
+      deleteSelected: async (selected) => {
+        // 与 temp 一致：批删本地优先，服务端删除尽力而为，不以 HTTP 状态阻断本地清理
+        const target = gwInboxController?.getTarget?.();
+        if (!target) return;
+        for (const mailId of selected) {
+          try {
+            await gwFetch(
+              `/v1/mailboxes/${encodeURIComponent(target.id)}/messages/${encodeURIComponent(mailId)}`,
+              { method: 'DELETE' }
+            );
+          } catch (error) {
+            console.warn('删除邮件失败:', error.message);
+          }
+        }
+      }
     }
   });
 
@@ -5943,6 +6900,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (toStore.adminToken !== undefined) { adminToken = toStore.adminToken; adminTokenInput.value = adminToken; }
         if (toStore.moeApiUrl !== undefined) { moeApiUrl = toStore.moeApiUrl; moeApiUrlInput.value = moeApiUrl; }
         if (toStore.moeApiKey !== undefined) { moeApiKey = toStore.moeApiKey; moeApiKeyInput.value = moeApiKey; }
+        if (toStore.gwApiUrl !== undefined) { gwApiUrl = toStore.gwApiUrl; gwApiUrlInput.value = gwApiUrl; }
+        if (toStore.gwApiKey !== undefined) { gwApiKey = toStore.gwApiKey; gwApiKeyInput.value = gwApiKey; }
         if (toStore.floatWindowEnabled !== undefined) {
           floatToggle.checked = toStore.floatWindowEnabled;
         }
@@ -6032,6 +6991,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           fastFillEmailSourceEl.value = fastFillEmailSource;
           fastFillTempExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'temp');
           fastFillMoeExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'moe');
+          fastFillGwExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'gw');
         }
         if (toStore[FAST_FILL_DOMAIN_MODE_KEY] !== undefined) {
           fastFillDomainMode = toStore[FAST_FILL_DOMAIN_MODE_KEY] || 'random';
@@ -6104,6 +7064,16 @@ document.addEventListener('DOMContentLoaded', async () => {
           moeExpirySelect.value = defaultMoeExpiry;
           document.getElementById('setting-moe-expiry').value = defaultMoeExpiry;
         }
+        if (toStore[DEFAULT_GW_EXPIRY_KEY] !== undefined) {
+          defaultGwExpiry = toStore[DEFAULT_GW_EXPIRY_KEY];
+          gwExpirySelect.value = defaultGwExpiry;
+          document.getElementById('setting-gw-expiry').value = defaultGwExpiry;
+        }
+        if (toStore[DEFAULT_FF_GW_EXPIRY_KEY] !== undefined) {
+          defaultFfGwExpiry = toStore[DEFAULT_FF_GW_EXPIRY_KEY];
+          fastFillGwExpiry.value = defaultFfGwExpiry;
+          document.getElementById('setting-ff-gw-expiry').value = defaultFfGwExpiry;
+        }
         if (toStore.verifyStatusCache !== undefined) {
           verifyStatus = toStore.verifyStatusCache || {};
           renderHistory();
@@ -6120,6 +7090,14 @@ document.addEventListener('DOMContentLoaded', async () => {
           moeUnreadCounts = toStore.moeUnreadCounts || {};
           renderMoeEmails();
         }
+        if (toStore.gwMailboxCache !== undefined) {
+          gwMailboxes = Array.isArray(toStore.gwMailboxCache) ? toStore.gwMailboxCache : [];
+          renderGwMailboxes();
+        }
+        if (toStore.gwUnreadCounts !== undefined) {
+          gwUnreadCounts = toStore.gwUnreadCounts || {};
+          renderGwMailboxes();
+        }
         if (toStore.bookmarks !== undefined) {
           bookmarks = toStore.bookmarks;
           renderBookmarks();
@@ -6132,6 +7110,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         tempDomainLoader.reset();
         moeDomainLoader.reset();
+        gwDomainLoader.reset();
         moeEmailListLoaded = false;
         fastFillLoadedSources.clear();
         ensureRemoteDataForTab(activeTab);
@@ -6223,8 +7202,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         type: 'fill-profile',
         fields: generatedProfile
       });
-      const filled = response?.filled || 0;
-      showMessage(fillProfileMessage, filled > 0 ? `已填充 ${filled} 个字段` : '未识别到可填充的字段', filled > 0 ? 'success' : 'error');
+      showMessage(fillProfileMessage, formatFillResult(response), response?.partial ? 'info' : 'success');
     } catch (error) {
       showMessage(fillProfileMessage, `填充失败: ${error.message}`, 'error');
     }
@@ -6235,6 +7213,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   fastFillEmailSourceEl.addEventListener('change', () => {
     fastFillEmailSource = fastFillEmailSourceEl.value;
     fastFillMoeExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'moe');
+    fastFillGwExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'gw');
     fastFillTempExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'temp');
     saveFastFillConfig();
     fastFillRefreshDomainUI();
@@ -6286,6 +7265,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       scheduledStorageRenders.clear();
       if (pending.has('history')) renderHistory();
       if (pending.has('moe')) renderMoeEmails();
+      if (pending.has('gw')) renderGwMailboxes();
       if (pending.has('bookmarks')) renderBookmarks();
     });
   }
@@ -6423,6 +7403,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeUnreadCounts = changes.moeUnreadCounts.newValue || {};
       scheduleStorageRender('moe');
     }
+    if (changes.gwUnreadCounts) {
+      gwUnreadCounts = changes.gwUnreadCounts.newValue || {};
+      scheduleStorageRender('gw');
+    }
+    if (changes.gwMailboxCache) {
+      gwMailboxes = Array.isArray(changes.gwMailboxCache.newValue) ? changes.gwMailboxCache.newValue : [];
+      scheduleStorageRender('gw');
+    }
 
     // 书签变动
     if (changes.bookmarks) {
@@ -6469,7 +7457,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeEmailListLoaded = false;
       fastFillLoadedSources.delete('moe');
     }
-    if (tempConfigChanged || moeConfigChanged) {
+
+    // 统一路由配置变动
+    const gwConfigChanged = Boolean(changes.gwApiUrl || changes.gwApiKey);
+    if (changes.gwApiUrl) {
+      gwApiUrl = changes.gwApiUrl.newValue || '';
+      gwApiUrlInput.value = gwApiUrl;
+    }
+    if (changes.gwApiKey) {
+      gwApiKey = changes.gwApiKey.newValue || '';
+      gwApiKeyInput.value = gwApiKey;
+    }
+    if (gwConfigChanged) {
+      gwDomainLoader.reset();
+      fastFillLoadedSources.delete('gw');
+    }
+    if (tempConfigChanged || moeConfigChanged || gwConfigChanged) {
       ensureRemoteDataForTab(activeTab);
     }
 

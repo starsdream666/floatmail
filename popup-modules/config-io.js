@@ -4,13 +4,18 @@
   const CATEGORY_KEYS = {
     tempEmail: ['apiUrl', 'adminToken', 'tempMailMeta', 'defaultTempExpiry'],
     moemail: ['moeApiUrl', 'moeApiKey', 'moeEmailCache', 'moeUnreadCounts', 'defaultMoeExpiry'],
+    gateway: ['gwApiUrl', 'gwApiKey', 'gwMailboxCache', 'gwUnreadCounts', 'gwIncludeShared', 'defaultGwExpiry'],
     floatWindow: ['floatWindowEnabled', 'floatLayout', 'floatWindowStyle'],
     backgroundMail: ['verifyInterval', 'mailPollingInterval', 'notificationsEnabled'],
     mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel'],
     siteControl: ['siteAccessMode', 'siteAllowlist', 'siteBlocklist'],
-    pageFillRules: ['pageFillRules', 'fastFillEmailSource', 'fastFillDomainMode', 'fastFillDomainSpecific', 'fastFillDomainWhitelist', 'fastFillDomainBlacklist', 'fastFillNameRegion', 'fastFillNameGender', 'defaultFfTempExpiry', 'defaultFfMoeExpiry'],
+    pageFillRules: ['pageFillRules', 'fastFillEmailSource', 'fastFillDomainMode', 'fastFillDomainSpecific', 'fastFillDomainWhitelist', 'fastFillDomainBlacklist', 'fastFillNameRegion', 'fastFillNameGender', 'defaultFfTempExpiry', 'defaultFfMoeExpiry', 'defaultFfGwExpiry'],
     generatedProfile: ['generatedProfile', 'generatedToolAutoCloseSeconds', 'generatedToolHistory'],
-    defaultTab: ['defaultTab', 'activeTab', 'tabLayoutMode', 'theme', 'selectedStyle', 'selectedTheme'],
+    defaultTab: ['defaultTab', 'activeTab', 'tabLayoutMode'],
+    // 主题从「默认页面与布局」独立出来：原先埋在 defaultTab 里，
+    // 界面上完全看不出主题会被导出，用户会以为风格配置丢了。
+    // 旧导出文件把这三个键放在 defaultTab 下，导入时有兼容回退（见下方 categoryData）。
+    themeStyle: ['theme', 'selectedStyle', 'selectedTheme'],
     emailHistory: ['emailHistory', 'verifyStatusCache', 'tempUnreadCounts'],
     bookmarks: ['bookmarks'],
     bookmarkSort: ['bookmarkSort']
@@ -18,6 +23,7 @@
 
   const ARRAY_KEYS = new Set([
     'moeEmailCache',
+    'gwMailboxCache',
     'siteAllowlist',
     'siteBlocklist',
     'fastFillDomainWhitelist',
@@ -34,7 +40,8 @@
     'generatedProfile',
     'verifyStatusCache',
     'tempUnreadCounts',
-    'moeUnreadCounts'
+    'moeUnreadCounts',
+    'gwUnreadCounts'
   ]);
 
   // ===================== SEC-5：密钥脱敏 =====================
@@ -43,6 +50,7 @@
   const SECRET_KEYS = new Set([
     'adminToken',
     'moeApiKey',
+    'gwApiKey',
     'translationApiKey',
     'mailInsightApiKey'
   ]);
@@ -65,15 +73,15 @@
 
   const ENUM_KEYS = {
     siteAccessMode: ['all', 'whitelist'],
-    defaultTab: ['temp-email', 'moe-mail'],
+    defaultTab: ['temp-email', 'moe-mail', 'gw-mail'],
     activeTab: [
       'fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools',
-      'generated-history', 'fill-rules', 'themes', 'settings', 'config-io'
+      'generated-history', 'fill-rules', 'themes', 'settings', 'config-io', 'gw-mail'
     ],
     theme: VALID_THEMES,
     selectedTheme: VALID_THEMES,
     selectedStyle: ['neumorphism', 'glassmorphism', 'flat-minimal', 'soft-gradient', 'card-grid', 'cyberpunk'],
-    fastFillEmailSource: ['temp', 'moe'],
+    fastFillEmailSource: ['temp', 'moe', 'gw'],
     fastFillDomainMode: ['random', 'specific', 'whitelist', 'blacklist'],
     fastFillNameRegion: ['zh', 'en'],
     fastFillNameGender: ['random', 'male', 'female'],
@@ -81,12 +89,13 @@
     bookmarkSort: ['custom', 'time-desc', 'time-asc', 'name-asc']
   };
 
-  const URL_KEYS = new Set(['apiUrl', 'moeApiUrl', 'translationApiBase', 'mailInsightApiBase']);
+  const URL_KEYS = new Set(['apiUrl', 'moeApiUrl', 'gwApiUrl', 'translationApiBase', 'mailInsightApiBase']);
 
   const BOOLEAN_KEYS = new Set([
     'floatWindowEnabled',
     'notificationsEnabled',
-    'defaultRemoteImagesEnabled'
+    'defaultRemoteImagesEnabled',
+    'gwIncludeShared'
   ]);
 
   // 过期时间以毫秒字符串保存（popup.html 的 <option value> 全部是毫秒数）。
@@ -94,7 +103,9 @@
     'defaultTempExpiry',
     'defaultMoeExpiry',
     'defaultFfTempExpiry',
-    'defaultFfMoeExpiry'
+    'defaultFfMoeExpiry',
+    'defaultGwExpiry',
+    'defaultFfGwExpiry'
   ]);
   const MAX_EXPIRY_MS = 365 * 24 * 60 * 60 * 1000;
 
@@ -383,7 +394,7 @@
         const exportData = {
           _warning: includeSecrets ? EXPORT_WARNING_PLAINTEXT : EXPORT_WARNING_REDACTED,
           _meta: {
-            version: '2.6',
+            version: '2.7',
             exportedAt: new Date().toISOString(),
             categories,
             secretsRedacted: !includeSecrets
@@ -483,9 +494,16 @@
 
           categories.forEach((category) => {
             // 旧版曾把 bookmarkSort 同时写入 bookmarks 分类；导入时继续兼容。
+            // 旧版还把主题三键放在 defaultTab 分类下（themeStyle 拆分前），
+            // 否则老配置文件里的主题在拆分后会再也导不进来。
             const categoryData = data[category]
               || (category === 'bookmarkSort' && data.bookmarks?.bookmarkSort !== undefined
                 ? data.bookmarks
+                : null)
+              || (category === 'themeStyle'
+                && isPlainObject(data.defaultTab)
+                && CATEGORY_KEYS.themeStyle.some((key) => data.defaultTab[key] !== undefined)
+                ? data.defaultTab
                 : null);
             if (!isPlainObject(categoryData) || !CATEGORY_KEYS[category]) {
               return;

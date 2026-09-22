@@ -58,5 +58,6 @@
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https: http:; frame-src 'self' data:; base-uri 'none'; form-action 'none'"
-  }
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAhiCtYBQ6SDMuv8AFFRA4OZWJIs7N5d/zpHlG7Mx1gx081qMX/rYiI/7Uh7dDDhxX1DrF/pzJ6sxMRuobbvzD67ojJLJiex2pqWs+7szG/01qmLw4AGLy+rz1FC9YrpR5TE8sru7ecab8biU3a0h7nnF0sF8dkzPpBt0CW592EgtSRaTXxE0YC3iyfmIrUTraVG9NuJDfjEL8ONQf4Aczd02KeGfNhCNGLyFa2zdasiKsJW4tRfwurTPvcuGh4qBdHZ5hM1cnZgUktXIk9CeYgc+IhZOul/nNkXTRl/H+U1bp/9VYYg3FYnDDijJHbWPPoZ28dGptLsV1oKbZfDkEVwIDAQAB"
 }
