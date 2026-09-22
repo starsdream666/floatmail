@@ -21,7 +21,7 @@ node_modules/
 # Review / TODO (local only)
 REVIEW.md
 
-# 本机 AI 工具元数据（会话标题/时间戳，含本机会话 ID）
+# 本机 AI 工具元数据（会话标题/时间戳，含本机会话 ID，与扩展功能无关）
 .reasonix/
 .workbuddy-ai/
 

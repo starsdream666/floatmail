@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const PAGE_TOOLS_VERSION = '2026.09.14-login-rules-v3';
+  const PAGE_TOOLS_VERSION = '2026.09.14-login-rules-main-v3';
   const existingPageToolsController = window.__floatMailPageToolsController;
   if (existingPageToolsController?.version === PAGE_TOOLS_VERSION
     && existingPageToolsController.disposed !== true) {

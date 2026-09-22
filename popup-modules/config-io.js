@@ -7,7 +7,7 @@
     gateway: ['gwApiUrl', 'gwApiKey', 'gwMailboxCache', 'gwUnreadCounts', 'gwIncludeShared', 'defaultGwExpiry'],
     floatWindow: ['floatWindowEnabled', 'floatLayout', 'floatWindowStyle'],
     backgroundMail: ['verifyInterval', 'mailPollingInterval', 'notificationsEnabled'],
-    mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel'],
+    mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel', 'jevEnabled', 'jevApiBase', 'jevApiKey', 'jevEndpointPath', 'jevModel', 'jevRecallMode'],
     siteControl: ['siteAccessMode', 'siteAllowlist', 'siteBlocklist'],
     pageFillRules: ['pageFillRules', 'fastFillEmailSource', 'fastFillDomainMode', 'fastFillDomainSpecific', 'fastFillDomainWhitelist', 'fastFillDomainBlacklist', 'fastFillNameRegion', 'fastFillNameGender', 'defaultFfTempExpiry', 'defaultFfMoeExpiry', 'defaultFfGwExpiry'],
     generatedProfile: ['generatedProfile', 'generatedToolAutoCloseSeconds', 'generatedToolHistory'],
@@ -52,7 +52,8 @@
     'moeApiKey',
     'gwApiKey',
     'translationApiKey',
-    'mailInsightApiKey'
+    'mailInsightApiKey',
+    'jevApiKey'
   ]);
 
   const REDACTED_MARK = '***';
@@ -95,7 +96,9 @@
     'floatWindowEnabled',
     'notificationsEnabled',
     'defaultRemoteImagesEnabled',
-    'gwIncludeShared'
+    'gwIncludeShared',
+    'jevEnabled',
+    'jevRecallMode'
   ]);
 
   // 过期时间以毫秒字符串保存（popup.html 的 <option value> 全部是毫秒数）。
@@ -263,10 +266,13 @@
     if (LEGACY_STRING_KEYS.has(key)) {
       return typeof value === 'string';
     }
+    // 端点路径必须是以 / 开头的相对路径，避免把导入文件里的任意 URL 拼进网关地址。
+    if (key === 'jevEndpointPath') {
+      return typeof value === 'string' && (value.trim() === '' || value.trim().startsWith('/'));
+    }
     if (SECRET_KEYS.has(key)) {
       return typeof value === 'string';
     }
-    // 其余为自由文本（模型名、目标语言、指定域名等）
     return typeof value === 'string';
   }
 

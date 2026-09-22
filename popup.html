@@ -1063,6 +1063,23 @@
           <div class="tool-note">打开邮件时会自动调用外部 API 提取更高置信度的验证码与验证链接。若选择复用翻译 API，下方独立提取 API 配置可留空；若 AI 提取失败，会保留本地规则结果，并可在邮件洞察区点击重试。</div>
         </div>
         <div class="form-group">
+          <label>Jev 判定增强（可选 · TypeSafe System One）</label>
+          <label class="config-check" style="display:block;margin-bottom:8px;">
+            <input type="checkbox" id="jev-enabled-toggle" /> 启用 Jev 判定
+          </label>
+          <div id="jev-settings-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;">
+            <input type="url" id="jev-api-base" class="wide-select" placeholder="https://newapi.cfwork.cc.cd" />
+            <input type="password" id="jev-api-key" class="wide-select" placeholder="sk-... 或网关访问密钥" />
+            <input type="text" id="jev-endpoint-path" class="wide-select" placeholder="/typesafe/v1/systemone" />
+            <input type="text" id="jev-model" class="wide-select" placeholder="jev-latest" />
+            <label class="config-check" style="display:block;margin-top:4px;">
+              <input type="checkbox" id="jev-recall-mode-toggle" /> 召回优先（能识别无提示词的裸验证码）
+            </label>
+            <div class="tool-note" style="margin:0;">关闭时为精确优先：只保留提示词紧邻或上下文明确的候选，误报更低。开启后会放宽本地筛选门槛，把「邮件里只写 请拨打 5521 这类没有提示词的短码」也纳入判定，由 Jev 负责剔除噪声 —— 因此仅在 Jev 可用时生效，Jev 未配置或请求失败时自动按精确优先处理。</div>
+          </div>
+          <div class="tool-note">完全可选。不启用时验证码提取照常工作（本地规则 + 上面的 AI 提取）。启用后，会用 Jev 对本地候选做一次结构化裁决，能显著减少误报，并支持一封邮件里有多个验证链接的情况。端点路径因网关而异：官方 <code>/v1/systemone</code>，new-api 网关 <code>/typesafe/v1/systemone</code>。</div>
+        </div>
+        <div class="form-group">
           <label for="generated-result-auto-close-seconds">生成结果自动关闭时间</label>
           <div class="settings-inline-input-row">
             <input type="number" id="generated-result-auto-close-seconds" class="settings-custom-input" min="1" max="3600" step="1" placeholder="30" />
