@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FloatMail",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "minimum_chrome_version": "120",
   "description": "轻量级临时邮箱管理工具，支持悬浮窗、一键填表、AI 邮件洞察 — Lightweight temp email manager with floating panel, auto-fill & AI insights",
   "permissions": [
