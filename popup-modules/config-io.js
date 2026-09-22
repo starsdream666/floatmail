@@ -6,11 +6,15 @@
     moemail: ['moeApiUrl', 'moeApiKey', 'moeEmailCache', 'moeUnreadCounts', 'defaultMoeExpiry'],
     floatWindow: ['floatWindowEnabled', 'floatLayout', 'floatWindowStyle'],
     backgroundMail: ['verifyInterval', 'mailPollingInterval', 'notificationsEnabled'],
-    mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel'],
+    mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel', 'jevEnabled', 'jevApiBase', 'jevApiKey', 'jevEndpointPath', 'jevModel', 'jevRecallMode'],
     siteControl: ['siteAccessMode', 'siteAllowlist', 'siteBlocklist'],
     pageFillRules: ['pageFillRules', 'fastFillEmailSource', 'fastFillDomainMode', 'fastFillDomainSpecific', 'fastFillDomainWhitelist', 'fastFillDomainBlacklist', 'fastFillNameRegion', 'fastFillNameGender', 'defaultFfTempExpiry', 'defaultFfMoeExpiry'],
     generatedProfile: ['generatedProfile', 'generatedToolAutoCloseSeconds', 'generatedToolHistory'],
-    defaultTab: ['defaultTab', 'activeTab', 'tabLayoutMode', 'theme', 'selectedStyle', 'selectedTheme'],
+    defaultTab: ['defaultTab', 'activeTab', 'tabLayoutMode'],
+    // 主题从「默认页面与布局」独立出来：原先埋在 defaultTab 里，
+    // 界面上完全看不出主题会被导出，用户会以为风格配置丢了。
+    // 旧导出文件把这三个键放在 defaultTab 下，导入时有兼容回退（见下方 categoryData）。
+    themeStyle: ['theme', 'selectedStyle', 'selectedTheme'],
     emailHistory: ['emailHistory', 'verifyStatusCache', 'tempUnreadCounts'],
     bookmarks: ['bookmarks'],
     bookmarkSort: ['bookmarkSort']
@@ -44,7 +48,8 @@
     'adminToken',
     'moeApiKey',
     'translationApiKey',
-    'mailInsightApiKey'
+    'mailInsightApiKey',
+    'jevApiKey'
   ]);
 
   const REDACTED_MARK = '***';
@@ -86,7 +91,9 @@
   const BOOLEAN_KEYS = new Set([
     'floatWindowEnabled',
     'notificationsEnabled',
-    'defaultRemoteImagesEnabled'
+    'defaultRemoteImagesEnabled',
+    'jevEnabled',
+    'jevRecallMode'
   ]);
 
   // 过期时间以毫秒字符串保存（popup.html 的 <option value> 全部是毫秒数）。
@@ -252,10 +259,13 @@
     if (LEGACY_STRING_KEYS.has(key)) {
       return typeof value === 'string';
     }
+    // 端点路径必须是以 / 开头的相对路径，避免把导入文件里的任意 URL 拼进网关地址。
+    if (key === 'jevEndpointPath') {
+      return typeof value === 'string' && (value.trim() === '' || value.trim().startsWith('/'));
+    }
     if (SECRET_KEYS.has(key)) {
       return typeof value === 'string';
     }
-    // 其余为自由文本（模型名、目标语言、指定域名等）
     return typeof value === 'string';
   }
 

@@ -269,6 +269,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const mailInsightApiBaseInput = document.getElementById('mail-insight-api-base');
   const mailInsightApiKeyInput = document.getElementById('mail-insight-api-key');
   const mailInsightModelInput = document.getElementById('mail-insight-model');
+  const jevEnabledToggle = document.getElementById('jev-enabled-toggle');
+  const jevSettingsFields = document.getElementById('jev-settings-fields');
+  const jevApiBaseInput = document.getElementById('jev-api-base');
+  const jevApiKeyInput = document.getElementById('jev-api-key');
+  const jevEndpointPathInput = document.getElementById('jev-endpoint-path');
+  const jevModelInput = document.getElementById('jev-model');
+  const jevRecallModeToggle = document.getElementById('jev-recall-mode-toggle');
   const fetchTranslationModelsBtn = document.getElementById('fetch-translation-models-btn');
   const translationModelSelect = document.getElementById('translation-model-select');
   const fetchInsightModelsBtn = document.getElementById('fetch-insight-models-btn');
@@ -296,6 +303,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightApiMode = normalizeMailInsightApiMode(mailInsightApiModeSelect.value);
     syncMailInsightApiFieldsVisibility();
   });
+  // Jev 开关：只切换字段可见性，不触发任何网络请求。
+  if (jevEnabledToggle) {
+    jevEnabledToggle.addEventListener('change', () => {
+      jevEnabled = jevEnabledToggle.checked === true;
+      syncJevSettingsVisibility();
+    });
+  if (jevRecallModeToggle) {
+    jevRecallModeToggle.addEventListener('change', () => {
+      jevRecallMode = jevRecallModeToggle.checked === true;
+    });
+  }
+  }
   const VERIFY_INTERVAL_PRESETS = Object.freeze([
     Object.freeze({ key: '0', value: 0, unit: 'minutes' }),
     Object.freeze({ key: '30s', value: 30, unit: 'seconds' }),
@@ -340,10 +359,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   const MAIL_INSIGHT_API_BASE_KEY = 'mailInsightApiBase';
   const MAIL_INSIGHT_API_KEY_KEY = 'mailInsightApiKey';
   const MAIL_INSIGHT_MODEL_KEY = 'mailInsightModel';
+  // Jev 判定增强（可选）：不配置时验证码提取走本地规则 + 上面的 AI 提取，功能完全不受影响。
+  const JEV_ENABLED_KEY = 'jevEnabled';
+  const JEV_API_BASE_KEY = 'jevApiBase';
+  const JEV_API_KEY_KEY = 'jevApiKey';
+  const JEV_ENDPOINT_PATH_KEY = 'jevEndpointPath';
+  const JEV_MODEL_KEY = 'jevModel';
+  // 端点路径因网关而异：官方 /v1/systemone；GPT-Load 也是 /v1/systemone；
+  // new-api 因为 Jev 是名为 typesafe 的 task 插件，路径多一层前缀。
+  const DEFAULT_JEV_ENDPOINT_PATH = '/typesafe/v1/systemone';
+  const DEFAULT_JEV_MODEL = 'jev-latest';
+  // 多选判定阈值：实测真链接 noul 0.75~0.79、噪声最高 0.04，中间留有很宽的安全空档。
+  const JEV_LINK_THRESHOLD = 0.5;
+  // 候选池上限。放宽容纳上限是为了配合「召回优先」：阈值降下来后候选变多，
+  // 上限太低会把真候选挤出池子（实测：同分噪声淹没时，真码会被截断漏掉）。
+  const JEV_MAX_CANDIDATES = 8;
+  // 「召回优先」模式下的取样上限：配套放宽阈值使用，避免真候选被截断。
+  const JEV_MAX_CANDIDATES_RECALL = 16;
+  // 召回优先模式：把本地阈值从 3 降到 -3，让「无提示词的裸验证码」也能进候选池。
+  // 设计前提是 Jev 兜底治误报 —— 没配 Jev 时绝不启用（没有模型兜底，放宽必然引入误报）。
+  // 实测（真网关）：minScore=-3 + Jev 在现实邮件上 3/3、批量 4/4、低门槛 6/6，零误报。
+  const INSIGHT_CODE_MIN_SCORE_RECALL = -3;
+  const JEV_RECALL_MODE_KEY = 'jevRecallMode';
   const DEFAULT_TRANSLATION_API_BASE = 'https://api.openai.com/v1';
   const DEFAULT_TRANSLATION_TARGET_LANGUAGE = '简体中文';
   const DEFAULT_MAIL_INSIGHT_API_MODE = 'translation';
   const MAX_TRANSLATION_SOURCE_CHARS = 12000;
+  const INSIGHT_MAX_ITEMS = 3;
+  // 候选进入结果的最低分：验证码门槛更高，链接允许纯 URL 信号达标。
+  const INSIGHT_CODE_MIN_SCORE = 3;
+  const INSIGHT_LINK_MIN_SCORE = 2;
   const INTERACTIVE_REQUEST_TIMEOUT_MS = 15000;
   const AI_REQUEST_TIMEOUT_MS = 45000;
   const GENERATED_PROFILE_KEY = 'generatedProfile';
@@ -425,7 +470,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   let mailInsightApiBase = DEFAULT_TRANSLATION_API_BASE;
   let mailInsightApiKey = '';
   let mailInsightModel = '';
-  let generatedResultAutoCloseSeconds = DEFAULT_GENERATED_RESULT_AUTO_CLOSE_SECONDS;
+  // Jev 为可选项：enabled 为 false 时下面这些值完全不参与任何请求。
+  let jevEnabled = false;
+  let jevApiBase = '';
+  let jevApiKey = '';
+  let jevEndpointPath = DEFAULT_JEV_ENDPOINT_PATH;
+  let jevModel = DEFAULT_JEV_MODEL;
+  // 召回优先开关：默认关闭（保持精确优先，行为与改动前完全一致）。
+  let jevRecallMode = false;
   let siteAccessMode = 'all';
   let siteAllowlist = [];
   let siteBlocklist = [];
@@ -2194,17 +2246,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    const rules = getCurrentSiteFillRules();
-    const configuredKinds = PAGE_FILL_FIELD_DEFS
-      .filter(f => rules[f.kind])
-      .map(f => f.label);
-
-    if (configuredKinds.length === 0) {
+    const registerRules = getCurrentSiteFillRules('register');
+    const loginRules = getCurrentSiteFillRules('login');
+    const registerKinds = PAGE_FILL_FIELD_DEFS.filter(f => registerRules[f.kind]?.selector).map(f => f.label);
+    const loginKinds = PAGE_FILL_FIELD_DEFS.filter(f => loginRules[f.kind]?.selector).map(f => f.label);
+    if (registerKinds.length + loginKinds.length === 0) {
       fastFillRulesSummary.textContent = '暂无规则 — 请先到「规则」页面选取页面输入框';
       fastFillGenerateBtn.disabled = true;
     } else {
-      fastFillRulesSummary.textContent = `已配置 ${configuredKinds.length} 个字段：${configuredKinds.join('、')}`;
-      fastFillGenerateBtn.disabled = getFastFillAvailableDomains().length === 0;
+      fastFillRulesSummary.textContent = `注册：${registerKinds.join('、') || '未绑定'}；登录：${loginKinds.join('、') || '未绑定'}。填入时自动匹配，登录按绑定字段复用本站历史资料；验证码请使用本次有效值。`;
+      fastFillGenerateBtn.disabled = loginKinds.length === 0 && getFastFillAvailableDomains().length === 0;
     }
   }
 
@@ -2784,50 +2835,388 @@ document.addEventListener('DOMContentLoaded', async () => {
     return Boolean(config.apiBase && config.apiKey && config.model);
   }
 
+  // ===================== Jev 判定增强（完全可选） =====================
+
+  function syncJevSettingsVisibility() {
+    if (jevSettingsFields) {
+      jevSettingsFields.classList.toggle('hidden', jevEnabled !== true);
+    }
+  }
+
+  function getJevConfig() {
+    return {
+      apiBase: normalizeTranslationSetting(jevApiBase).replace(/\/+$/, ''),
+      apiKey: normalizeTranslationSetting(jevApiKey),
+      endpointPath: normalizeTranslationSetting(jevEndpointPath, DEFAULT_JEV_ENDPOINT_PATH),
+      model: normalizeTranslationSetting(jevModel, DEFAULT_JEV_MODEL)
+    };
+  }
+
+  /**
+   * Jev 是否可用。**这是可选项**：返回 false 时调用方必须原样走原有逻辑，
+   * 绝不能因为 Jev 没配置就影响验证码提取功能。
+   */
+  function hasJevConfig() {
+    if (jevEnabled !== true) {
+      return false;
+    }
+    const config = getJevConfig();
+    return Boolean(config.apiBase && config.apiKey && config.endpointPath && config.model);
+  }
+
+  /**
+   * 解析本次提取要用的候选取样参数。
+   *
+   * 召回优先（默认关闭）只在 Jev 可用时才生效 —— 这是硬约束：放宽本地阈值
+   * 必然让噪声候选变多，必须由模型兜底去误报。没配 Jev 时放宽只会让面板变脏，
+   * 所以无论开关怎么设，只要 Jev 不可用就一律回落到精确优先的旧参数。
+   */
+  function getInsightSamplingParams() {
+    const recall = jevRecallMode === true && hasJevConfig();
+    return recall
+      ? { minScore: INSIGHT_CODE_MIN_SCORE_RECALL, limit: JEV_MAX_CANDIDATES_RECALL, recall: true }
+      : { minScore: INSIGHT_CODE_MIN_SCORE, limit: JEV_MAX_CANDIDATES, recall: false };
+  }
+
+  /** 链接候选的取样上限：一样受召回优先影响，但阈值不变（链接侧已有硬排除规则）。 */
+  function getInsightLinkLimit() {
+    return jevRecallMode === true && hasJevConfig() ? JEV_MAX_CANDIDATES_RECALL : JEV_MAX_CANDIDATES;
+  }
+
+  /**
+   * 调用 Jev 的 /v1/systemone。一次请求可并行问多个问题
+   * （这是 questions 是 map 的设计意图，也是多选判定的基础）。
+   * 任何失败都抛异常，由调用方捕获后回落 —— 不在这里吞掉错误。
+   */
+  async function callJev(questions, state, options = {}) {
+    const config = getJevConfig();
+    if (!hasJevConfig()) {
+      throw new Error('Jev 未启用或配置不完整');
+    }
+    const payload = {
+      state,
+      model: options.model || config.model,
+      questions
+    };
+    const response = await fetchWithTimeout(
+      config.apiBase + config.endpointPath,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          Authorization: `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify(payload)
+      },
+      options.timeout || AI_REQUEST_TIMEOUT_MS
+    );
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+    if (!response.ok) {
+      const detail = data?.error?.message || data?.detail || data?.message || `${response.status}`;
+      throw new Error(`Jev 请求失败: ${detail}`);
+    }
+    // System One 是同步返回的，答案就在响应体里，没有异步任务要轮询。
+    if (!data || typeof data !== 'object' || !data.answers || typeof data.answers !== 'object') {
+      throw new Error('Jev 响应缺少 answers 字段');
+    }
+    return data;
+  }
+
   function getMailInsightConfigErrorMessage() {
     return mailInsightApiMode === 'custom'
       ? '请先在设置页填写提取 API Base、API Key 和模型名称'
       : '请先在设置页填写翻译 API Base、API Key 和模型名称，或切换为独立提取 API';
   }
 
-  function extractCodesLocally(text) {
+  const INSIGHT_VERIFY_KEYWORDS = [
+    'verification code', 'security code', 'one-time', 'onetime', 'one time', 'otp',
+    'passcode', 'pin code', 'auth code', 'confirm code', 'login code', 'sign-in code',
+    'verification', 'verify', '验证码', '验证代码', '校验码', '确认码', '动态码',
+    '一次性密码', '一次性验证码', '認証コード', '確認コード'
+  ];
+  // 紧贴在“code/验证码”等提示词之后的短串：这类模式本身就是最强信号。
+  // “xxx code” 中 xxx 属于明确非验证码语境的：促销码、邮编、国家码、单号等。
+  // 这类上下文一律硬性剔除，避免 "promo code SAVE20" / "zip code 94107" 被当成验证码。
+  const INSIGHT_FALSE_PROMPT_PATTERN = /(promo|coupon|discount|referral|invite|gift|voucher|zip|postal|country|area|dial(?:ing)?|order|tracking|product|item|sku|bar|qr|sort|invoice|account|customer|error|status|language|currency|区号|邮编|促销|优惠|订单)\s*code/i;
+  const INSIGHT_PROMPT_PATTERN = /(?:verification\s*code|security\s*code|one[-\s]*time\s*(?:code|password)|otp|passcode|code|验证码|验证代码|校验码|动态码|一次性密码|確認コード|認証コード)\s*(?:is|为|是)?\s*[：:]?\s*$/i;
+  const INSIGHT_ANCHOR_VERIFY_PATTERN = /(verify|verifying|confirm|confirmation|activate|activation|sign\s?in|log\s?in|magic|reset|set\s?up\s?password|验证|确认|激活|登录|重置)/i;
+  const INSIGHT_ANCHOR_DEMOTE_PATTERN = /(unsubscribe|opt[-\s]?out|退订|取消订阅|manage\s+(?:your\s+)?(?:account|preferences|subscription)|view\s+in\s+browser|email\s+preferences|隐私|privacy|terms|服务条款|copyright|help\s+center|帮助中心)/i;
+  const INSIGHT_URL_DEMOTE_PATTERN = /(unsubscribe|optout|opt-out|tracking|pixel|beacon|doubleclick|\.(?:png|jpe?g|gif|webp|svg)(?:[?#]|$))/i;
+  const INSIGHT_URL_SIGNAL_PATTERN = /(verify|verification|activate|activation|confirm|confirmation|reset|login|signin|sign-in|auth|token|magic|register|signup|account|code)/i;
+  const INSIGHT_URL_TOKEN_PATTERN = /[?&](?:token|code|key|ticket|credential|signature|sig|hash|verify|auth|oobCode|confirmation_token)=/i;
+  const INSIGHT_DATE_LIKE_PATTERN = /^(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{1,2}:\d{2}(?::\d{2})?)$/;
+  const INSIGHT_YEAR_LIKE_PATTERN = /^(?:19|20)\d{2}$/;
+  // 电话号码/带区号的长号段：位数远超验证码。
+  const INSIGHT_PHONE_LIKE_PATTERN = /^(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s-]?){1,3}\d{2,4}$/;
+  // 噪声上下文：订单号/发票号/金额等。只在「没有提示词紧邻」时生效，
+  // 所以 "order" 这种宽词也能安全纳入，不会误伤提示词旁边的真实验证码。
+  // 房间号/套房号与「无提示词的裸验证码」同分，实测会互相混淆（Room 4408 与 5521 都是 -1）。
+  // 补上 room/suite 这类词后，房号下沉到 -6、裸码保持 -1，得分差拉出 5 分的安全空档。
+  const INSIGHT_NOISE_CONTEXT_PATTERN = /(order|invoice|订单|发票|金额|总价|小计|运费|shipping|total|subtotal|room|suite|apartment|apt|房号|房间|套房|座位|席位)/i;
+
+  /**
+   * URL 归一化去重键。
+   * floatmail 原来用 new URL(u).toString() 做精确去重，挡不住同一链接的不同写法
+   * （实测：http/https、www、#fragment、尾斜杠这些变体会被当成不同链接重复展示）。
+   * 这里把「同一个链接的写法差异」折叠掉，同时**保留** query 参数取值
+   * —— token/code 不同就是不同的验证链接，绝不能折叠。
+   */
+  function normalizeUrlKey(rawUrl) {
+    const text = String(rawUrl || '').trim();
+    if (!text) {
+      return '';
+    }
+    let parsed;
+    try {
+      parsed = new URL(text);
+    } catch {
+      return text.toLowerCase();
+    }
+    let host = parsed.hostname.toLowerCase();
+    if (host.startsWith('www.')) {
+      host = host.slice(4);
+    }
+    const port = (parsed.port === '80' || parsed.port === '443') ? '' : (parsed.port ? `:${parsed.port}` : '');
+    // 参数排序，让 ?a=1&b=2 与 ?b=2&a=1 等价；但值本身保留。
+    const params = Array.from(parsed.searchParams.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const query = params.map(([k, v]) => `${k}=${v}`).join('&');
+    const path = parsed.pathname.replace(/\/+$/, '') || '/';
+    // 丢弃 scheme 与 fragment：https/http、#section 都不影响「是否同一个链接」。
+    return `${host}${port}${path}${query ? `?${query}` : ''}`;
+  }
+
+  /** 给候选链接打上归一化 key，并优先保留分数更高的那条。 */
+  function dedupeLinksByNormalizedKey(records) {
+    const best = new Map();
+    (records || []).forEach((record) => {
+      if (!record) {
+        return;
+      }
+      const key = normalizeUrlKey(record.value || record.url);
+      if (!key) {
+        return;
+      }
+      const existing = best.get(key);
+      if (!existing || (record.score || 0) > (existing.score || 0)) {
+        best.set(key, { ...record, normalizedKey: key });
+      }
+    });
+    return Array.from(best.values());
+  }
+
+  // 取候选前方的上下文，用于判断紧邻提示词与噪声词。只回溯数值本身之前的部分。
+  //
+  // 关键：回溯止于「本行行首」。噪声词（order/room/金额…）表达的是**同一行内**的
+  // 语义，跨行回溯会把上一行的无关内容算进来 —— 实测：真验证码 5521 紧跟在
+  // "Room 4411 is ready" 下一行时，房号落进 40 字符窗口把真码一起打成 -6，
+  // 结果真码连候选池都进不去（召回优先救不回来）。
+  // 提示词判定（promptAdjacent）不受影响：提示词本来就与验证码同行。
+  function getCodePrecedingContext(text, index, maxLength = 40) {
+    const source = String(text || '');
+    const start = Math.max(0, index - maxLength);
+    const raw = source.slice(start, Math.max(0, index));
+    // 如果这一段里出现了换行，只保留最后一行的部分。
+    const lastBreak = Math.max(raw.lastIndexOf('\n'), raw.lastIndexOf('\r'));
+    return lastBreak === -1 ? raw : raw.slice(lastBreak + 1);
+  }
+
+  function normalizeAnchorText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  }
+
+  function hasVerifyKeywordNearby(text, index, valueLength) {
+    const window = String(text || '')
+      .slice(Math.max(0, index - 60), Math.min(text.length, index + valueLength + 30))
+      .toLowerCase();
+    return INSIGHT_VERIFY_KEYWORDS.some((keyword) => window.includes(keyword));
+  }
+
+  // 验证码候选：正则只负责“找候选”，能不能进结果由打分决定。
+  function collectCodeCandidates(text) {
     const source = String(text || '');
     if (!source) {
       return [];
     }
-    const codeSet = new Set();
     const flexibleCode = '((?:\\d{2,4}(?:[- ]\\d{2,4}){1,2})|(?:(?=[A-Za-z0-9-]*\\d)(?:[A-Za-z0-9]{2,4}-){1,2}[A-Za-z0-9]{2,4})|(?:[A-Za-z0-9]{4,16}))';
     const patterns = [
-      // "verification code: XXXXX" / "验证码：XXXXX" patterns
-      new RegExp(`(?:verification\\s*code|security\\s*code|one[-\\s]*time\\s*(?:code|password)|otp|code|验证码|验证代码|动态码|一次性密码|確認コード|認証コード)\\s*(?:is|为|是)?\\s*[：:]?\\s*${flexibleCode}`, 'gi'),
-      // "code is XXXXX" / "code: XXXXX"
+      // "verification code: XXXXX" / "验证码：XXXXX" 一类的提示词强模式
+      new RegExp(`(?:verification\\s*code|security\\s*code|one[-\\s]*time\\s*(?:code|password)|otp|code|验证码|验证代码|校验码|动态码|一次性密码|確認コード|認証コード)\\s*(?:is|为|是)?\\s*[：:]?\\s*${flexibleCode}`, 'gi'),
       new RegExp(`code\\s+(?:is|：|:)\\s*${flexibleCode}`, 'gi'),
-      // separated numeric codes such as 123-456 / 12 34 56
+      // 分隔数字码 123-456 / 12 34 56
       /(?:^|\D)(\d{2,4}(?:[- ]\d{2,4}){1,2})(?=$|\D)/gm,
-      // hyphenated alphanumeric codes such as AB-12-CD（要求至少包含一个数字）
-      /(?:^|[^A-Za-z0-9])((?=[A-Za-z0-9-]*\d)(?:[A-Za-z0-9]{2,4}-){1,2}[A-Za-z0-9]{2,4})(?=$|[^A-Za-z0-9])/gm,
-      // standalone hex-like codes (6-16 hex chars, often on their own line)
-      /(?:^|\s)([A-Fa-f0-9]{6,16})(?:\s|$|[.,;!?)\]}>])/gm,
-      // shorter numeric codes (4-8 digits, often standalone)
-      /(?:^|\s)(\d{4,8})(?:\s|$|[.,;!?)\]}>])/gm
+      // 连字符字母数字码：AB-12-CD、G-483920、XY-88（要求至少含一个数字）
+      /(?:^|[^A-Za-z0-9])((?=[A-Za-z0-9-]*\d)[A-Za-z0-9]{1,4}(?:-[A-Za-z0-9]{1,8}){1,2})(?=$|[^A-Za-z0-9])/gm,
+      // 独立十六进制样码（至少含一个数字，否则 decade/facade 这类英文单词会被误抓）
+      /(?:^|\s)((?=[A-Fa-f0-9]*\d)[A-Fa-f0-9]{6,16})(?=\s|$|[.,;!?)\]}>,])/gm,
+      // 独立 4-8 位数字
+      /(?:^|\s)(\d{4,8})(?=\s|$|[.,;!?)\]}>,])/gm
     ];
 
+    const records = [];
     patterns.forEach((pattern) => {
       let match;
       while ((match = pattern.exec(source)) !== null) {
         const raw = String(match[1] || '').trim().replace(/\s+/g, ' ');
         const compact = raw.replace(/[\s-]+/g, '');
-        if (/^[A-Z0-9]{4,16}$/i.test(compact)) {
-          codeSet.add(raw);
+        const index = match.index + match[0].indexOf(match[1] || '');
+        pattern.lastIndex = pattern.lastIndex > match.index ? pattern.lastIndex : match.index + 1;
+
+        if (!raw || !/^[A-Z0-9]{4,16}$/i.test(compact)) {
+          continue;
+        }
+        const hasDigit = /\d/.test(compact);
+        const nearKeyword = hasVerifyKeywordNearby(source, index, raw.length);
+        // 纯字母串只有在明确提示词附近才可能是验证码
+        if (!hasDigit && !nearKeyword) {
+          continue;
+        }
+        if (INSIGHT_DATE_LIKE_PATTERN.test(raw)) {
+          continue;
+        }
+        let score = 0;
+        const preceding = getCodePrecedingContext(source, index);
+        const promptAdjacent = INSIGHT_PROMPT_PATTERN.test(preceding);
+
+        // 硬性剔除：非验证码语境（promo/zip/country/order code ...）与电话号码。
+        if (INSIGHT_FALSE_PROMPT_PATTERN.test(preceding)) {
+          continue;
+        }
+        if (!promptAdjacent && INSIGHT_PHONE_LIKE_PATTERN.test(raw) && /\d/.test(raw)
+          && raw.replace(/\D/g, '').length > 8) {
+          continue;
+        }
+
+        if (promptAdjacent) {
+          score += 6;
+        }
+        if (nearKeyword) {
+          score += 5;
+        }
+        // 裸数字/纯数字码：只有“有语境”时才给分，避免孤立的订单号、房号被选中。
+        if (/^\d{4,8}$/.test(compact) || /^\d{2,4}(?:[- ]\d{2,4}){1,2}$/.test(raw)) {
+          score += (promptAdjacent || nearKeyword) ? 3 : -1;
+        }
+        // 字母+数字混合且长度适中，更像验证码；纯数字靠语境判定。
+        if (hasDigit && /[A-Za-z]/.test(compact)) {
+          score += 2;
+        }
+        if (INSIGHT_YEAR_LIKE_PATTERN.test(compact)) {
+          score -= 4;
+        }
+        const lineStart = source.lastIndexOf('\n', Math.max(0, index - 1)) + 1;
+        const lineEnd = source.indexOf('\n', index);
+        const line = source.slice(lineStart, lineEnd === -1 ? source.length : lineEnd).trim();
+        if (line === raw) {
+          score += 2;
+        }
+        // 噪声只在“没有提示词紧邻”时才扣分，否则 "订单号 xxx" 这类提示词会误伤。
+        if (!promptAdjacent && !nearKeyword
+          && INSIGHT_NOISE_CONTEXT_PATTERN.test(preceding)) {
+          score -= 5;
+        }
+
+        // label 供 Jev 的 criteria 描述使用，让模型知道这个候选是从哪种语境抓到的。
+        const label = promptAdjacent ? '验证码提示词紧邻'
+          : (nearKeyword ? '验证码相关上下文'
+            : (INSIGHT_NOISE_CONTEXT_PATTERN.test(preceding) ? '订单/发票类上下文'
+              : (hasDigit && /[A-Za-z]/.test(compact) ? '字母数字混合串' : '独立数字串')));
+        records.push({ value: raw, key: compact.toUpperCase(), score, index, label });
+      }
+      pattern.lastIndex = 0;
+    });
+    return records;
+  }
+
+  // 链接候选：优先吃 “锚文本 -> URL” 区块，其次才是正文裸链接。
+  function collectLinkCandidates(text) {
+    const source = String(text || '');
+    if (!source) {
+      return [];
+    }
+    const pairs = [];
+    const linePattern = /^(.{0,200}?)\s*->\s*(https?:\/\/\S+)\s*$/gm;
+    let match;
+    while ((match = linePattern.exec(source)) !== null) {
+      const anchor = normalizeAnchorText(match[1]).replace(/^\[.*?\]$/, '');
+      pairs.push({ anchorText: anchor === '(无锚文本)' ? '' : anchor, url: trimUrlPunctuation(match[2]), index: match.index });
+    }
+    if (!pairs.length) {
+      const barePattern = /https?:\/\/[^\s<>"'`]+/g;
+      while ((match = barePattern.exec(source)) !== null) {
+        pairs.push({ anchorText: '', url: trimUrlPunctuation(match[0]), index: match.index });
+      }
+    }
+
+    const records = [];
+    pairs.forEach((pair) => {
+      let normalized = '';
+      try {
+        const parsed = new URL(pair.url);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          return;
+        }
+        normalized = parsed.toString();
+      } catch {
+        return;
+      }
+      // 硬性排除：退订、追踪、像素、图片资源
+      if (INSIGHT_URL_DEMOTE_PATTERN.test(normalized)) {
+        return;
+      }
+
+      let score = 0;
+      if (pair.anchorText) {
+        score += 1;
+        if (INSIGHT_ANCHOR_VERIFY_PATTERN.test(pair.anchorText)) {
+          score += 6;
+        }
+        if (INSIGHT_ANCHOR_DEMOTE_PATTERN.test(pair.anchorText)) {
+          score -= 8;
         }
       }
-      // Reset lastIndex since we use the same source with multiple patterns
-      if (pattern.sticky || pattern.global) {
-        pattern.lastIndex = 0;
+      if (INSIGHT_URL_SIGNAL_PATTERN.test(normalized)) {
+        score += 2;
+      }
+      if (INSIGHT_URL_TOKEN_PATTERN.test(normalized)) {
+        score += 3;
+      }
+
+      records.push({
+        value: normalized,
+        key: normalized,
+        url: normalized,
+        anchorText: pair.anchorText,
+        score,
+        index: pair.index
+      });
+    });
+    return records;
+  }
+
+  // 统一排序：按分数降序，同分按出现顺序。低于阈值的一律丢弃。
+  function rankInsightCandidates(records, options = {}) {
+    const limit = Number.isFinite(options.limit) ? options.limit : INSIGHT_MAX_ITEMS;
+    const minScore = Number.isFinite(options.minScore) ? options.minScore : 0;
+    const best = new Map();
+    (records || []).forEach((record) => {
+      if (!record || record.score < minScore) {
+        return;
+      }
+      const existing = best.get(record.key);
+      if (!existing || record.score > existing.score) {
+        best.set(record.key, record);
       }
     });
-
-    return Array.from(codeSet).slice(0, 3);
+    return Array.from(best.values())
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, limit);
   }
 
   function verifyCodesAgainstSource(codes, text) {
@@ -2894,24 +3283,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     return urls;
   }
 
-  function isLikelyActionUrl(url) {
-    const normalized = String(url || '').toLowerCase();
-    if (/unsubscribe|optout|tracking|pixel|beacon|doubleclick/.test(normalized)) {
-      return false;
-    }
-    if (/\.(?:png|jpe?g|gif|webp|svg)(?:[?#]|$)/.test(normalized)) {
-      return false;
-    }
-    return /verify|verification|activate|activation|confirm|confirmation|reset|login|signin|auth|token|code|magic|register|signup|account/.test(normalized)
-      || /[?&](?:token|code|key|ticket|credential|signature|sig|hash|verify|auth)=/i.test(normalized);
-  }
-
-  function extractActionLinksLocally(text) {
-    return extractHttpUrlsFromText(text)
-      .filter(isLikelyActionUrl)
-      .slice(0, 3)
-      .map((url) => ({ url, label: formatInsightLinkLabel(url) }));
-  }
+  // 说明：原先的 isLikelyActionUrl / extractActionLinksLocally 关键词白名单已移除，
+  // 链接判定改为 collectLinkCandidates 的锚文本 + URL 双特征打分（见下方候选引擎）。
 
   function verifyLinksAgainstSource(links, text) {
     const sourceUrls = extractHttpUrlsFromText(text);
@@ -3001,7 +3374,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function parseMailInsightJson(text) {
     const raw = String(text || '').trim();
     if (!raw) {
-      throw new Error('模型返回了空内容');
+      return null;
     }
 
     const directCandidates = [raw];
@@ -3049,17 +3422,54 @@ document.addEventListener('DOMContentLoaded', async () => {
       };
     }
     if (status === 'success') {
+      const insights = reader.getInsights() || {};
+      if (insights.source === 'jev') {
+        // Jev 单独工作（没配 AI 提取 API）时的文案要区分开，否则用户会以为 AI 提取也跑了。
+        return {
+          statusText: insights.jevOnly ? 'Jev 判定已完成' : 'AI 提取 + Jev 判定已完成',
+          statusType: 'success',
+          noteText: insights.jevEmpty
+            ? 'Jev 认为这封邮件里没有真正的验证码或验证链接。'
+            : '当前显示经 Jev 结构化判定后的验证码与验证链接（已过滤噪声与重复链接）。',
+          onRetry: () => triggerMailAiInsights(reader, true),
+          retryLabel: '重新提取'
+        };
+      }
+      // AI 成功但 Jev 判定失败：仍然算成功，但要把「这次没走 Jev」说清楚，否则用户以为 Jev 白配了。
+      const jevFailed = String(insights.jevError || '').slice(0, 80);
       return {
-        statusText: 'AI 提取已完成',
+        statusText: jevFailed ? 'AI 提取已完成（Jev 判定未生效）' : 'AI 提取已完成',
         statusType: 'success',
-        noteText: '当前显示 AI 提取到的高置信验证码与验证链接。',
+        noteText: jevFailed
+          ? `本次为 AI 提取结果，Jev 判定失败已忽略：${jevFailed}`
+          : '当前显示 AI 提取到的高置信验证码与验证链接。',
         onRetry: () => triggerMailAiInsights(reader, true),
         retryLabel: '重新提取'
       };
     }
+    if (status === 'fallback') {
+      const insights = reader.getInsights() || {};
+      const aiOn = hasMailInsightConfig();
+      const jevOn = hasJevConfig();
+      const jevOnly = !aiOn && jevOn;
+      // 只有「本来要走 Jev」时才把原因算给 Jev；配了 AI 提取就以 AI 为主体，别让它替 Jev 背锅。
+      const reason = String(
+        (jevOnly ? (insights.jevError || reader.getInsightError()) : reader.getInsightError()) || ''
+      ).slice(0, 80);
+      return {
+        // 什么都没配时不该说「XX 不可用」——那只是本地提取，不是模型失败。
+        statusText: reason && (aiOn || jevOn)
+          ? `${jevOnly ? 'Jev' : 'AI'} 不可用，已使用本地提取（${reason}）`
+          : '已使用本地规则提取',
+        statusType: 'info',
+        noteText: '以下结果由本地规则提取，未经模型确认，请自行核对后再使用。',
+        onRetry: () => triggerMailAiInsights(reader, true),
+        retryLabel: '重试提取'
+      };
+    }
     if (status === 'error') {
       return {
-        statusText: `AI 提取失败：${reader.getInsightError()}`,
+        statusText: `提取失败：${reader.getInsightError()}`,
         statusType: 'error',
         noteText: '当前未显示验证码或验证链接，可点击右侧按钮重试。',
         onRetry: () => triggerMailAiInsights(reader, true),
@@ -3067,12 +3477,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       };
     }
     if (!hasMailInsightConfig()) {
+      // Jev 独立可用：即使没配 AI 提取 API，只要开了 Jev 就仍然会做判定。
+      if (hasJevConfig()) {
+        return {
+          statusText: '已启用 Jev 判定（未配置 AI 提取）',
+          statusType: 'info',
+          noteText: '本地规则负责找出候选，Jev 负责判定与去重；未配置 AI 提取 API 不影响使用。',
+          onRetry: () => triggerMailAiInsights(reader, true),
+          retryLabel: '立即提取'
+        };
+      }
       return {
         statusText: '未配置 AI 提取 API',
         statusType: 'info',
-        noteText: '请在设置页选择复用翻译 API，或填写独立提取 API。',
-        onRetry: () => triggerMailAiInsights(reader, true),
-        retryLabel: '重试提取'
+        noteText: '未配置 AI 时会自动使用本地规则提取；也可在设置页选择复用翻译 API、填写独立提取 API，或启用可选的 Jev 判定。',
       };
     }
     return {
@@ -3106,21 +3524,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (retranslateBtn) retranslateBtn.classList.toggle('hidden', !text);
   }
 
-  function extractHttpUrlsFromHtml(html) {
+  function extractHtmlLinkRecords(html) {
     if (!html) {
       return [];
     }
-    const urls = [];
+    const records = [];
     const seen = new Set();
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html');
+      let order = 0;
       doc.querySelectorAll('a[href], area[href]').forEach((element) => {
         const rawUrl = String(element.getAttribute('href') || '').trim();
         try {
           const normalized = new URL(rawUrl).toString();
           if ((normalized.startsWith('http://') || normalized.startsWith('https://')) && !seen.has(normalized)) {
             seen.add(normalized);
-            urls.push(normalized);
+            records.push({
+              url: normalized,
+              anchorText: normalizeAnchorText(element.textContent),
+              order: order++,
+              insideImage: Boolean(element.querySelector('img'))
+            });
           }
         } catch {
           // 忽略相对地址和损坏链接。
@@ -3129,15 +3553,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch {
       return [];
     }
-    return urls;
+    return records;
   }
 
   function appendOriginalLinksToInsightSource(text, html) {
-    const urls = extractHttpUrlsFromHtml(html).slice(0, 20);
-    if (!urls.length) {
+    const records = extractHtmlLinkRecords(html).slice(0, 20);
+    if (!records.length) {
       return normalizeTranslationSource(text);
     }
-    const linkBlock = `[邮件中的完整原始链接，必须逐字复制，不得缩短或补写]\n${urls.join('\n')}`;
+    const linkBlock = [
+      '[邮件中的完整原始链接。每行格式为 锚文本 -> 完整URL；锚文本是判断链接用途的关键依据，URL 必须逐字复制，不得缩短或补写]',
+      ...records.map((record) => `${record.anchorText || '(无锚文本)'} -> ${record.url}`)
+    ].join('\n');
     const bodyBudget = Math.max(0, MAX_TRANSLATION_SOURCE_CHARS - linkBlock.length - 2);
     return normalizeTranslationSource(`${String(text || '').slice(0, bodyBudget)}\n\n${linkBlock}`);
   }
@@ -3252,57 +3679,213 @@ document.addEventListener('DOMContentLoaded', async () => {
       .slice(0, MAX_TRANSLATION_SOURCE_CHARS);
   }
 
-  async function extractMailInsightsWithApi(text, options = {}) {
-    if (!hasMailInsightConfig()) {
-      throw new Error(getMailInsightConfigErrorMessage());
+  function mergeInsightValues(primary, secondary, limit) {
+    const merged = [];
+    const seen = new Set();
+    [...(primary || []), ...(secondary || [])].forEach((value) => {
+      if (value && !seen.has(value)) {
+        seen.add(value);
+        merged.push(value);
+      }
+    });
+    return merged.slice(0, limit);
+  }
+
+  // 纯本地兜底：不请求网络、不抛错，永远返回一个可展示的结构。
+  function buildLocalInsightResult(sourceText) {
+    const codes = rankInsightCandidates(collectCodeCandidates(sourceText), {
+      limit: INSIGHT_MAX_ITEMS,
+      minScore: INSIGHT_CODE_MIN_SCORE
+    }).map((record) => record.value);
+
+    const links = rankInsightCandidates(collectLinkCandidates(sourceText), {
+      limit: INSIGHT_MAX_ITEMS,
+      minScore: INSIGHT_LINK_MIN_SCORE
+    }).map((record) => ({ url: record.url, label: formatInsightLinkLabel(record.url, record.anchorText) }));
+
+    return { codes, links, source: 'local' };
+  }
+
+  /**
+   * 用 Jev 对本地候选做一次结构化裁决。
+   *
+   * 关键设计（都由实测数据决定）：
+   *   · 验证码天生只有一个 → `choice` + `none`（不能硬选）。
+   *   · 链接可能有多个 → 每个候选独立问 `noul`，阈值 0.5 收集。`choice` 单选会丢链接。
+   *   · 每个 noul 的候选放在 instructions 的结构化字段里（标准用法）。
+   *   · 全部问题合并成**一次**请求。
+   *
+   * 返回 { codes, links, source, jev } 或 null（Jev 不可用/失败时，调用方回落）。
+   */
+  async function adjudicateInsightsWithJev(linkCandidates, codeCandidates, sourceText) {
+    // 尊重调用方已经做好的取样：调用方会用 getInsightSamplingParams() 决定上限
+    // （召回优先时是 16）。这里如果再固定砍回 8，调用方放宽的候选会被二次截断，
+    // 实测会直接导致「同分噪声淹没时真码漏报」。
+    const linkLimit = getInsightLinkLimit();
+    const links = dedupeLinksByNormalizedKey(linkCandidates).slice(0, linkLimit);
+    const codes = (codeCandidates || []).slice(0, linkLimit);
+    if (!links.length && !codes.length) {
+      return null;
     }
 
+    const questions = {};
+
+    // ---- 链接：一候选一个 noul，支持多选 ----
+    links.forEach((record, index) => {
+      questions[`link_${index}`] = {
+        type: 'noul',
+        instructions: {
+          candidate: {
+            url: record.url,
+            anchorText: record.anchorText || ''
+          },
+          question: '``candidate`` 是否是一个真正能完成验证／确认／激活／登录的操作链接？'
+            + '只依据这个候选本身判断：退订、账户设置、隐私政策、浏览器查看、营销页等都不算。'
+        },
+        criteria: {
+          true: '是真正的验证类链接',
+          false: '不是（退订／设置／隐私／营销／无关）'
+        }
+      };
+    });
+
+    // ---- 验证码：单一答案，choice + none ----
+    if (codes.length) {
+      const criteria = {};
+      codes.forEach((record) => {
+        criteria[record.value] = `类型：${record.label || '候选'}`;
+      });
+      criteria.none = '以上都不是真正的验证码';
+      questions.real_code = {
+        type: 'choice',
+        instructions: '候选里哪个是这封邮件**真正的验证码**？'
+          + '如果都不像真正的验证码（而是订单号、金额、促销码、日期等），选 none。',
+        criteria
+      };
+    }
+
+    const data = await callJev(questions, sourceText);
+    const answers = data.answers;
+
+    // 链接：阈值 0.5。实测真链接 noul 0.75~0.79、噪声最高 0.04，空档很宽。
+    const keptLinks = [];
+    links.forEach((record, index) => {
+      const answer = answers[`link_${index}`];
+      const score = typeof answer?.noul === 'number' ? answer.noul : 0;
+      if (score >= JEV_LINK_THRESHOLD) {
+        keptLinks.push({
+          url: record.url,
+          label: formatInsightLinkLabel(record.url, record.anchorText),
+          score
+        });
+      }
+    });
+
+    // 验证码：尊重 model 的 none 判断（这正是治误报的地方）。
+    let keptCodes = [];
+    if (codes.length) {
+      const picked = answers.real_code?.choice;
+      if (picked && picked !== 'none' && codes.some((record) => record.value === picked)) {
+        keptCodes = [picked];
+      }
+    }
+
+    return {
+      codes: keptCodes,
+      links: keptLinks.map(({ url, label }) => ({ url, label })),
+      linkScores: keptLinks,
+      source: 'jev',
+      jevModel: data.model
+    };
+  }
+
+  async function extractMailInsightsWithApi(text, options = {}) {
     const sourceText = normalizeTranslationSource(text);
+    const localResult = buildLocalInsightResult(sourceText);
+    // 记录 Jev 的失败原因，供 UI 说明为什么这次没走 Jev；不影响返回结果。
+    let jevError = '';
+
+    // 没有任何正文：直接给本地结果。
     if (!sourceText) {
-      throw new Error('当前邮件没有可用于提取的信息');
+      return localResult;
+    }
+
+    // 没配置 AI 提取 API —— 但**如果配了 Jev，仍要让它对本地候选做裁决**。
+    // 这正是「Jev 独立于 AI 提取」的意义：两条链路互不依赖。
+    if (!hasMailInsightConfig()) {
+      if (!hasJevConfig()) {
+        return localResult;
+      }
+      try {
+        const verdict = await adjudicateInsightsWithJev(
+          collectLinkCandidates(sourceText),
+          rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams()),
+          sourceText
+        );
+        if (verdict) {
+          return {
+            codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
+            links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
+            source: 'jev',
+            jevModel: verdict.jevModel,
+            jevOnly: true,
+            jevEmpty: verdict.codes.length === 0 && verdict.links.length === 0
+          };
+        }
+      } catch (error) {
+        // Jev 失败就退回本地结果，绝不因为 Jev 而让功能不可用。
+        return { ...localResult, jevError: error?.message || 'Jev 判定失败' };
+      }
+      return localResult;
     }
 
     const config = getMailInsightApiConfig();
     const subject = options.subject ? String(options.subject).trim() : '';
     const from = options.from ? String(options.from).trim() : '';
 
-    const response = await fetchWithTimeout(`${config.apiBase}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${config.apiKey}`
-      },
-      body: JSON.stringify({
-        model: config.model,
-        temperature: 0.1,
-        messages: [
-          {
-            role: 'system',
-            content: `你是一个高精度邮件验证码与验证链接提取器。你的任务是“复制原文中已经存在的信息”，不是推测、补全或生成信息。严格遵守以下规则：
+    let response = null;
+    try {
+      response = await fetchWithTimeout(`${config.apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: config.model,
+          temperature: 0.1,
+          messages: [
+            {
+              role: 'system',
+              content: `你是一个高精度邮件验证码与验证链接提取器。你的任务是“复制原文中已经存在的信息”，不是推测、补全或生成信息。严格遵守以下规则：
 
 一、验证码提取
 1. 验证码可能出现在 code、verification code、security code、OTP、one-time password、验证码、验证代码、动态码、一次性密码等提示词附近，也可能单独成行。
 2. 验证码可能是纯数字、字母数字混合、十六进制、短哈希，也可能包含原文分隔符，例如 123-456、12 34 56、AB-12-CD。必须保留原文中的大小写、连字符和分组空格，不得自行删除、增加或替换字符。
 3. 每个验证码必须能够在邮件正文中逐字找到。如果不确定某个字符串是否为验证码，不要返回它。
+4. 日期（2026-09-22）、时间（10:30）、金额、订单号、发票号、纯英文单词都不是验证码，即使它们看起来像。
 
 二、验证链接提取
-4. 只提取用于登录、注册、邮箱验证、账号激活、操作确认、魔法登录或密码重置的 HTTP/HTTPS 链接。排除退订、广告、图片、统计和追踪链接。
-5. URL 必须从邮件正文或“邮件中的完整原始链接”区域逐字复制。必须保留完整的协议、域名、端口、路径、查询字符串和片段，尤其不得丢失 ?、&、=、# 后面的 token、code、key、ticket、signature、hash 等凭证参数。
-6. 禁止把完整 URL 缩短为域名或基础路径；禁止修改 URL 编码；禁止根据链接文字猜测 URL；禁止补全正文中不存在的路径或参数。
-7. 绝对禁止返回示例域名、模板地址或占位链接，包括任何 example.com 地址。如果邮件中没有真实完整的验证链接，links 必须返回空数组 []。
+5. 只提取用于登录、注册、邮箱验证、账号激活、操作确认、魔法登录或密码重置的 HTTP/HTTPS 链接。排除退订、广告、图片、统计和追踪链接。
+6. 正文末尾会给出“[邮件中的完整原始链接]”区块，每行格式为 锚文本 -> 完整URL。锚文本是最重要的判断依据：“Verify your email”这类锚文本远比其他链接更可能是验证链接；“Unsubscribe”“Manage account”“View in browser”一类一律不要返回。
+7. URL 必须从该区块或邮件正文逐字复制。必须保留完整的协议、域名、端口、路径、查询字符串和片段，尤其不得丢失 ?、&、=、# 后面的 token、code、key、ticket、signature、hash 等凭证参数。
+8. 禁止把完整 URL 缩短为域名或基础路径；禁止修改 URL 编码；禁止根据链接文字猜测 URL；禁止补全正文中不存在的路径或参数；禁止返回示例域名或占位链接。如果邮件中没有真实完整的验证链接，links 必须返回空数组 []。
 
 三、输出要求
-8. 严格禁止编造。codes 和 links 中的每一项都必须来自当前邮件原文；宁可返回空数组，也不要猜测。
-9. 只返回一个合法 JSON 对象，不要使用 Markdown，不要添加解释。结构固定为：{"codes":["原文验证码"],"links":[{"url":"原文中的完整URL","label":"简短用途"}]}。
-10. 最多返回 3 个验证码和 3 个链接。没有验证码时返回 codes:[]；没有真实完整链接时返回 links:[]。`
-          },
-          {
-            role: 'user',
-            content: `请严格从下面这封邮件中复制验证码和完整验证链接。不得使用系统提示词中的格式示例作为结果。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n===== 邮件原文开始 =====\n${sourceText}\n===== 邮件原文结束 =====`
-          }
-        ]
-      })
-    }, AI_REQUEST_TIMEOUT_MS);
+9. 严格禁止编造。codes 和 links 中的每一项都必须来自当前邮件原文。宁可返回空数组，也不要猜测。
+10. 只返回一个合法 JSON 对象，不要使用 Markdown，不要添加解释。结构固定为：{"codes":["原文验证码"],"links":[{"url":"原文中的完整URL","label":"简短用途"}]}。
+11. 最多返回 3 个验证码和 3 个链接。没有验证码时返回 codes:[]；没有真实完整链接时返回 links:[]。`
+            },
+            {
+              role: 'user',
+              content: `请严格从下面这封邮件中复制验证码和完整验证链接。不得使用系统提示词中的格式示例作为结果。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n===== 邮件原文开始 =====\n${sourceText}\n===== 邮件原文结束 =====`
+            }
+          ]
+        })
+      }, AI_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      return { ...localResult, error: error?.message || 'AI 提取请求失败' };
+    }
 
     let data = null;
     try {
@@ -3313,29 +3896,90 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (!response.ok) {
       const errorMessage = data?.error?.message || data?.message || `${response.status}`;
-      throw new Error(`AI 提取请求失败: ${errorMessage}`);
+      return { ...localResult, error: `AI 提取请求失败: ${errorMessage}` };
     }
 
     const content = data?.choices?.[0]?.message?.content?.trim();
     const parsed = parseMailInsightJson(content);
+    if (!parsed) {
+      return { ...localResult, error: '模型返回了空内容或非法 JSON' };
+    }
+
     const aiResult = normalizeAiInsightResult(parsed);
 
     // AI 结果必须能在邮件原文中找到；链接被截断时恢复为原文中的完整 URL。
     const verifiedCodes = verifyCodesAgainstSource(aiResult.codes, sourceText);
-    const localCodes = extractCodesLocally(sourceText);
-    aiResult.codes = Array.from(new Set([...verifiedCodes, ...localCodes])).slice(0, 3);
-
     const verifiedLinks = verifyLinksAgainstSource(aiResult.links, sourceText);
-    const localLinks = extractActionLinksLocally(sourceText);
-    const mergedLinks = new Map();
-    [...verifiedLinks, ...localLinks].forEach((link) => {
-      if (link?.url && !mergedLinks.has(link.url)) {
-        mergedLinks.set(link.url, link);
+
+    // 收集「本地 + AI」的完整候选池。Jev 开启时由它裁决；关闭时沿用原有回落逻辑。
+    const codeCandidates = rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams());
+    // AI 提到的验证码（已校验存在）补进候选池，并用最高分标记 —— 它们至少和提示词紧邻的候选一样可信。
+    const codePool = codeCandidates.slice();
+    const codePoolKeys = new Set(codePool.map((record) => record.key));
+    verifiedCodes.forEach((value) => {
+      const compact = String(value).replace(/[\s-]+/g, '').toUpperCase();
+      if (!codePoolKeys.has(compact)) {
+        codePoolKeys.add(compact);
+        codePool.push({ value, key: compact, score: 99, index: -1, label: 'AI 提取' });
       }
     });
-    aiResult.links = Array.from(mergedLinks.values()).slice(0, 3);
 
-    return aiResult;
+    const linkCandidates = dedupeLinksByNormalizedKey([
+      ...collectLinkCandidates(sourceText),
+      ...verifiedLinks.map((link) => ({
+        value: link.url,
+        url: link.url,
+        anchorText: '',
+        score: 99,
+        index: -1
+      }))
+    ]);
+
+    // ---- Jev 判定增强（可选）：成功就用它的裁决结果 ----
+    if (hasJevConfig()) {
+      try {
+        const verdict = await adjudicateInsightsWithJev(linkCandidates, codePool, sourceText);
+        if (verdict) {
+          return {
+            codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
+            links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
+            source: 'jev',
+            jevModel: verdict.jevModel,
+            // Jev 说“都没有”时保留这个标记，让 UI 能说明原因。
+            jevEmpty: verdict.codes.length === 0 && verdict.links.length === 0
+          };
+        }
+      } catch (error) {
+        // Jev 失败不能影响提取：记录原因，下面照常走原有回落逻辑。
+        jevError = error?.message || 'Jev 判定失败';
+      }
+    }
+
+    // 关键：AI 明确作答时尊重它。它说“没有验证码”就不再让本地正则把垃圾补进结果，
+    // 这正是之前“多余内容被当成验证码”的来源。本地候选只用来补满剩余名额。
+    const codes = verifiedCodes.length
+      ? mergeInsightValues(verifiedCodes, localResult.codes, INSIGHT_MAX_ITEMS)
+      : [];
+
+    // 链接此时已按归一化 key 去重，并且 AI 结果排在前面（score 99）。
+    const rankedLinks = linkCandidates
+      .slice()
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, INSIGHT_MAX_ITEMS)
+      .map((record) => ({ url: record.url, label: formatInsightLinkLabel(record.url, record.anchorText) }));
+
+    const links = verifiedLinks.length
+      ? mergeInsightValues(
+        verifiedLinks.map((link) => link.url),
+        localResult.links.map((link) => link.url),
+        INSIGHT_MAX_ITEMS
+      ).map((url) => verifiedLinks.find((link) => link.url === url) || { url, label: formatInsightLinkLabel(url) })
+      : rankedLinks;
+    const result = { codes, links, source: 'ai' };
+    if (jevError) {
+      result.jevError = jevError;   // UI 用它说明这次为什么没走 Jev
+    }
+    return result;
   }
 
   async function translateTextWithApi(text, options = {}) {
@@ -3553,41 +4197,73 @@ document.addEventListener('DOMContentLoaded', async () => {
     updateMailActionButtons(reader, result);
   }
 
+  // 只重绘洞察面板。洞察区（#mail-insights）是邮件正文（#mail-body）的兄弟节点，
+  // 与正文渲染互相独立。以前提取的开始/完成都调 renderCurrentMail，会整封邮件重建
+  // iframe（container.innerHTML = '' + new iframe + 重设 srcdoc），于是每次提取都把
+  // 正文重载两遍：滚动位置丢失、远程图片重新请求、正文闪烁。
+  function renderMailInsightPanel(reader) {
+    if (!reader?.elements?.insights) return;
+    renderMailInsights(
+      reader.elements.insights,
+      getMailInsightsOverride(reader) || { codes: [], links: [] },
+      buildMailInsightRenderOptions(reader)
+    );
+  }
+
   async function triggerMailAiInsights(reader, force = false) {
     const mail = reader.getMail();
-    if (!mail || (!force && ['loading', 'success'].includes(reader.getInsightStatus()))) {
-      return;
-    }
-    if (!hasMailInsightConfig()) {
-      reader.setInsightStatus('error');
-      reader.setInsightError(getMailInsightConfigErrorMessage());
-      renderCurrentMail(reader);
+    if (!mail || (!force && ['loading', 'success', 'fallback'].includes(reader.getInsightStatus()))) {
       return;
     }
 
     const requestToken = reader.nextInsightToken();
     const identity = reader.getIdentity();
+    const source = reader.getTranslationSource(mail, { includeOriginalLinks: true });
     reader.setInsightStatus('loading');
     reader.setInsightError('');
     if (force) reader.setInsights(null);
-    renderCurrentMail(reader);
+    renderMailInsightPanel(reader);
 
+    let extracted = null;
+    let failureMessage = '';
     try {
-      const extracted = await extractMailInsightsWithApi(
-        reader.getTranslationSource(mail, { includeOriginalLinks: true }),
-        reader.getMetadata(mail)
-      );
-      if (!reader.isInsightTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
+      extracted = await extractMailInsightsWithApi(source, reader.getMetadata(mail));
+    } catch (error) {
+      failureMessage = error?.message || '未知错误';
+    }
+    if (!reader.isInsightTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
+
+    const extractedSource = extracted?.source;
+    const aiAnswered = extractedSource === 'ai';
+    // Jev 判定成功同样属于「已由模型确认」：结果来自模型裁决，不是本地规则打分。
+    const jevAnswered = extractedSource === 'jev';
+    const hasItems = Boolean(extracted && (extracted.codes.length || extracted.links.length));
+
+    if (aiAnswered && hasItems) {
       reader.setInsights(extracted);
       reader.setInsightStatus('success');
       reader.setInsightError('');
-    } catch (error) {
-      if (!reader.isInsightTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
-      reader.setInsights(null);
-      reader.setInsightStatus('error');
-      reader.setInsightError(error.message || '未知错误');
+    } else if (aiAnswered) {
+      // AI 明确说“这封邮件里没有验证码/链接”。尊重它，但仍把本地候选作为参考附上，
+      // 避免召回被砍掉，同时用 fallback 文案明确标注这些不是 AI 判定的。
+      const local = buildLocalInsightResult(source);
+      const hasLocal = Boolean(local.codes.length || local.links.length);
+      reader.setInsights(hasLocal ? local : extracted);
+      reader.setInsightStatus(hasLocal ? 'fallback' : 'success');
+      reader.setInsightError('');
+    } else if (jevAnswered) {
+      // Jev 已完成判定：不管是给出条目还是明确「没有」，都算模型确认过的成功结果。
+      // （以前只认 source === 'ai'，导致 Jev 的结果被贴上「本地规则提取」的标签。）
+      reader.setInsights(extracted);
+      reader.setInsightStatus('success');
+      reader.setInsightError(extracted.jevError || '');
+    } else {
+      // AI 不可用 / 未配置 / 请求失败：回落到本地打分结果，绝不把面板留空。
+      reader.setInsights(extracted || buildLocalInsightResult(source));
+      reader.setInsightStatus('fallback');
+      reader.setInsightError(failureMessage || extracted?.error || '');
     }
-    renderCurrentMail(reader);
+    renderMailInsightPanel(reader);
   }
 
   async function requestMailTranslation(reader, force = false) {
@@ -3871,7 +4547,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     'apiUrl', 'adminToken', 'emailHistory', 'floatWindowEnabled', 'activeTab',
     'moeApiUrl', 'moeApiKey', 'moeEmailCache', 'defaultTab', 'bookmarks', 'verifyInterval', 'bookmarkSort',
     'verifyStatusCache', 'tempUnreadCounts', 'moeUnreadCounts', 'mailPollingInterval',
-    'notificationsEnabled', 'defaultRemoteImagesEnabled', TRANSLATION_API_BASE_KEY, TRANSLATION_API_KEY_KEY, TRANSLATION_MODEL_KEY, TRANSLATION_TARGET_LANGUAGE_KEY, MAIL_INSIGHT_API_MODE_KEY, MAIL_INSIGHT_API_BASE_KEY, MAIL_INSIGHT_API_KEY_KEY, MAIL_INSIGHT_MODEL_KEY, 'siteAccessMode', 'siteAllowlist', 'siteBlocklist',
+    'notificationsEnabled', 'defaultRemoteImagesEnabled', TRANSLATION_API_BASE_KEY, TRANSLATION_API_KEY_KEY, TRANSLATION_MODEL_KEY, TRANSLATION_TARGET_LANGUAGE_KEY, MAIL_INSIGHT_API_MODE_KEY, MAIL_INSIGHT_API_BASE_KEY, MAIL_INSIGHT_API_KEY_KEY, MAIL_INSIGHT_MODEL_KEY, JEV_ENABLED_KEY, JEV_API_BASE_KEY, JEV_API_KEY_KEY, JEV_ENDPOINT_PATH_KEY, JEV_MODEL_KEY, JEV_RECALL_MODE_KEY, 'siteAccessMode', 'siteAllowlist', 'siteBlocklist',
     TAB_LAYOUT_MODE_KEY, GENERATED_RESULT_AUTO_CLOSE_KEY, PAGE_FILL_RULES_KEY, GENERATED_PROFILE_KEY, GENERATED_HISTORY_KEY,
     THEME_KEY, FLOAT_WINDOW_STYLE_KEY,
     FAST_FILL_EMAIL_SOURCE_KEY, FAST_FILL_DOMAIN_MODE_KEY, FAST_FILL_DOMAIN_SPECIFIC_KEY, FAST_FILL_DOMAIN_WHITELIST_KEY, FAST_FILL_DOMAIN_BLACKLIST_KEY,
@@ -3976,6 +4652,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightApiBase = normalizeTranslationSetting(result[MAIL_INSIGHT_API_BASE_KEY], DEFAULT_TRANSLATION_API_BASE);
     mailInsightApiKey = normalizeTranslationSetting(result[MAIL_INSIGHT_API_KEY_KEY]);
     mailInsightModel = normalizeTranslationSetting(result[MAIL_INSIGHT_MODEL_KEY]);
+    jevEnabled = result[JEV_ENABLED_KEY] === true;
+    jevApiBase = normalizeTranslationSetting(result[JEV_API_BASE_KEY]);
+    jevApiKey = normalizeTranslationSetting(result[JEV_API_KEY_KEY]);
+    jevEndpointPath = normalizeTranslationSetting(result[JEV_ENDPOINT_PATH_KEY], DEFAULT_JEV_ENDPOINT_PATH);
+    jevModel = normalizeTranslationSetting(result[JEV_MODEL_KEY], DEFAULT_JEV_MODEL);
+    jevRecallMode = result[JEV_RECALL_MODE_KEY] === true;
     translationApiBaseInput.value = translationApiBase;
     translationApiKeyInput.value = translationApiKey;
     translationModelInput.value = translationModel;
@@ -3984,6 +4666,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightApiBaseInput.value = mailInsightApiBase;
     mailInsightApiKeyInput.value = mailInsightApiKey;
     mailInsightModelInput.value = mailInsightModel;
+    if (jevEnabledToggle) jevEnabledToggle.checked = jevEnabled;
+    if (jevApiBaseInput) jevApiBaseInput.value = jevApiBase;
+    if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
+    if (jevEndpointPathInput) jevEndpointPathInput.value = jevEndpointPath;
+    if (jevModelInput) jevModelInput.value = jevModel;
+    if (jevRecallModeToggle) jevRecallModeToggle.checked = jevRecallMode;
+    syncJevSettingsVisibility();
     syncMailInsightApiFieldsVisibility();
     generatedResultAutoCloseSeconds = normalizeGeneratedResultAutoCloseSeconds(result[GENERATED_RESULT_AUTO_CLOSE_KEY]);
     syncGeneratedResultAutoCloseInput(generatedResultAutoCloseSeconds);
@@ -4101,6 +4790,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const newMailInsightApiBase = normalizeTranslationSetting(mailInsightApiBaseInput.value, DEFAULT_TRANSLATION_API_BASE).replace(/\/$/, '');
     const newMailInsightApiKey = normalizeTranslationSetting(mailInsightApiKeyInput.value);
     const newMailInsightModel = normalizeTranslationSetting(mailInsightModelInput.value);
+    // Jev 为可选项：读不到控件时沿用当前值，不让保存流程崩掉。
+    const newJevEnabled = jevEnabledToggle ? jevEnabledToggle.checked === true : jevEnabled;
+    const newJevApiBase = normalizeTranslationSetting(jevApiBaseInput?.value, '').replace(/\/+$/, '');
+    const newJevApiKey = normalizeTranslationSetting(jevApiKeyInput?.value);
+    const newJevEndpointPath = normalizeTranslationSetting(jevEndpointPathInput?.value, DEFAULT_JEV_ENDPOINT_PATH);
+    const newJevModel = normalizeTranslationSetting(jevModelInput?.value, DEFAULT_JEV_MODEL);
+    const newJevRecallMode = jevRecallModeToggle ? jevRecallModeToggle.checked === true : jevRecallMode;
     let newGeneratedResultAutoCloseSeconds = DEFAULT_GENERATED_RESULT_AUTO_CLOSE_SECONDS;
     try {
       newGeneratedResultAutoCloseSeconds = readGeneratedResultAutoCloseSeconds();
@@ -4140,8 +4836,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     translationTargetLanguage = newTranslationTargetLanguage;
     mailInsightApiMode = newMailInsightApiMode;
     mailInsightApiBase = newMailInsightApiBase;
-    mailInsightApiKey = newMailInsightApiKey;
     mailInsightModel = newMailInsightModel;
+    jevEnabled = newJevEnabled;
+    jevApiBase = newJevApiBase;
+    jevApiKey = newJevApiKey;
+    jevEndpointPath = newJevEndpointPath;
+    jevModel = newJevModel;
+    jevRecallMode = newJevRecallMode;
+    syncJevSettingsVisibility();
     generatedResultAutoCloseSeconds = newGeneratedResultAutoCloseSeconds;
     siteAccessMode = newSiteAccessMode;
     // 从 textarea 解析黑名单规则（覆盖变量中的旧值）
@@ -4168,9 +4870,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       [TRANSLATION_MODEL_KEY]: translationModel,
       [TRANSLATION_TARGET_LANGUAGE_KEY]: translationTargetLanguage,
       [MAIL_INSIGHT_API_MODE_KEY]: mailInsightApiMode,
-      [MAIL_INSIGHT_API_BASE_KEY]: mailInsightApiBase,
-      [MAIL_INSIGHT_API_KEY_KEY]: mailInsightApiKey,
       [MAIL_INSIGHT_MODEL_KEY]: mailInsightModel,
+      [JEV_ENABLED_KEY]: jevEnabled,
+      [JEV_API_BASE_KEY]: jevApiBase,
+      [JEV_API_KEY_KEY]: jevApiKey,
+      [JEV_ENDPOINT_PATH_KEY]: jevEndpointPath,
+      [JEV_MODEL_KEY]: jevModel,
+      [JEV_RECALL_MODE_KEY]: jevRecallMode,
       [GENERATED_RESULT_AUTO_CLOSE_KEY]: generatedResultAutoCloseSeconds,
       siteAccessMode,
       siteAllowlist,
@@ -6017,6 +6723,31 @@ document.addEventListener('DOMContentLoaded', async () => {
           mailInsightModel = normalizeTranslationSetting(toStore[MAIL_INSIGHT_MODEL_KEY]);
           mailInsightModelInput.value = mailInsightModel;
         }
+        if (toStore[JEV_ENABLED_KEY] !== undefined) {
+          jevEnabled = toStore[JEV_ENABLED_KEY] === true;
+          if (jevEnabledToggle) jevEnabledToggle.checked = jevEnabled;
+          syncJevSettingsVisibility();
+        }
+        if (toStore[JEV_API_BASE_KEY] !== undefined) {
+          jevApiBase = normalizeTranslationSetting(toStore[JEV_API_BASE_KEY]);
+          if (jevApiBaseInput) jevApiBaseInput.value = jevApiBase;
+        }
+        if (toStore[JEV_API_KEY_KEY] !== undefined) {
+          jevApiKey = normalizeTranslationSetting(toStore[JEV_API_KEY_KEY]);
+          if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
+        }
+        if (toStore[JEV_ENDPOINT_PATH_KEY] !== undefined) {
+          jevEndpointPath = normalizeTranslationSetting(toStore[JEV_ENDPOINT_PATH_KEY], DEFAULT_JEV_ENDPOINT_PATH);
+          if (jevEndpointPathInput) jevEndpointPathInput.value = jevEndpointPath;
+        }
+        if (toStore[JEV_MODEL_KEY] !== undefined) {
+          jevModel = normalizeTranslationSetting(toStore[JEV_MODEL_KEY], DEFAULT_JEV_MODEL);
+          if (jevModelInput) jevModelInput.value = jevModel;
+        }
+        if (toStore[JEV_RECALL_MODE_KEY] !== undefined) {
+          jevRecallMode = toStore[JEV_RECALL_MODE_KEY] === true;
+          if (jevRecallModeToggle) jevRecallModeToggle.checked = jevRecallMode;
+        }
         if (toStore[GENERATED_RESULT_AUTO_CLOSE_KEY] !== undefined) {
           generatedResultAutoCloseSeconds = normalizeGeneratedResultAutoCloseSeconds(toStore[GENERATED_RESULT_AUTO_CLOSE_KEY]);
           syncGeneratedResultAutoCloseInput(generatedResultAutoCloseSeconds);
@@ -6569,8 +7300,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes[MAIL_INSIGHT_MODEL_KEY]) {
       mailInsightModel = normalizeTranslationSetting(changes[MAIL_INSIGHT_MODEL_KEY].newValue);
       mailInsightModelInput.value = mailInsightModel;
+    if (changes[MAIL_INSIGHT_MODEL_KEY]) {
+      mailInsightModel = normalizeTranslationSetting(changes[MAIL_INSIGHT_MODEL_KEY].newValue);
+      mailInsightModelInput.value = mailInsightModel;
     }
-    if (changes[GENERATED_RESULT_AUTO_CLOSE_KEY]) {
+    if (changes[JEV_ENABLED_KEY]) {
+      jevEnabled = changes[JEV_ENABLED_KEY].newValue === true;
+      if (jevEnabledToggle) jevEnabledToggle.checked = jevEnabled;
+      syncJevSettingsVisibility();
+    }
+    if (changes[JEV_API_BASE_KEY]) {
+      jevApiBase = normalizeTranslationSetting(changes[JEV_API_BASE_KEY].newValue);
+      if (jevApiBaseInput) jevApiBaseInput.value = jevApiBase;
+    }
+    if (changes[JEV_API_KEY_KEY]) {
+      jevApiKey = normalizeTranslationSetting(changes[JEV_API_KEY_KEY].newValue);
+      if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
+    }
+    if (changes[JEV_ENDPOINT_PATH_KEY]) {
+      jevEndpointPath = normalizeTranslationSetting(changes[JEV_ENDPOINT_PATH_KEY].newValue, DEFAULT_JEV_ENDPOINT_PATH);
+      if (jevEndpointPathInput) jevEndpointPathInput.value = jevEndpointPath;
+    }
+    if (changes[JEV_MODEL_KEY]) {
+      jevModel = normalizeTranslationSetting(changes[JEV_MODEL_KEY].newValue, DEFAULT_JEV_MODEL);
+      if (jevModelInput) jevModelInput.value = jevModel;
+    }
+    if (changes[JEV_RECALL_MODE_KEY]) {
+      jevRecallMode = changes[JEV_RECALL_MODE_KEY].newValue === true;
+      if (jevRecallModeToggle) jevRecallModeToggle.checked = jevRecallMode;
+    }
       generatedResultAutoCloseSeconds = normalizeGeneratedResultAutoCloseSeconds(changes[GENERATED_RESULT_AUTO_CLOSE_KEY].newValue);
       syncGeneratedResultAutoCloseInput(generatedResultAutoCloseSeconds);
       restoreGeneratedToolResults();
