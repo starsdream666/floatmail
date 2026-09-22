@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const PAGE_TOOLS_VERSION = '2026.08.23-balls-v1';
+  const PAGE_TOOLS_VERSION = '2026.09.14-login-rules-main-v3';
   const existingPageToolsController = window.__floatMailPageToolsController;
   if (existingPageToolsController?.version === PAGE_TOOLS_VERSION
     && existingPageToolsController.disposed !== true) {
@@ -52,6 +52,12 @@
   const INBOX_BALL_TTL_MS = 30000;
   const BALL_SIZE = 40;
   const BALL_GROUP_GAP = 10;
+  // 主按钮尺寸由 content.css 用 !important 钉死为 54×54。
+  // 这里必须用常量而不是实测：content.css 是 ShadowRoot 里的 <link>，异步加载，
+  // 首帧布局时按钮还是浏览器默认样式（带默认 padding/border，实测约 68px），
+  // 拿它算居中会把球组整体右移，视觉上表现为「与主按钮右对齐」。
+  // 改这个值要同步 content.css 里 #temp-email-float-btn 的宽高。
+  const FLOAT_BUTTON_SIZE = 54;
   const PANEL_COMMAND_TIMEOUT_MS = 60000;
   // 面板命令通道走 chrome.storage，而不是 postMessage：
   // content.js 运行在页面 realm，页面自己也能对 iframe postMessage，
@@ -87,8 +93,10 @@
     lastName: '姓输入框',
     firstName: '名输入框',
     birthday: '生日输入框',
+    age: '年龄输入框',
     address: '住址输入框',
   };
+  const RULE_MATCH_ERROR = '当前表单未明确匹配注册或登录规则，请到「规则」页分别绑定；不会猜测填入。';
 
   let lastFocusedElement = null;
   let floatUi = null;
@@ -625,10 +633,14 @@
     const rect = element.getBoundingClientRect();
     const ownerWindow = element.ownerDocument?.defaultView || window;
     const style = ownerWindow.getComputedStyle(element);
-    return rect.width > 0
-      && rect.height > 0
-      && style.visibility !== 'hidden'
-      && style.display !== 'none';
+    if (rect.width <= 0 || rect.height <= 0 || style.visibility === 'hidden' || style.display === 'none') return false;
+    // 同源 iframe 内部仍可能有尺寸，但外层 iframe 已隐藏，不能纳入表单或规则匹配。
+    try {
+      if (ownerWindow.frameElement && !isElementVisible(ownerWindow.frameElement)) return false;
+    } catch {
+      return false;
+    }
+    return true;
   }
 
   function collectSearchRoots(root, roots, visitedDocuments) {
@@ -806,10 +818,7 @@
       if (haystack.includes('street') || haystack.includes('街道') || haystack.includes('road')) score += 3;
     }
 
-    if (element === lastFocusedElement) {
-      score += 3;
-    }
-
+    // 焦点不能作为字段语义：连续填入后，焦点加分会把姓名误判到邮箱框。
     return score;
   }
 
@@ -850,63 +859,159 @@
       return null;
     }
 
-    const roots = Array.isArray(contextPath) && contextPath.length > 0
+    // 空 contextPath 明确代表顶层 document，不能跑到 iframe 中借用同名输入框。
+    const roots = Array.isArray(contextPath)
       ? [resolveRuleContext(contextPath)].filter(Boolean)
       : (typeof getSearchRootsMemo === 'function' ? getSearchRootsMemo() : getSearchRoots());
+    const matches = new Set();
     for (const root of roots) {
       try {
-        const element = root.querySelector(selector);
-        if (element && isEditableElement(element) && isElementVisible(element)) {
-          return element;
-        }
+        root.querySelectorAll(selector).forEach((element) => {
+          if (isEditableElement(element) && isElementVisible(element)) matches.add(element);
+        });
       } catch {
         // 当前 root 不支持或 selector 已失效时继续尝试其他 root。
       }
     }
-    return null;
+    // 选择器不唯一时拒绝取第一个，避免重复 ID / 多个可见表单造成错填。
+    return matches.size === 1 ? [...matches][0] : null;
   }
 
-  function resolveRuleTarget(kind, getSearchRootsMemo = null) {
-    const rule = getOriginFillRules()[kind];
-    if (!rule?.selector) {
-      return null;
+  function getRuleFields(mode, originRules = getOriginFillRules()) {
+    // 保留旧版扁平字段作为注册规则；登录规则独立放在 login 下，无需破坏性迁移。
+    const source = mode === 'login' ? originRules.login : originRules;
+    const kinds = Object.keys(FIELD_LABELS);
+    return Object.fromEntries(kinds.filter((kind) => source?.[kind]?.selector)
+      .map((kind) => [kind, source[kind]]));
+  }
+
+  function getInputRole(element) {
+    const type = String(element.type || element.tagName || '').toLowerCase();
+    const text = collectElementText(element);
+    const autocomplete = (element.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).pop();
+    if (type === 'email' || autocomplete === 'email') return 'email';
+    if (type === 'password' || ['new-password', 'current-password'].includes(autocomplete)) {
+      return containsAny(text, ['confirm', 'repeat', 'again', '确认', '重复', '再次']) ? 'confirmPassword' : 'password';
     }
-    return queryEditableElement(rule.selector, rule.contextPath, getSearchRootsMemo);
+    if (autocomplete === 'one-time-code' || containsAny(text, ['otp', 'captcha', 'verification', 'verify', '验证码', '校验码', '动态码'])
+      || /(^|[\s_-])code($|[\s_-])/.test(text)) return 'verificationCode';
+    if (containsAny(text, ['email', 'e-mail', '邮箱', '邮件地址'])) return 'email';
+    if (autocomplete === 'username' || containsAny(text, ['username', 'user-name', 'user_name', '用户名', '账号', 'account', 'login'])) return 'email';
+    if (containsAny(text, ['password', '密码'])) return 'password';
+    if (autocomplete === 'given-name' || containsAny(text, ['firstname', 'first-name', 'first_name', 'first name', 'givenname', 'given-name'])) return 'firstName';
+    if (autocomplete === 'family-name' || containsAny(text, ['lastname', 'last-name', 'last_name', 'last name', 'surname', 'family-name'])) return 'lastName';
+    if (type === 'date' || autocomplete === 'bday' || containsAny(text, ['birthday', 'birth', '生日', '出生'])) return 'birthday';
+    if (autocomplete.startsWith('address-') || autocomplete === 'street-address'
+      || containsAny(text, ['address', 'street', '住址', '地址'])) return 'address';
+    if (/(^|[\s_-])age($|[\s_-])/.test(text) || containsAny(text, ['年龄', '岁数'])) return 'age';
+    if (autocomplete === 'name' || containsAny(text, ['fullname', 'full-name', 'full name', '姓名', 'nickname'])
+      || /(^|[\s_-])name($|[\s_-])/.test(text)) return 'name';
+    const label = getElementLabelText(element).trim();
+    if (['姓', '姓氏'].includes(label)) return 'lastName';
+    if (['名', '名字'].includes(label)) return 'firstName';
+    return 'unknown';
+  }
+
+  function getInputFingerprint(element) {
+    const autocomplete = (element.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/).pop();
+    return {
+      type: String(element.type || element.tagName).toLowerCase(), role: getInputRole(element),
+      purpose: ['new-password', 'current-password'].includes(autocomplete) ? autocomplete : '',
+    };
+  }
+
+  function isCompatibleField(element, kind, rule = null) {
+    if (!isEditableElement(element) || !isElementVisible(element)) return false;
+    const fingerprint = getInputFingerprint(element);
+    if (rule) {
+      // 手动绑定以用户指定的目标为准，不要求邮箱/密码/姓名与目标的 type 或语义对应。
+      // 已保存的特征只用来确认仍是原表单，不能用字段 kind 否决自定义映射。
+      return !rule.input || (rule.input.type === fingerprint.type && rule.input.role === fingerprint.role
+        && (typeof rule.input.purpose !== 'string' || rule.input.purpose === fingerprint.purpose));
+    }
+    // 只有无规则的自动识别才检查字段语义，避免任意猜测和错填。
+    const allowedTypes = {
+      email: ['text', 'email'], password: ['password', 'text'], confirmPassword: ['password', 'text'],
+      verificationCode: ['text', 'tel', 'number'], name: ['text', 'textarea'],
+      firstName: ['text', 'textarea'], lastName: ['text', 'textarea'],
+      birthday: ['date', 'text', 'tel'], age: ['number', 'text', 'tel'], address: ['text', 'textarea'],
+    };
+    if (allowedTypes[kind] && !allowedTypes[kind].includes(fingerprint.type)) return false;
+    if (fingerprint.role !== 'unknown') return fingerprint.role === kind;
+    // 自动识别不能仅凭 type=text / 焦点将未知输入框当作有语义的字段。
+    return kind === 'text' && element === lastFocusedElement;
+  }
+
+  function getFormScope(element) {
+    return element.form || element.closest?.('form, [role="form"]') || getElementQueryRoot(element);
+  }
+
+  function getFormSignature(element, candidates) {
+    const scope = getFormScope(element);
+    const inputs = candidates.filter((candidate) => getFormScope(candidate) === scope);
+    // 不记录输入值；数量 + 原生类型 + 语义类型区分同 URL 下的注册/登录表单。
+    return inputs.map((input) => {
+      const { type, role, purpose } = getInputFingerprint(input);
+      return `${type}:${role}:${purpose}`;
+    }).sort();
+  }
+
+  function sameFormSignature(left, right) {
+    return Array.isArray(left) && left.length === right.length
+      && left.every((value, index) => value === right[index]);
+  }
+
+  function matchRuleMode(mode, searchRoots, candidates) {
+    const rules = getRuleFields(mode);
+    const entries = Object.entries(rules);
+    if (!entries.length) return null;
+    const targets = new Map();
+    const used = new Set();
+    let scope = null;
+    for (const [kind, rule] of entries) {
+      const target = queryEditableElement(rule.selector, rule.contextPath, () => searchRoots);
+      if (!target || !isCompatibleField(target, kind, rule) || used.has(target)) return null;
+      const targetScope = getFormScope(target);
+      if (scope && scope !== targetScope) return null;
+      scope = targetScope;
+      if (rule.formSignature && !sameFormSignature(rule.formSignature, getFormSignature(target, candidates))) return null;
+      used.add(target);
+      targets.set(kind, target);
+    }
+    const scopedInputs = candidates.filter((candidate) => getFormScope(candidate) === scope);
+    if (scopedInputs.length < entries.length) return null;
+    // 场景由各自保存的实际表单特征和完整目标集决定，而非预设“登录必须两个框”、
+    // “密码必须 type=password”等模板。两套规则同时命中仍交由上层拒绝歧义。
+    return { mode, rules, targets, scope, signature: getFormSignature([...targets.values()][0], candidates) };
+  }
+
+  function getFillContext() {
+    const searchRoots = getSearchRoots();
+    const candidates = getEditableCandidates(searchRoots);
+    const matches = ['register', 'login'].map((mode) => matchRuleMode(mode, searchRoots, candidates)).filter(Boolean);
+    if (matches.length === 1) return { ...matches[0], candidates, searchRoots };
+    // 两套规则都匹配也不按顺序抢占（含同页同时展示两种表单）。
+    if (matches.length > 1) return { error: '注册与登录规则同时匹配，请重新绑定不同表单的输入框。' };
+    if (Object.keys(getRuleFields('register')).length || Object.keys(getRuleFields('login')).length) {
+      return { error: RULE_MATCH_ERROR };
+    }
+    return { mode: 'auto', rules: {}, candidates, searchRoots };
   }
 
   function resolveFillTarget(kind, options = {}) {
+    const context = options.context || getFillContext();
+    if (context.error) return null;
     const exclude = options.exclude || new Set();
-    const preferFocused = options.preferFocused !== false;
-    // 同一次解析里规则查询与候选枚举共用一次 DOM 遍历（PERF-1），
-    // 但仍是“每次调用都重新遍历”，不会跨字段复用陈旧快照。
-    const getSearchRootsMemo = createSearchRootsMemo(options.searchRoots);
-    const ruleTarget = options.ignoreRule ? null : resolveRuleTarget(kind, getSearchRootsMemo);
-
-    if (ruleTarget && !exclude.has(ruleTarget)) {
-      return ruleTarget;
+    if (context.mode !== 'auto') {
+      // 已绑定站点严格使用选中的规则集，失效/未绑定字段不得回退到其他输入框。
+      const target = context.targets.get(kind);
+      return target && !exclude.has(target) ? target : null;
     }
-
-    if (preferFocused
-      && isEditableElement(lastFocusedElement)
-      && isElementVisible(lastFocusedElement)
-      && !exclude.has(lastFocusedElement)
-      && scoreField(lastFocusedElement, kind) > 0) {
-      return lastFocusedElement;
-    }
-
-    const candidates = (options.candidates || getEditableCandidates(getSearchRootsMemo()))
-      .filter((candidate) => !exclude.has(candidate));
-    let bestElement = null;
-    let bestScore = -1;
-    for (const candidate of candidates) {
-      const score = scoreField(candidate, kind);
-      if (score > bestScore) {
-        bestScore = score;
-        bestElement = candidate;
-      }
-    }
-
-    return bestScore > 0 ? bestElement : null;
+    const candidates = context.candidates.filter((candidate) => !exclude.has(candidate)
+      && isCompatibleField(candidate, kind));
+    if (candidates.length === 1) return candidates[0];
+    if (options.preferFocused !== false && candidates.includes(lastFocusedElement)) return lastFocusedElement;
+    return null;
   }
 
   function getElementQueryRoot(element) {
@@ -1044,32 +1149,37 @@
     return sanitizeRuleText(parts.join(' '), MAX_RULE_DESCRIPTION_LENGTH);
   }
 
-  async function saveFillRule(kind, element) {
-    const selector = createRuleSelector(element);
-    if (!selector) {
-      throw new Error('无法为当前输入框生成规则');
+  async function saveFillRule(kind, element, mode = 'register') {
+    if (!['register', 'login'].includes(mode) || !Object.hasOwn(FIELD_LABELS, kind)) {
+      throw new Error('不支持的规则类型');
     }
-
-    const originRules = {
-      ...(allFillRules[window.location.origin] || {}),
-      [kind]: {
-        selector,
-        contextPath: buildElementContextPath(element),
-        description: describeRuleElement(element),
-        updatedAt: Date.now(),
-      },
+    if (!isEditableElement(element) || !isElementVisible(element)) throw new Error('请选择可见且可编辑的输入框');
+    const selector = createRuleSelector(element);
+    if (!selector) throw new Error('无法为当前输入框生成规则');
+    const latest = await storageGet([PAGE_FILL_RULES_KEY]);
+    const nextRules = { ...(latest[PAGE_FILL_RULES_KEY] || allFillRules) };
+    const originRules = { ...(nextRules[window.location.origin] || {}) };
+    const fields = getRuleFields(mode, originRules);
+    const searchRoots = getSearchRoots();
+    for (const [otherKind, rule] of Object.entries(fields)) {
+      if (otherKind !== kind && queryEditableElement(rule.selector, rule.contextPath, () => searchRoots) === element) {
+        throw new Error(`该输入框已绑定${FIELD_LABELS[otherKind]}，请先清除原绑定`);
+      }
+    }
+    const rule = {
+      selector,
+      contextPath: buildElementContextPath(element),
+      description: describeRuleElement(element),
+      input: getInputFingerprint(element),
+      formSignature: getFormSignature(element, getEditableCandidates(searchRoots)),
+      updatedAt: Date.now(),
     };
-
-    allFillRules = {
-      ...allFillRules,
-      [window.location.origin]: originRules,
-    };
-
-    await storageSet({
-      [PAGE_FILL_RULES_KEY]: allFillRules,
-    });
-
-    return originRules[kind];
+    if (mode === 'login') originRules.login = { ...fields, [kind]: rule };
+    else originRules[kind] = rule;
+    nextRules[window.location.origin] = originRules;
+    await storageSet({ [PAGE_FILL_RULES_KEY]: nextRules });
+    allFillRules = nextRules;
+    return rule;
   }
 
   function getEditableTargetFromNode(node) {
@@ -1256,7 +1366,10 @@
     showSelectionHint(message, tone, 1800);
   }
 
-  function startFieldSelection(kind, label) {
+  function startFieldSelection(kind, label, mode = 'register') {
+    if (!['register', 'login'].includes(mode) || !Object.hasOwn(FIELD_LABELS, kind)) {
+      throw new Error('不支持的规则类型');
+    }
     stopFieldSelection();
     shouldReopenFloatPanelAfterSelection = false;
     clearPreviewTargets();
@@ -1303,7 +1416,7 @@
 
       stopFieldSelection(false);
       showSelectionHint(`正在保存${labelText}规则...`, 'info');
-      saveFillRule(kind, target)
+      saveFillRule(kind, target, mode)
         .then(() => {
           showSelectionHint(`已保存${labelText}规则。`, 'success', 1800);
         })
@@ -1350,6 +1463,8 @@
     }
     if (fields.password) {
       operations.push({ kind: 'password', value: fields.password });
+    }
+    if (fields.confirmPassword || fields.password) {
       operations.push({ kind: 'confirmPassword', value: fields.confirmPassword || fields.password, optional: true });
     }
     if (fields.verificationCode) {
@@ -1389,22 +1504,21 @@
         && operation.skipIfMatchedGroupsAll.every((group) => matchedGroups.has(group)));
   }
 
-  function buildFillPlan(fields) {
-    const searchRoots = getSearchRoots();
-    const candidates = getEditableCandidates(searchRoots);
+  function buildFillPlan(fields, context = getFillContext()) {
+    if (context.error) return [];
     const usedTargets = new Set();
     const matchedGroups = new Set();
     const plan = [];
 
     for (const operation of buildFillOperations(fields || {})) {
-      if (shouldSkipFillOperation(operation, matchedGroups)) {
+      // 手动绑定的姓名、姓、名可以各有独立目标，不能用自动识别的互斥规则跳过。
+      if (context.mode === 'auto' && shouldSkipFillOperation(operation, matchedGroups)) {
         continue;
       }
       const target = resolveFillTarget(operation.kind, {
         exclude: usedTargets,
         preferFocused: false,
-        searchRoots,
-        candidates,
+        context,
       });
       if (!target) {
         continue;
@@ -1486,6 +1600,7 @@
     }
 
     element.focus();
+    if (!element.isConnected || !isEditableElement(element) || !isElementVisible(element)) return false;
 
     if (element.isContentEditable) {
       element.textContent = value;
@@ -1507,52 +1622,44 @@
 
   async function fillSingleValue(value, kind) {
     await ensureFillRulesLoaded();
-    const target = resolveFillTarget(kind);
-    if (!target) {
-      return { ok: false, error: '未找到可填充的输入框' };
-    }
-
-    fillElement(target, value);
+    const context = getFillContext();
+    if (context.error) return { ok: false, error: context.error };
+    const target = resolveFillTarget(kind, { context });
+    if (!target) return { ok: false, error: '当前规则未绑定该字段，或未找到唯一对应的输入框' };
+    if (!fillElement(target, value)) return { ok: false, error: '聚焦时页面结构发生变化，已取消填入' };
     lastFocusedElement = target;
-    return { ok: true, kind };
+    return { ok: true, kind, mode: context.mode };
   }
 
-  async function fillProfile(fields) {
+  async function fillProfile(fields, options = {}) {
     await ensureFillRulesLoaded();
-
-    const operations = buildFillOperations(fields || {});
-    const usedTargets = new Set();
-    const matchedGroups = new Set();
+    const context = getFillContext();
+    if (context.error) return { ok: false, error: context.error };
+    if (options.rulesOnly && context.mode === 'auto') return { ok: false, error: '请先绑定当前表单的字段规则' };
+    if ((options.expectedMode && options.expectedMode !== context.mode)
+      || (options.expectedOrigin && options.expectedOrigin !== window.location.origin)) {
+      return { ok: false, error: '目标页面已变化，已取消填入；请在当前页面重新操作。' };
+    }
+    // 在任何写入前完成整组匹配和一对一分配，预览与实际填入使用同一份规划逻辑。
+    const plan = buildFillPlan(fields, context);
     let filled = 0;
-    for (const operation of operations) {
-      if (shouldSkipFillOperation(operation, matchedGroups)) {
-        continue;
+    for (const { operation, target } of plan) {
+      // input/change 可同步让 React/Vue 重建或切换表单。此时中止，不重新猜测位置。
+      const live = getFillContext();
+      if (!target.isConnected || !isEditableElement(target) || !isElementVisible(target)
+        || live.error || live.mode !== context.mode
+        || resolveFillTarget(operation.kind, { context: live, preferFocused: false }) !== target) {
+        return { ok: filled > 0, filled, mode: context.mode, partial: true,
+          error: '填入期间页面结构发生变化，已停止后续字段；请确认页面后重新点击填入。' };
       }
-
-      // 实际填充时逐字段重新扫描。前一个 input/change 事件可能让 React/Vue
-      // 重绘表单或显示新字段，不能复用预览阶段的一次性 DOM 快照。
-      // 单个字段内部的重复全树遍历由 resolveFillTarget 里的 memo 消除（PERF-1）。
-      const target = resolveFillTarget(operation.kind, {
-        exclude: usedTargets,
-        preferFocused: false,
-      });
-      if (!target) {
-        continue;
+      if (!fillElement(target, operation.value)) {
+        return { ok: filled > 0, filled, mode: context.mode, partial: true, error: '聚焦时页面结构发生变化，已停止后续字段' };
       }
-
-      fillElement(target, operation.value);
       lastFocusedElement = target;
-      usedTargets.add(target);
-      if (operation.group) {
-        matchedGroups.add(operation.group);
-      }
       filled += 1;
     }
-
-    if (filled === 0) {
-      return { ok: false, error: '当前页面未识别到可填充的注册字段' };
-    }
-    return { ok: true, filled };
+    if (filled === 0) return { ok: false, error: '当前页面未匹配到可填充的注册或登录字段' };
+    return { ok: true, filled, mode: context.mode };
   }
 
   function teardownFloatWindow() {
@@ -1720,14 +1827,13 @@
     const group = floatUi.ballGroup;
     const button = floatUi.button;
     const rect = button.getBoundingClientRect();
+    // 位置取实测（来自已写好的内联样式，首帧即正确），尺寸取常量（见 FLOAT_BUTTON_SIZE）。
     // 首帧或按钮被页面藏起来时 rect 全 0，退回布局值，避免球组跳到左上角。
-    const buttonWidth = rect.width || button.offsetWidth || 54;
-    const buttonHeight = rect.height || button.offsetHeight || 54;
     const buttonLeft = rect.width ? rect.left : (floatUi.buttonLayout?.left ?? 0);
     const buttonTop = rect.height ? rect.top : (floatUi.buttonLayout?.top ?? 0);
 
     const left = clamp(
-      buttonLeft + ((buttonWidth - BALL_SIZE) / 2),
+      buttonLeft + ((FLOAT_BUTTON_SIZE - BALL_SIZE) / 2),
       0,
       Math.max(0, window.innerWidth - BALL_SIZE)
     );
@@ -1743,7 +1849,7 @@
     } else {
       setImportantStyle(group, 'flex-direction', 'column');
       const top = clamp(
-        buttonTop + buttonHeight + BALL_GROUP_GAP,
+        buttonTop + FLOAT_BUTTON_SIZE + BALL_GROUP_GAP,
         0,
         Math.max(0, window.innerHeight - BALL_SIZE)
       );
@@ -2840,6 +2946,7 @@
   const SITE_GATED_MESSAGE_TYPES = new Set([
     'fill-value',
     'fill-profile',
+    'get-fill-context',
     'start-field-selection',
     'preview-fill-target',
     'preview-fill-profile',
@@ -2879,13 +2986,23 @@
       }
 
       if (message?.type === 'fill-profile') {
-        sendResponse(await fillProfile(message.fields || {}));
+        sendResponse(await fillProfile(message.fields || {}, {
+          rulesOnly: message.rulesOnly === true, expectedMode: message.expectedMode, expectedOrigin: message.expectedOrigin,
+        }));
+        return;
+      }
+
+      if (message?.type === 'get-fill-context') {
+        await ensureFillRulesLoaded();
+        const context = getFillContext();
+        sendResponse(context.error ? { ok: false, error: context.error }
+          : { ok: true, mode: context.mode, kinds: Object.keys(context.rules), origin: window.location.origin });
         return;
       }
 
       if (message?.type === 'start-field-selection') {
         await ensureFillRulesLoaded();
-        startFieldSelection(message.kind, message.label);
+        startFieldSelection(message.kind, message.label, message.mode || 'register');
         sendResponse({ ok: true, armed: true });
         return;
       }

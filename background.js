@@ -1365,7 +1365,7 @@ function runPollMailNow() {
 }
 
 // 必须与 content.js 顶部的同名常量保持一致，否则版本校验永久失败并反复注入。
-const PAGE_TOOLS_VERSION = '2026.08.23-balls-v1';
+const PAGE_TOOLS_VERSION = '2026.09.14-login-rules-main-v3';
 const pageToolsReconcileRuns = new Map();
 
 async function getPageToolsStatus(tabId) {

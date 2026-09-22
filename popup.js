@@ -207,6 +207,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const fillProfileMessage = document.getElementById('fill-profile-message');
   const fillRulesSite = document.getElementById('fill-rules-site');
   const fillRulesList = document.getElementById('fill-rules-list');
+  const fillRuleModeSelect = document.getElementById('fill-rule-mode');
   const fillRulesMessage = document.getElementById('fill-rules-message');
 
   // ===================== 一键填充页面元素 =====================
@@ -1860,8 +1861,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  function getCurrentSiteFillRules() {
-    return pageFillRules?.[currentSiteOrigin] || {};
+  function getCurrentSiteFillRules(mode = 'register') {
+    const rules = pageFillRules?.[currentSiteOrigin] || {};
+    return mode === 'login' ? (rules.login || {}) : rules;
+  }
+
+  function getEditingRuleMode() {
+    return fillRuleModeSelect?.value === 'login' ? 'login' : 'register';
+  }
+
+  fillRuleModeSelect?.addEventListener('change', () => renderFillRuleManager());
+
+  function formatFillResult(response) {
+    const modeLabel = response?.mode === 'login' ? '登录规则' : response?.mode === 'register' ? '注册规则' : '自动识别';
+    return `${modeLabel}：已填入 ${response?.filled || 0} 个字段${response?.partial ? `；${response.error}` : ''}`;
   }
 
   function formatFillRuleSummary(rule) {
@@ -1890,10 +1903,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     fillRulesSite.textContent = `当前站点：${currentSiteOrigin}`;
-    const rules = getCurrentSiteFillRules();
+    const mode = getEditingRuleMode();
+    const rules = getCurrentSiteFillRules(mode);
     const siteEnabled = isSiteAllowed(currentSiteOrigin);
+    // 两套规则共用全部字段定义，绑定目标仍由用户自由选择。
+    const fieldDefs = PAGE_FILL_FIELD_DEFS;
 
-    PAGE_FILL_FIELD_DEFS.forEach((field) => {
+    fieldDefs.forEach((field) => {
       const card = document.createElement('div');
       card.className = 'fill-rule-card';
 
@@ -1922,7 +1938,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       pickBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        armFieldSelection(field).catch((error) => {
+        armFieldSelection(field, mode).catch((error) => {
           showMessage(fillRulesMessage, `规则创建失败: ${error.message}`, 'error');
         });
       });
@@ -1935,7 +1951,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       clearBtn.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        clearFieldRule(field.kind).catch((error) => {
+        clearFieldRule(field.kind, mode).catch((error) => {
           showMessage(fillRulesMessage, `规则清除失败: ${error.message}`, 'error');
         });
       });
@@ -1952,37 +1968,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  async function armFieldSelection(field) {
-    if (!currentSiteOrigin) {
-      throw new Error('未检测到当前网页');
-    }
-    await sendToActivePage({
-      type: 'start-field-selection',
-      kind: field.kind,
-      label: field.pickLabel
-    });
-    showMessage(fillRulesMessage, `已进入${field.pickLabel}选取模式，请回到网页点击目标输入框，按 Esc 可取消。`, 'success');
+  async function armFieldSelection(field, mode = 'register') {
+    if (!currentSiteOrigin) throw new Error('未检测到当前网页');
+    const label = `${mode === 'login' ? '登录' : '注册'}${field.pickLabel}`;
+    await sendToActivePage({ type: 'start-field-selection', kind: field.kind, label, mode });
+    showMessage(fillRulesMessage, `已进入${label}选取模式，请回到网页点击目标输入框，按 Esc 可取消。`, 'success');
   }
 
-  async function clearFieldRule(kind) {
-    if (!currentSiteOrigin) {
-      throw new Error('未检测到当前网页');
-    }
-
-    const nextRules = { ...pageFillRules };
-    const originRules = { ...(nextRules[currentSiteOrigin] || {}) };
-    delete originRules[kind];
-
-    if (Object.keys(originRules).length > 0) {
-      nextRules[currentSiteOrigin] = originRules;
+  async function clearFieldRule(kind, mode = 'register') {
+    if (!currentSiteOrigin) throw new Error('未检测到当前网页');
+    const origin = currentSiteOrigin;
+    const latest = await storageGet([PAGE_FILL_RULES_KEY]);
+    const nextRules = { ...(latest[PAGE_FILL_RULES_KEY] || pageFillRules) };
+    const originRules = { ...(nextRules[origin] || {}) };
+    if (mode === 'login') {
+      const loginRules = { ...(originRules.login || {}) };
+      delete loginRules[kind];
+      if (Object.keys(loginRules).length) originRules.login = loginRules;
+      else delete originRules.login;
     } else {
-      delete nextRules[currentSiteOrigin];
+      delete originRules[kind];
     }
-
-    pageFillRules = nextRules;
+    if (Object.keys(originRules).length > 0) nextRules[origin] = originRules;
+    else delete nextRules[origin];
     await storageSet({ [PAGE_FILL_RULES_KEY]: nextRules });
+    pageFillRules = nextRules;
     renderFillRuleManager();
-    showMessage(fillRulesMessage, '当前字段规则已清除。', 'success');
+    renderFastFillRulesSummary();
+    showMessage(fillRulesMessage, `当前${mode === 'login' ? '登录' : '注册'}字段规则已清除，另一套规则保持不变。`, 'success');
   }
 
   // ===================== 一键填充页面 =====================
@@ -2135,7 +2148,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       fastFillDomainStatus.textContent = `当前可用域名：${available.length} 个 (${fastFillEmailSource === 'moe' ? 'Moe Mail' : 'Temp Mail'})`;
     }
 
-    fastFillGenerateBtn.disabled = available.length === 0 || !currentSiteOrigin;
+    // 登录复用历史凭据，不应被邮箱服务的域名可用性禁用。
+    renderFastFillRulesSummary();
   }
 
   function renderDomainChecklist(container, allDomains, selectedList, onChange) {
@@ -2242,49 +2256,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       fillBtn.textContent = '填入';
       fillBtn.addEventListener('click', async () => {
         try {
-          // Only fill fields that have rules configured on the current page
-          const rules = getCurrentSiteFillRules();
-          const fieldMap = {
-            email: 'email',
-            password: 'password',
-            fullName: 'name',
-            birthday: 'birthday',
-            address: 'address'
-          };
-          // Map rule kinds back to history field keys
-          const kindToKey = {};
-          Object.entries(fieldMap).forEach(([key, kind]) => { kindToKey[kind] = key; });
-
-          // Determine which history fields to fill, and their target kinds
-          const fillList = [];
-          Object.entries(entry.fields).forEach(([key, val]) => {
-            const ruleKind = fieldMap[key];
-            if (ruleKind && rules[ruleKind] && val) {
-              fillList.push({ kind: ruleKind, value: val });
-              if (key === 'password') {
-                fillList.push({ kind: 'confirmPassword', value: val });
-              }
-            }
+          fillBtn.disabled = true;
+          // 整组交给页面脚本匹配，不能逐条 fill-value（会丢失目标去重与规则场景）。
+          const response = await sendToActivePage({
+            type: 'fill-profile',
+            fields: entry.fields,
+            rulesOnly: true
           });
-          if (fillList.length === 0) {
-            showMessage(fastFillMessage, '当前页面无匹配的字段规则', 'error');
-            return;
-          }
-          // Send each field individually to avoid target interference
-          let filled = 0;
-          for (const item of fillList) {
-            try {
-              const res = await sendToActivePage({
-                type: 'fill-value',
-                kind: item.kind,
-                value: item.value
-              });
-              if (res?.ok) filled++;
-            } catch { /* skip failed fields */ }
-          }
-          showMessage(fastFillMessage, `已填入 ${filled} 个字段`, filled > 0 ? 'success' : 'error');
+          showMessage(fastFillMessage, formatFillResult(response), response?.partial ? 'info' : 'success');
         } catch (e) {
           showMessage(fastFillMessage, `填入失败: ${e.message}`, 'error');
+        } finally {
+          fillBtn.disabled = false;
         }
       });
       actions.appendChild(fillBtn);
@@ -2426,11 +2409,36 @@ document.addEventListener('DOMContentLoaded', async () => {
       return { ok: false, errorKind: 'no-site' };
     }
 
-    const rules = getCurrentSiteFillRules();
-    const neededKinds = PAGE_FILL_FIELD_DEFS
-      .map(f => f.kind)
-      .filter(k => rules[k]);
-
+    let matchedContext;
+    fastFillGenerating = true;
+    try {
+      matchedContext = await sendToActivePage({ type: 'get-fill-context' });
+      if (matchedContext?.mode === 'login') {
+        // 登录按当前绑定字段复用同一条本站历史，不要求同时具有邮箱和密码，
+        // 也不拼接多个账户的资料或生成新凭据。姓名规则对应历史中的 fullName。
+        const fieldKey = kind => kind === 'name' ? 'fullName' : kind;
+        const hasValue = (fields, kind) => Boolean(fields?.[fieldKey(kind)]
+          || (kind === 'confirmPassword' && fields?.password));
+        const kinds = matchedContext.kinds || [];
+        const entry = fastFillHistory.find(item => item.origin === matchedContext.origin
+          && kinds.some(kind => hasValue(item.fields, kind)));
+        if (!entry) throw new Error('未找到本站与当前登录规则匹配的历史资料，请选择已有资料或使用对应字段的「填入」按钮');
+        const missingLabels = PAGE_FILL_FIELD_DEFS.filter(field => kinds.includes(field.kind)
+          && !hasValue(entry.fields, field.kind)).map(field => field.label);
+        const response = await sendToActivePage({ type: 'fill-profile', fields: entry.fields, rulesOnly: true,
+          expectedMode: 'login', expectedOrigin: matchedContext.origin });
+        const missingNote = missingLabels.length ? `；历史中暂无${missingLabels.join('、')}，请另行填入` : '';
+        showMessage(fastFillMessage, formatFillResult(response) + missingNote,
+          response?.partial || missingLabels.length ? 'info' : 'success');
+        return response;
+      }
+    } catch (error) {
+      showMessage(fastFillMessage, `填入失败: ${error.message}`, 'error');
+      return { ok: false, errorKind: 'no-rules' };
+    } finally {
+      fastFillGenerating = false;
+    }
+    const neededKinds = matchedContext?.kinds || [];
     if (neededKinds.length === 0) {
       showMessage(fastFillMessage, '请先为当前页面创建至少一条字段规则', 'error');
       return { ok: false, errorKind: 'no-rules' };
@@ -2562,7 +2570,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Fill into the page
       const fillResponse = await sendToActivePage({
         type: 'fill-profile',
-        fields: generatedFields
+        fields: generatedFields,
+        rulesOnly: true,
+        expectedMode: 'register',
+        expectedOrigin: matchedContext.origin
       });
       const filled = fillResponse?.filled || 0;
 
@@ -2634,7 +2645,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         fastFillResult.appendChild(row);
       });
 
-      showMessage(fastFillMessage, `已生成 ${resultItems.length} 项信息，成功填入 ${filled} 个字段`, 'success');
+      showMessage(fastFillMessage, `已生成 ${resultItems.length} 项信息，${formatFillResult(fillResponse)}`, fillResponse?.partial ? 'info' : 'success');
 
       // If some fields weren't filled (e.g., multi-step form), show refill button
       if (filled < resultItems.length) {
@@ -2648,10 +2659,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           try {
             const reResponse = await sendToActivePage({
               type: 'fill-profile',
-              fields: generatedProfile
+              fields: generatedFields,
+              rulesOnly: true
             });
-            const reFilled = reResponse?.filled || 0;
-            showMessage(fastFillMessage, `补充填入 ${reFilled} 个字段`, reFilled > 0 ? 'success' : 'error');
+            showMessage(fastFillMessage, formatFillResult(reResponse), reResponse?.partial ? 'info' : 'success');
           } catch (e) {
             showMessage(fastFillMessage, `填入失败: ${e.message}`, 'error');
           }
@@ -3006,17 +3017,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     for (const candidate of directCandidates) {
       try {
-        return JSON.parse(candidate);
+        const parsed = JSON.parse(candidate);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed;
+        }
       } catch {
         // try next candidate
       }
     }
 
-    throw new Error('模型返回的数据不是有效 JSON');
+    // 解析失败不再中断链路，交给上层回落到本地提取结果。
+    return null;
   }
 
   function getMailInsightsOverride(reader) {
-    return reader.getInsightStatus() === 'success'
+    return ['success', 'fallback'].includes(reader.getInsightStatus())
       ? normalizeAiInsightResult(reader.getInsights())
       : null;
   }
@@ -5133,7 +5148,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderDetail: (mail) => {
         tempMailReader.setMail(mail);
         renderCurrentMail(tempMailReader);
-        if (hasMailInsightConfig()) triggerMailAiInsights(tempMailReader);
+        triggerMailAiInsights(tempMailReader);
       },
       renderDetailError: (error) => {
         tempMailReader.setMail(null);
@@ -5537,7 +5552,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderDetail: (mail) => {
         moeMailReader.setMail(mail);
         renderCurrentMail(moeMailReader);
-        if (hasMailInsightConfig()) triggerMailAiInsights(moeMailReader);
+        triggerMailAiInsights(moeMailReader);
       },
       renderDetailError: () => {}
     }
@@ -6223,8 +6238,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         type: 'fill-profile',
         fields: generatedProfile
       });
-      const filled = response?.filled || 0;
-      showMessage(fillProfileMessage, filled > 0 ? `已填充 ${filled} 个字段` : '未识别到可填充的字段', filled > 0 ? 'success' : 'error');
+      showMessage(fillProfileMessage, formatFillResult(response), response?.partial ? 'info' : 'success');
     } catch (error) {
       showMessage(fillProfileMessage, `填充失败: ${error.message}`, 'error');
     }

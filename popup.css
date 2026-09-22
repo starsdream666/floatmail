@@ -1800,6 +1800,18 @@ body.js-loading {
   color: var(--error);
 }
 
+.fill-rule-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.fill-rule-mode-row select {
+  flex: 1;
+  min-width: 0;
+}
+
 .fill-rules-list {
   display: flex;
   flex-direction: column;

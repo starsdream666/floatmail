@@ -483,9 +483,16 @@
 
           categories.forEach((category) => {
             // 旧版曾把 bookmarkSort 同时写入 bookmarks 分类；导入时继续兼容。
+            // 旧版还把主题三键放在 defaultTab 分类下（themeStyle 拆分前），
+            // 否则老配置文件里的主题在拆分后会再也导不进来。
             const categoryData = data[category]
               || (category === 'bookmarkSort' && data.bookmarks?.bookmarkSort !== undefined
                 ? data.bookmarks
+                : null)
+              || (category === 'themeStyle'
+                && isPlainObject(data.defaultTab)
+                && CATEGORY_KEYS.themeStyle.some((key) => data.defaultTab[key] !== undefined)
+                ? data.defaultTab
                 : null);
             if (!isPlainObject(categoryData) || !CATEGORY_KEYS[category]) {
               return;

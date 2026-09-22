@@ -382,19 +382,29 @@
       container.innerHTML = '';
       const pre = document.createElement('pre');
       pre.style.whiteSpace = 'pre-wrap';
-      pre.style.wordBreak = 'break-word';
+      // overflow-wrap 而非废弃的 word-break:break-word（后者 = anywhere）
+      pre.style.overflowWrap = 'break-word';
       pre.style.fontFamily = 'inherit';
       pre.style.margin = '0';
       pre.textContent = text || '(无内容)';
       container.appendChild(pre);
     }
 
+    // ⚠️ 断词一律用 `overflow-wrap: break-word`，**不要**用 `word-break: break-word`。
+    // 后者已废弃，规范定义等价于 `word-break:normal` + `overflow-wrap:**anywhere**`
+    // （且无视元素上实际的 overflow-wrap 取值）。两者的关键差别：
+    //   - anywhere    → 断词处的软换行点**参与** min-content 计算
+    //   - break-word  → **不参与**，min-content 仍保持最长不可断单词的宽度
+    // 而 table 的列宽走的正是 min-content：用 anywhere 时，每列都能塌到一个字符宽，
+    // 于是 600px 设计的邮件被压成一条竖排（"Verify your email" 逐字换行）。
+    // 改成 break-word 后：长串仍会断开防溢出，但列宽不再被压缩；真放不下时由
+    // __mail-scroll-wrapper 的 min-width + body 的 overflow-x:auto 提供横向滚动。
     const MAIL_FRAME_BASE_CSS = `
               html, body { background: #ffffff !important; color: #202124 !important; }
-              body { margin: 0 !important; padding: 8px !important; word-break: break-word; overflow-wrap: break-word; }
+              body, body * { word-break: normal !important; overflow-wrap: break-word !important; }
+              body { margin: 0 !important; padding: 8px !important; }
               img { max-width: 100% !important; height: auto !important; }
               table { border-collapse: collapse; }
-              td, th { word-break: break-word; }
 `;
 
     function renderSafeHtml(container, html, extraCss = '', options = {}) {
@@ -849,22 +859,30 @@
     }
 
     function decodeQuotedPrintable(str) {
-      str = str.replace(/=\r?\n/g, '');
-      str = str.replace(/=([A-F0-9]{2})/gi, '%$1');
-      try {
-        return decodeURIComponent(str);
-      } catch (error) {
-        const bytes = [];
-        for (let i = 0; i < str.length; i += 1) {
-          if (str[i] === '%' && i + 2 < str.length) {
-            bytes.push(parseInt(str.substring(i + 1, i + 3), 16));
+      // quoted-printable 只把 `=XX` 解释为字节，普通 `%` 不是转义起点。
+      // 之前先转成 `%XX` 再调用 decodeURIComponent，会误解 HTML 的 `100%`
+      // 和 URL 中的 `%20`，异常分支还会把非十六进制 `%` 变成 NUL。
+      const joined = String(str || '').replace(/=\r?\n/g, '');
+      const bytes = [];
+      const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+
+      for (let i = 0; i < joined.length; i += 1) {
+        const character = joined[i];
+        if (character === '=' && i + 2 < joined.length) {
+          const hex = joined.slice(i + 1, i + 3);
+          if (/^[A-F0-9]{2}$/i.test(hex)) {
+            bytes.push(parseInt(hex, 16));
             i += 2;
-          } else {
-            bytes.push(str.charCodeAt(i));
+            continue;
           }
         }
-        return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+        if (encoder && character.charCodeAt(0) > 0x7f) {
+          bytes.push(...encoder.encode(character));
+        } else {
+          bytes.push(character.charCodeAt(0) & 0xff);
+        }
       }
+      return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
     }
 
     function decodeBase64UTF8(str) {
