@@ -2892,6 +2892,24 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
+   * AI 提取失败时的兜底取样参数。
+   *
+   * 为什么不能复用 getInsightSamplingParams()：那个函数受「召回优先」开关控制，
+   * 默认精确优先（minScore=3）。AI 已经失败时，这个门槛会把弱候选全部滤掉 ——
+   * 例如「无提示词的裸验证码」得分 -1，直接被丢弃 → 候选池为空 →
+   * adjudicateInsightsWithJev 没有任何可判定的输入，直接返回 null →
+   * **Jev 根本不发请求**。
+   *
+   * 结果就是「AI 挂了、Jev 也静默不工作」，与本函数的修复目标完全相反。
+   *
+   * 兜底路径一律用放宽后的门槛：此时 Jev 是唯一在线的模型，去噪本就是它的
+   * 职责，而放宽只会把更多候选交给它裁决，不会绕过它。
+   */
+  function getFallbackSamplingParams() {
+    return { minScore: INSIGHT_CODE_MIN_SCORE_RECALL, limit: JEV_MAX_CANDIDATES_RECALL, recall: true };
+  }
+
+  /**
    * 调用 Jev 的 /v1/systemone。一次请求可并行问多个问题
    * （这是 questions 是 map 的设计意图，也是多选判定的基础）。
    * 任何失败都抛异常，由调用方捕获后回落 —— 不在这里吞掉错误。
@@ -3848,7 +3866,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const verdict = await adjudicateInsightsWithJev(
         collectLinkCandidates(sourceText),
-        rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams()),
+        rankInsightCandidates(collectCodeCandidates(sourceText), getFallbackSamplingParams()),
         sourceText
       );
       if (verdict) {

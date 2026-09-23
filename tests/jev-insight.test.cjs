@@ -548,7 +548,8 @@ const COMBO_FNS = [
   'hasVerifyKeywordNearby', 'collectCodeCandidates', 'collectLinkCandidates',
   'rankInsightCandidates', 'trimUrlPunctuation', 'formatInsightLinkLabel', 'normalizeUrlKey',
   'dedupeLinksByNormalizedKey', 'getJevConfig', 'hasJevConfig', 'getInsightSamplingParams',
-  'getInsightLinkLimit', 'callJev', 'adjudicateInsightsWithJev', 'normalizeMailInsightApiMode',
+  'getInsightLinkLimit', 'getFallbackSamplingParams', 'callJev', 'adjudicateInsightsWithJev',
+  'normalizeMailInsightApiMode',
   'getMailInsightApiConfig', 'hasMailInsightConfig', 'normalizeTranslationSource',
   'buildLocalInsightResult', 'mergeInsightValues', 'parseMailInsightJson', 'normalizeAiInsightResult',
   'normalizeAiInsightCode', 'verifyCodesAgainstSource', 'verifyLinksAgainstSource',
@@ -696,6 +697,63 @@ test('静态守卫：AI 段落里的失败路径必须先经过 Jev 兜底', () 
     'AI 失败时必须走 fallbackToJevOrLocal，不能直接返回本地结果');
   const fallbackCalls = (aiSection.match(/fallbackToJevOrLocal\(/g) || []).length;
   assert.ok(fallbackCalls >= 3, `三处 AI 失败出口都应走统一兜底，实际 ${fallbackCalls} 处`);
+});
+
+// ── 回归：AI 失败兜底时，弱候选也必须能触发 Jev ──────────────────────
+// 实测缺陷（浏览器里复现）：AI 返回 401、邮件里是「无提示词的裸验证码」时，
+// 控制台只有对 AI 端点的请求，**没有任何对 Jev 网关的请求**。
+//
+// 根因：fallbackToJevOrLocal 复用了 getInsightSamplingParams()，而该函数默认
+// 「精确优先」（minScore=3）。裸验证码得分 -1 被过滤 → 候选池为空 →
+// adjudicateInsightsWithJev 直接 return null → 请求根本不发。
+//
+// 这在本场景下是逻辑矛盾：AI 已经挂了，Jev 是唯一在线的模型，却用最严格的门槛
+// 把候选丢掉，导致「AI 挂了、Jev 也静默不工作」。
+test('兜底取样必须放宽门槛（否则弱候选被滤掉，Jev 静默不发请求）', () => {
+  const scope = {
+    INSIGHT_CODE_MIN_SCORE: 3,
+    INSIGHT_CODE_MIN_SCORE_RECALL: -3,
+    JEV_MAX_CANDIDATES: 8,
+    JEV_MAX_CANDIDATES_RECALL: 16,
+    jevRecallMode: false,          // 关键：精确优先（默认）
+    hasJevConfig: () => true
+  };
+  runInNewContext([
+    extractFunction('getFallbackSamplingParams')
+  ].join('\n'), scope);
+  const p = scope.getFallbackSamplingParams();
+  assert.equal(p.minScore, -3,
+    '兜底路径必须用放宽阈值，否则裸验证码（得分 -1）进不了候选池');
+  assert.equal(p.limit, 16, '兜底路径同样要用放宽后的上限');
+  assert.equal(p.recall, true);
+});
+
+test('兜底路径不得复用 getInsightSamplingParams（那是精确优先的门槛）', () => {
+  const fn = extractFunction('fallbackToJevOrLocal');
+  assert.match(fn, /getFallbackSamplingParams\(\)/,
+    '必须用兜底专用参数');
+  assert.doesNotMatch(fn, /getInsightSamplingParams\(\)/,
+    '不能复用精确优先参数 —— 这正是 Jev 静默不触发的根因');
+});
+
+test('兜底路径的阈值必须与召回优先一致（两者都放宽）', () => {
+  const scope = {
+    INSIGHT_CODE_MIN_SCORE: 3,
+    INSIGHT_CODE_MIN_SCORE_RECALL: -3,
+    JEV_MAX_CANDIDATES: 8,
+    JEV_MAX_CANDIDATES_RECALL: 16,
+    jevRecallMode: true,
+    hasJevConfig: () => true
+  };
+  runInNewContext([
+    extractFunction('getInsightSamplingParams'),
+    extractFunction('getFallbackSamplingParams')
+  ].join('\n'), scope);
+  const normal = scope.getInsightSamplingParams();
+  const fallback = scope.getFallbackSamplingParams();
+  assert.equal(fallback.minScore, normal.minScore,
+    '召回优先开时两者应一致');
+  assert.equal(fallback.limit, normal.limit);
 });
 
 test('fallbackToJevOrLocal 在 Jev 不可用时退回本地、可用时必须调用 Jev', () => {
