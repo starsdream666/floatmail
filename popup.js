@@ -2801,7 +2801,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function normalizeMailInsightApiMode(value) {
-    return value === 'custom' ? 'custom' : DEFAULT_MAIL_INSIGHT_API_MODE;
+    if (value === 'custom') return 'custom';
+    if (value === 'none') return 'none';
+    return DEFAULT_MAIL_INSIGHT_API_MODE;
   }
 
   function hasTranslationConfig() {
@@ -2812,10 +2814,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!mailInsightCustomApiFields) {
       return;
     }
+    // 「不使用 AI 提取」时没有可填的字段，隐藏自定义配置区。
     mailInsightCustomApiFields.classList.toggle('hidden', mailInsightApiMode !== 'custom');
   }
 
   function getMailInsightApiConfig() {
+    if (mailInsightApiMode === 'none') {
+      // 明确不使用 AI 提取：hasMailInsightConfig() 会返回 false，
+      // 于是链路自动变成「正则」或「正则 + Jev」。
+      return { apiBase: '', apiKey: '', model: '' };
+    }
     if (mailInsightApiMode === 'custom') {
       return {
         apiBase: normalizeTranslationSetting(mailInsightApiBase, DEFAULT_TRANSLATION_API_BASE).replace(/\/$/, ''),
@@ -2930,9 +2938,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function getMailInsightConfigErrorMessage() {
-    return mailInsightApiMode === 'custom'
-      ? '请先在设置页填写提取 API Base、API Key 和模型名称'
-      : '请先在设置页填写翻译 API Base、API Key 和模型名称，或切换为独立提取 API';
+    if (mailInsightApiMode === 'custom') {
+      return '请先在设置页填写提取 API Base、API Key 和模型名称';
+    }
+    if (mailInsightApiMode === 'none') {
+      return '当前已设为「不使用 AI 提取」，验证码提取将只依赖本地规则（+ 可选的 Jev 判定）';
+    }
+    return '请先在设置页填写翻译 API Base、API Key 和模型名称，或切换为独立提取 API';
   }
 
   const INSIGHT_VERIFY_KEYWORDS = [
@@ -3424,13 +3436,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (status === 'success') {
       const insights = reader.getInsights() || {};
       if (insights.source === 'jev') {
-        // Jev 单独工作（没配 AI 提取 API）时的文案要区分开，否则用户会以为 AI 提取也跑了。
+        // 三种情况要分开说，否则用户不知道 AI 到底跑没跑：
+        //   jevOnly + aiError → AI 配置了但失败，这次靠 Jev 兜底
+        //   jevOnly           → 明确没用 AI（选择了「不使用 AI 提取」或没配）
+        //   否则              → AI + Jev 都跑成功
+        const aiFailed = String(insights.aiError || '').slice(0, 80);
+        let statusText;
+        if (aiFailed) {
+          statusText = 'AI 提取失败，已由 Jev 判定';
+        } else {
+          statusText = insights.jevOnly ? 'Jev 判定已完成' : 'AI 提取 + Jev 判定已完成';
+        }
+        let noteText;
+        if (aiFailed) {
+          noteText = `本次 AI 提取未成功（${aiFailed}），已改用 Jev 对本地候选做判定，结果同样经过模型确认。`;
+        } else if (insights.jevEmpty) {
+          noteText = 'Jev 认为这封邮件里没有真正的验证码或验证链接。';
+        } else {
+          noteText = '当前显示经 Jev 结构化判定后的验证码与验证链接（已过滤噪声与重复链接）。';
+        }
         return {
-          statusText: insights.jevOnly ? 'Jev 判定已完成' : 'AI 提取 + Jev 判定已完成',
+          statusText,
           statusType: 'success',
-          noteText: insights.jevEmpty
-            ? 'Jev 认为这封邮件里没有真正的验证码或验证链接。'
-            : '当前显示经 Jev 结构化判定后的验证码与验证链接（已过滤噪声与重复链接）。',
+          noteText,
           onRetry: () => triggerMailAiInsights(reader, true),
           retryLabel: '重新提取'
         };
@@ -3799,6 +3827,49 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
+  /**
+   * AI 提取失败时的统一出口：**先让 Jev 兜底，再回落本地正则**。
+   *
+   * 修复的真实缺陷：AI 配置存在但请求失败（网络错误 / 非 2xx / 非法 JSON）时，
+   * 原先直接在 Jev 之前 return，导致「AI 提取可用但实际失败 + Jev 已配置」的
+   * 情况下 Jev 完全不被调用（网关侧没有任何调用记录），面板只剩正则结果。
+   *
+   * 这四种组合是明确的产品约定，本函数负责其中「AI 失败」这一支：
+   *   AI 不可用 + Jev 不可用 → 正则
+   *   AI 不可用 + Jev 可用   → 正则 + Jev
+   *   AI 可用   + Jev 不可用 → 正则 + AI
+   *   AI 可用   + Jev 可用   → 正则 + AI + Jev
+   * 无论 AI 成功还是失败，只要 Jev 可用就一定会被调用。
+   */
+  async function fallbackToJevOrLocal(sourceText, localResult, reason) {
+    if (!hasJevConfig()) {
+      return { ...localResult, error: reason };
+    }
+    try {
+      const verdict = await adjudicateInsightsWithJev(
+        collectLinkCandidates(sourceText),
+        rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams()),
+        sourceText
+      );
+      if (verdict) {
+        return {
+          codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
+          links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
+          source: 'jev',
+          jevModel: verdict.jevModel,
+          jevOnly: true,
+          jevEmpty: verdict.codes.length === 0 && verdict.links.length === 0,
+          // 保留 AI 的失败原因：UI 会显示「AI 提取失败，已由 Jev 判定」，
+          // 既不隐瞒失败，也不让用户以为必须修好 AI 才能用。
+          aiError: reason
+        };
+      }
+    } catch (error) {
+      return { ...localResult, error: reason, jevError: error?.message || 'Jev 判定失败' };
+    }
+    return { ...localResult, error: reason };
+  }
+
   async function extractMailInsightsWithApi(text, options = {}) {
     const sourceText = normalizeTranslationSource(text);
     const localResult = buildLocalInsightResult(sourceText);
@@ -3884,7 +3955,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         })
       }, AI_REQUEST_TIMEOUT_MS);
     } catch (error) {
-      return { ...localResult, error: error?.message || 'AI 提取请求失败' };
+      return fallbackToJevOrLocal(sourceText, localResult, error?.message || 'AI 提取请求失败');
     }
 
     let data = null;
@@ -3896,13 +3967,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (!response.ok) {
       const errorMessage = data?.error?.message || data?.message || `${response.status}`;
-      return { ...localResult, error: `AI 提取请求失败: ${errorMessage}` };
+      return fallbackToJevOrLocal(sourceText, localResult, `AI 提取请求失败: ${errorMessage}`);
     }
 
     const content = data?.choices?.[0]?.message?.content?.trim();
     const parsed = parseMailInsightJson(content);
     if (!parsed) {
-      return { ...localResult, error: '模型返回了空内容或非法 JSON' };
+      return fallbackToJevOrLocal(sourceText, localResult, '模型返回了空内容或非法 JSON');
     }
 
     const aiResult = normalizeAiInsightResult(parsed);
@@ -7300,9 +7371,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes[MAIL_INSIGHT_MODEL_KEY]) {
       mailInsightModel = normalizeTranslationSetting(changes[MAIL_INSIGHT_MODEL_KEY].newValue);
       mailInsightModelInput.value = mailInsightModel;
-    if (changes[MAIL_INSIGHT_MODEL_KEY]) {
-      mailInsightModel = normalizeTranslationSetting(changes[MAIL_INSIGHT_MODEL_KEY].newValue);
-      mailInsightModelInput.value = mailInsightModel;
     }
     if (changes[JEV_ENABLED_KEY]) {
       jevEnabled = changes[JEV_ENABLED_KEY].newValue === true;
@@ -7329,6 +7397,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       jevRecallMode = changes[JEV_RECALL_MODE_KEY].newValue === true;
       if (jevRecallModeToggle) jevRecallModeToggle.checked = jevRecallMode;
     }
+    if (changes[GENERATED_RESULT_AUTO_CLOSE_KEY]) {
       generatedResultAutoCloseSeconds = normalizeGeneratedResultAutoCloseSeconds(changes[GENERATED_RESULT_AUTO_CLOSE_KEY].newValue);
       syncGeneratedResultAutoCloseInput(generatedResultAutoCloseSeconds);
       restoreGeneratedToolResults();
@@ -7359,6 +7428,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes.siteBlocklist) {
       siteBlocklist = Array.isArray(changes.siteBlocklist.newValue) ? changes.siteBlocklist.newValue : [];
       refreshCurrentSiteInfo();
+    }
+    // 洞察相关配置变更后，让当前打开的邮件用新配置重新判定一次。
+    //
+    // 修复的真实缺陷：insightStatus 一旦落到 success/fallback，triggerMailAiInsights
+    // 就会短路跳过。于是「先打开邮件（当时没配 Jev）→ 再去设置页启用 Jev」时，
+    // 面板永远不会重新判定，看起来就像 Jev 完全没生效。
+    const insightConfigChanged = changes[MAIL_INSIGHT_API_MODE_KEY] || changes[MAIL_INSIGHT_API_BASE_KEY]
+      || changes[MAIL_INSIGHT_API_KEY_KEY] || changes[MAIL_INSIGHT_MODEL_KEY]
+      || changes[TRANSLATION_API_BASE_KEY] || changes[TRANSLATION_API_KEY_KEY] || changes[TRANSLATION_MODEL_KEY]
+      || changes[JEV_ENABLED_KEY] || changes[JEV_API_BASE_KEY] || changes[JEV_API_KEY_KEY]
+      || changes[JEV_ENDPOINT_PATH_KEY] || changes[JEV_MODEL_KEY] || changes[JEV_RECALL_MODE_KEY];
+    if (insightConfigChanged) {
+      [tempMailReader, moeMailReader].forEach((reader) => {
+        if (reader.getMail()) triggerMailAiInsights(reader, true);
+      });
     }
   });
 });

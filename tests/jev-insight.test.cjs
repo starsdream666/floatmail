@@ -503,3 +503,267 @@ test('房号在上一行时，真码分数必须高于房号且进得了候选�
   assert.ok(truth.score >= -3,
     `真码分数(${truth.score})应不低于召回优先阈值 -3，否则进不了候选池`);
 });
+
+// ── 回归：四种配置组合的产品约定 ────────────────────────────────────
+//   AI 不可用 + Jev 不可用 → 正则
+//   AI 不可用 + Jev 可用   → 正则 + Jev
+//   AI 可用   + Jev 不可用 → 正则 + AI
+//   AI 可用   + Jev 可用   → 正则 + AI + Jev
+// 关键不变量：**只要 Jev 可用就一定会被调用**，包括 AI 请求失败时。
+// 曾经的缺陷：AI 配置存在但请求失败（网络错误/非 2xx/非法 JSON）时在 Jev
+// 之前就 return，导致网关侧完全没有 Jev 调用记录，面板只剩正则结果。
+
+const COMBO_SOURCE = readFileSync(join(__dirname, '../popup.js'), 'utf8');
+
+function extractComboUnit(decl) {
+  const lines = COMBO_SOURCE.split('\n');
+  const i = lines.findIndex((l) => l.startsWith(INDENT + decl));
+  if (i < 0) return null;
+  const out = [];
+  for (let k = i; k < lines.length; k += 1) {
+    const line = lines[k];
+    out.push(line);
+    if (k === i && line.trim().endsWith(';')) break;
+    if (k > i && line.startsWith(INDENT) && !line.startsWith(INDENT + ' ')) {
+      const t = line.trim();
+      if (t === '}' || t === '];' || t === '};' || t.endsWith(';')) break;
+    }
+  }
+  return out.join('\n');
+}
+
+const COMBO_CONSTS = [
+  'INSIGHT_MAX_ITEMS', 'INSIGHT_CODE_MIN_SCORE', 'INSIGHT_LINK_MIN_SCORE', 'INSIGHT_CODE_MIN_SCORE_RECALL',
+  'INSIGHT_VERIFY_KEYWORDS', 'INSIGHT_FALSE_PROMPT_PATTERN', 'INSIGHT_PROMPT_PATTERN',
+  'INSIGHT_ANCHOR_VERIFY_PATTERN', 'INSIGHT_ANCHOR_DEMOTE_PATTERN', 'INSIGHT_URL_DEMOTE_PATTERN',
+  'INSIGHT_URL_SIGNAL_PATTERN', 'INSIGHT_URL_TOKEN_PATTERN', 'INSIGHT_DATE_LIKE_PATTERN',
+  'INSIGHT_YEAR_LIKE_PATTERN', 'INSIGHT_PHONE_LIKE_PATTERN', 'INSIGHT_NOISE_CONTEXT_PATTERN',
+  'JEV_MAX_CANDIDATES', 'JEV_MAX_CANDIDATES_RECALL', 'JEV_LINK_THRESHOLD',
+  'DEFAULT_JEV_ENDPOINT_PATH', 'DEFAULT_JEV_MODEL', 'DEFAULT_TRANSLATION_API_BASE',
+  'DEFAULT_MAIL_INSIGHT_API_MODE', 'MAX_TRANSLATION_SOURCE_CHARS', 'AI_REQUEST_TIMEOUT_MS'
+];
+
+const COMBO_FNS = [
+  'normalizeTranslationSetting', 'getCodePrecedingContext', 'normalizeAnchorText',
+  'hasVerifyKeywordNearby', 'collectCodeCandidates', 'collectLinkCandidates',
+  'rankInsightCandidates', 'trimUrlPunctuation', 'formatInsightLinkLabel', 'normalizeUrlKey',
+  'dedupeLinksByNormalizedKey', 'getJevConfig', 'hasJevConfig', 'getInsightSamplingParams',
+  'getInsightLinkLimit', 'callJev', 'adjudicateInsightsWithJev', 'normalizeMailInsightApiMode',
+  'getMailInsightApiConfig', 'hasMailInsightConfig', 'normalizeTranslationSource',
+  'buildLocalInsightResult', 'mergeInsightValues', 'parseMailInsightJson', 'normalizeAiInsightResult',
+  'normalizeAiInsightCode', 'verifyCodesAgainstSource', 'verifyLinksAgainstSource',
+  'extractHttpUrlsFromText', 'fallbackToJevOrLocal', 'extractMailInsightsWithApi'
+];
+
+const COMBO_MAIL = [
+  'Your verification code is 483920',
+  '[邮件中的完整原始链接]',
+  'Verify your email -> https://github.com/verify?token=aaa111bbb222'
+].join('\n');
+
+function comboEngine(options) {
+  const calls = [];
+  const scope = {
+    URL,
+    AbortController,
+    MAX_TRANSLATION_SOURCE_CHARS: 12000,
+    AI_REQUEST_TIMEOUT_MS: 30000,
+    fetchWithTimeout: async (url) => {
+      calls.push(url);
+      if (url.includes('/chat/completions')) {
+        if (options.ai === 'fail500') return { ok: false, status: 500, json: async () => ({ error: { message: 'boom' } }) };
+        if (options.ai === 'throw') throw new Error('连接被拒绝');
+        if (options.ai === 'badjson') return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '不是 JSON' } }] }) };
+        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"codes":["483920"],"links":[]}' } }] }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          model: 'jev-1.13.0',
+          answers: {
+            real_code: { type: 'choice', choice: '483920', confidence: 0.99 },
+            link_0: { type: 'noul', noul: 0.78 }
+          }
+        })
+      };
+    }
+  };
+  const hasAi = options.mode === 'custom' || options.mode === 'translation';
+  runInNewContext([
+    ...COMBO_CONSTS.map((n) => extractComboUnit('const ' + n + ' = ').replace(/^(\s*)const /m, '$1')),
+    ...COMBO_FNS.map((n) => extractComboUnit('function ' + n + '(') || extractComboUnit('async function ' + n + '(')),
+    'var mailInsightApiMode = ' + JSON.stringify(options.mode) + ';',
+    'var mailInsightApiBase = "https://ai.example.com/v1";',
+    'var mailInsightApiKey = "sk-ai";',
+    'var mailInsightModel = "gpt-4.1-mini";',
+    'var translationApiBase = ' + JSON.stringify(hasAi ? 'https://ai.example.com/v1' : '') + ';',
+    'var translationApiKey = ' + JSON.stringify(hasAi ? 'sk-tr' : '') + ';',
+    'var translationModel = ' + JSON.stringify(hasAi ? 'gpt-4.1-mini' : '') + ';',
+    'var jevEnabled = ' + (options.jev ? 'true' : 'false') + ';',
+    "var jevApiBase = 'https://newapi.cfwork.cc.cd';",
+    "var jevApiKey = 'sk-jev';",
+    "var jevEndpointPath = '/typesafe/v1/systemone';",
+    "var jevModel = 'jev-latest';",
+    'var jevRecallMode = false;'
+  ].join('\n'), scope);
+  return { scope, calls };
+}
+
+async function runCombo(options) {
+  const { scope, calls } = comboEngine(options);
+  const result = await scope.extractMailInsightsWithApi(COMBO_MAIL, {});
+  return {
+    result,
+    aiCalled: calls.some((u) => u.includes('chat/completions')),
+    jevCalled: calls.some((u) => u.includes('systemone'))
+  };
+}
+
+test('① AI 不可用 + Jev 不可用 → 只用正则，两者都不调用', async () => {
+  const { result, aiCalled, jevCalled } = await runCombo({ mode: 'none', jev: false, ai: 'ok' });
+  assert.equal(aiCalled, false);
+  assert.equal(jevCalled, false);
+  assert.equal(result.source, 'local');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.codes)), ['483920'], '正则应照常给出结果');
+});
+
+test('② AI 不可用 + Jev 已配 → 正则 + Jev（不调 AI）', async () => {
+  const { result, aiCalled, jevCalled } = await runCombo({ mode: 'none', jev: true, ai: 'ok' });
+  assert.equal(aiCalled, false, '明确不使用 AI 时绝不能发起 AI 请求');
+  assert.equal(jevCalled, true, 'Jev 必须被调用');
+  assert.equal(result.source, 'jev');
+});
+
+test('③ AI 可用 + Jev 未配 → 正则 + AI（不调 Jev）', async () => {
+  const { result, aiCalled, jevCalled } = await runCombo({ mode: 'custom', jev: false, ai: 'ok' });
+  assert.equal(aiCalled, true);
+  assert.equal(jevCalled, false, 'Jev 未启用时不得发起请求');
+  assert.equal(result.source, 'ai');
+});
+
+test('④ AI 可用 + Jev 已配 → 正则 + AI + Jev', async () => {
+  const { result, aiCalled, jevCalled } = await runCombo({ mode: 'custom', jev: true, ai: 'ok' });
+  assert.equal(aiCalled, true);
+  assert.equal(jevCalled, true);
+  assert.equal(result.source, 'jev', 'Jev 结果优先于 AI');
+});
+
+test('⑤ AI 请求失败(500) + Jev 已配 → 仍必须走 Jev（本轮修复的核心缺陷）', async () => {
+  const { result, jevCalled } = await runCombo({ mode: 'custom', jev: true, ai: 'fail500' });
+  assert.equal(jevCalled, true, 'AI 失败不能挡在 Jev 前面');
+  assert.equal(result.source, 'jev');
+  assert.ok(result.aiError, '应保留 AI 失败原因供 UI 说明');
+});
+
+test('⑥ AI 网络异常 + Jev 已配 → 仍必须走 Jev', async () => {
+  const { result, jevCalled } = await runCombo({ mode: 'custom', jev: true, ai: 'throw' });
+  assert.equal(jevCalled, true);
+  assert.equal(result.source, 'jev');
+});
+
+test('⑦ AI 返回非法 JSON + Jev 已配 → 仍必须走 Jev', async () => {
+  const { result, jevCalled } = await runCombo({ mode: 'custom', jev: true, ai: 'badjson' });
+  assert.equal(jevCalled, true);
+  assert.equal(result.source, 'jev');
+});
+
+test('⑧ AI 失败 + Jev 不可用 → 回落正则，且不抛错', async () => {
+  const { result, jevCalled } = await runCombo({ mode: 'custom', jev: false, ai: 'fail500' });
+  assert.equal(jevCalled, false);
+  assert.equal(result.source, 'local');
+  assert.ok(result.error, '应带出 AI 失败原因');
+});
+
+test('⑨ 复用翻译 API 模式 + Jev 已配 → 正则 + AI + Jev', async () => {
+  const { result, aiCalled, jevCalled } = await runCombo({ mode: 'translation', jev: true, ai: 'ok' });
+  assert.equal(aiCalled, true);
+  assert.equal(jevCalled, true);
+  assert.equal(result.source, 'jev');
+});
+
+test('静态守卫：AI 段落里的失败路径必须先经过 Jev 兜底', () => {
+  const fn = extractFunction('extractMailInsightsWithApi');
+  // 只看 AI 段落：配置读取那一行之后的部分。
+  // 之前的「AI 未配置 + Jev 失败」分支允许直接返回本地结果 —— 那时既没有 AI
+  // 也没有可用的 Jev，回落本地是唯一正确行为，不该被这条断言误伤。
+  const marker = 'const config = getMailInsightApiConfig();';
+  const idx = fn.indexOf(marker);
+  assert.ok(idx > 0, '未找到 AI 段落起点');
+  const aiSection = fn.slice(idx);
+  const directReturns = (aiSection.match(/return \{ \.\.\.localResult/g) || []).length;
+  assert.equal(directReturns, 0,
+    'AI 失败时必须走 fallbackToJevOrLocal，不能直接返回本地结果');
+  const fallbackCalls = (aiSection.match(/fallbackToJevOrLocal\(/g) || []).length;
+  assert.ok(fallbackCalls >= 3, `三处 AI 失败出口都应走统一兜底，实际 ${fallbackCalls} 处`);
+});
+
+test('fallbackToJevOrLocal 在 Jev 不可用时退回本地、可用时必须调用 Jev', () => {
+  const fn = extractFunction('fallbackToJevOrLocal');
+  assert.match(fn, /hasJevConfig\(\)/, '必须先判断 Jev 是否可用');
+  assert.match(fn, /adjudicateInsightsWithJev\(/, 'Jev 可用时必须裁决');
+  assert.match(fn, /jevOnly: true/, '应标记为 Jev 独立工作');
+});
+
+test('新增的 none 模式：normalize 与配置读取都要正确处理', () => {
+  const scope = {
+    DEFAULT_MAIL_INSIGHT_API_MODE: 'translation',
+    mailInsightApiMode: 'none',
+    mailInsightApiBase: 'https://x/v1',
+    mailInsightApiKey: 'sk-x',
+    mailInsightModel: 'm',
+    translationApiBase: 'https://y/v1',
+    translationApiKey: 'sk-y',
+    translationModel: 'm2',
+    DEFAULT_TRANSLATION_API_BASE: 'https://api.openai.com/v1',
+    normalizeTranslationSetting: (v, f = '') => (typeof v === 'string' && v.trim()) || f
+  };
+  runInNewContext([
+    extractFunction('normalizeMailInsightApiMode'),
+    extractFunction('getMailInsightApiConfig'),
+    extractFunction('hasMailInsightConfig')
+  ].join('\n'), scope);
+  assert.equal(scope.normalizeMailInsightApiMode('none'), 'none');
+  assert.equal(scope.normalizeMailInsightApiMode('bogus'), 'translation', '非法值仍回落默认');
+  assert.equal(scope.hasMailInsightConfig(), false, 'none 模式必须让 AI 视为不可用');
+});
+
+test('洞察相关配置变更后必须重新触发判定（否则启用 Jev 后旧邮件不刷新）', () => {
+  assert.match(COMBO_SOURCE, /insightConfigChanged/,
+    '缺少配置变更后的重新判定，启用 Jev 后已打开的邮件不会重新提取');
+  assert.match(COMBO_SOURCE, /triggerMailAiInsights\(reader, true\)/,
+    '重新判定必须用 force=true 绕过状态短路');
+});
+
+// ── 静态守卫：onChanged 里每个 changes 分支都必须有 if 守卫 ──────────
+// 实测踩到的坑：给 JEV_RECALL_MODE_KEY 加分支时，误删了下一条
+// `if (changes[GENERATED_RESULT_AUTO_CLOSE_KEY]) {` 的头部。因为后面还留着
+// 一个 `}`，整体**恰好语法合法**（node --check 能过），但那些语句变成了
+// 无条件执行 —— 每次任何 storage 变更都会重跑一遍自动关闭计时器逻辑。
+// 所以这里逐条校验「被赋值的 changes 分支」都有对应的 if。
+test('onChanged 的每个 changes 分支都带 if 守卫（防误删导致的静默无条件执行）', () => {
+  const lines = COMBO_SOURCE.split('\n');
+  const start = lines.findIndex((l) => l.includes('chrome.storage.onChanged.addListener'));
+  assert.ok(start > 0, '未找到 onChanged 监听');
+
+  const offenders = [];
+  for (let i = start; i < lines.length; i += 1) {
+    const line = lines[i];
+    // 形如  `changes[XXX_KEY].newValue` 出现在赋值右侧，且上一行不是 if
+    if (!/^\s{4}\w[\w.]*\s*=\s*.*changes\[/.test(line)) continue;
+    const prev = lines[i - 1] || '';
+    if (!/if \(changes\[/.test(prev)) {
+      offenders.push(`${i + 1}: ${line.trim().slice(0, 80)}`);
+    }
+  }
+  assert.deepEqual(offenders, [],
+    `这些 changes 赋值缺少 if 守卫（会无条件执行）:\n${offenders.join('\n')}`);
+});
+
+test('生成的自动关闭计时器分支必须带 if 守卫（历史 bug 的精确回归）', () => {
+  const lines = COMBO_SOURCE.split('\n');
+  const idx = lines.findIndex((l) => /^\s+generatedResultAutoCloseSeconds = normalizeGeneratedResultAutoCloseSeconds\(changes/.test(l));
+  assert.ok(idx > 0, '未找到该分支');
+  assert.match(lines[idx - 1], /^\s+if \(changes\[GENERATED_RESULT_AUTO_CLOSE_KEY\]\) \{/,
+    '该分支必须紧跟在自己的 if 之后，否则会无条件执行');
+});

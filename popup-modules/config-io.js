@@ -82,7 +82,7 @@
     fastFillDomainMode: ['random', 'specific', 'whitelist', 'blacklist'],
     fastFillNameRegion: ['zh', 'en'],
     fastFillNameGender: ['random', 'male', 'female'],
-    mailInsightApiMode: ['translation', 'custom'],
+    mailInsightApiMode: ['translation', 'custom', 'none'],
     bookmarkSort: ['custom', 'time-desc', 'time-asc', 'name-asc']
   };
 
