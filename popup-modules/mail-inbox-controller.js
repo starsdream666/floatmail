@@ -136,6 +136,25 @@
       return checkbox;
     }
 
+    // 列表刷新后，已选集合只保留仍存在于新列表中的身份；删除进行中不动（删除用的是快照）。
+    function retain(keys) {
+      if (deleting) {
+        return;
+      }
+      const alive = new Set(keys || []);
+      let changed = false;
+      Array.from(selected).forEach((key) => {
+        if (!alive.has(key)) {
+          selected.delete(key);
+          changed = true;
+        }
+      });
+      if (changed) {
+        revision += 1;
+      }
+      updateButton();
+    }
+
     async function deleteSelection() {
       if (deleting || !selected.size) {
         return;
@@ -191,6 +210,7 @@
       getSelected: () => new Set(selected),
       attachCheckbox,
       setActive,
+      retain,
       updateButton
     };
   }
@@ -290,6 +310,8 @@
           return;
         }
         messages = Array.isArray(result) ? result : [];
+        // 批量模式下剔除新列表里已不存在的已选项，同步"删除所选 (N)"计数
+        batchController?.retain(messages.map((message) => adapter.getMessageIdentity(message)));
         adapter.onMessagesLoaded?.(requestTarget, messages);
         renderMessages();
       } catch (error) {
@@ -399,6 +421,8 @@
           return;
         }
         const deleteRequestToken = detailRequestToken;
+        const deleteMessage = currentMessage;
+        const deleteTarget = target;
         const deleteTargetIdentity = getTargetIdentity(target);
         const deleteMessageIdentity = normalizeIdentity(adapter.getMessageIdentity(currentMessage));
         const deleteKey = getDeleteKey(currentMessage, target);
@@ -409,11 +433,27 @@
           && mode === 'detail'
           && getTargetIdentity(target) === deleteTargetIdentity
           && normalizeIdentity(adapter.getMessageIdentity(currentMessage)) === deleteMessageIdentity;
+        // 是否仍在看被删的这封（含"返回列表后又重新打开同一封"的情况，此时令牌已变）
+        const isViewingDeletedMessage = () => mode === 'detail'
+          && getTargetIdentity(target) === deleteTargetIdentity
+          && normalizeIdentity(adapter.getMessageIdentity(currentMessage)) === deleteMessageIdentity;
         pendingDeleteKeys.add(deleteKey);
         adapter.setDeletePending?.(true);
         try {
-          await adapter.deleteMessage(currentMessage, target);
-          if (!isCurrentDelete()) {
+          await adapter.deleteMessage(deleteMessage, deleteTarget);
+          if (!isViewingDeletedMessage()) {
+            // 删除在途时用户已返回列表或打开了别的邮件：不打断当前视图，
+            // 但仍需把已删邮件从同一收件箱的列表中移除（列表 DOM 在详情模式下同样会被复用）。
+            if (getTargetIdentity(target) === deleteTargetIdentity) {
+              const nextMessages = messages.filter((message) => (
+                normalizeIdentity(adapter.getMessageIdentity(message)) !== deleteMessageIdentity
+              ));
+              if (nextMessages.length !== messages.length) {
+                messages = nextMessages;
+                batchController?.retain(messages.map((message) => adapter.getMessageIdentity(message)));
+                renderMessages();
+              }
+            }
             return;
           }
           backToList();

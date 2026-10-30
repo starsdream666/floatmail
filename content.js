@@ -3,7 +3,7 @@
 (function () {
   'use strict';
 
-  const PAGE_TOOLS_VERSION = '2026.09.14-login-rules-main-v3';
+  const PAGE_TOOLS_VERSION = '2026.09.27-bugfix-v1';
   const existingPageToolsController = window.__floatMailPageToolsController;
   if (existingPageToolsController?.version === PAGE_TOOLS_VERSION
     && existingPageToolsController.disposed !== true) {
@@ -188,6 +188,44 @@
     return sendRuntimeMessage({ type: 'storage-set', items }, null);
   }
 
+  function storageRemove(keys) {
+    const keyList = Array.isArray(keys) ? keys : [keys];
+    if (hasChromeStorageLocal()) {
+      return new Promise((resolve) => chrome.storage.local.remove(keyList, resolve));
+    }
+    // 后台只允许内容脚本发 storage-get / storage-set，代理回退时用写 null 代替删除；
+    // 面板侧对无 requestId 的命令直接忽略，效果等同移除。
+    return sendRuntimeMessage({
+      type: 'storage-set',
+      items: Object.fromEntries(keyList.map((key) => [key, null])),
+    }, null);
+  }
+
+  // L21：扩展被禁用 / 重载 / 更新后，旧实例的 chrome.runtime.id 会变成 undefined，
+  // 但页面里的计时器、observer、DOM 监听仍在跑。各入口先检测，失效即整体拆除。
+  function isExtensionContextValid() {
+    try {
+      return typeof chrome !== 'undefined' && Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  }
+
+  function ensureExtensionContextAlive() {
+    if (pageToolsDisposed) {
+      return false;
+    }
+    if (isExtensionContextValid()) {
+      return true;
+    }
+    try {
+      disposePageTools();
+    } catch {
+      // 失效上下文里的清理异常不影响页面。
+    }
+    return false;
+  }
+
   function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
   }
@@ -331,11 +369,40 @@
   // 避免退回历史上的高频重挂 —— 那会让 iframe 反复重载并重播入场动画（闪烁）。
   const FLOAT_OCCLUSION_CHECK_INTERVAL = 4000;
   const FLOAT_OCCLUSION_STRIKES_BEFORE_REATTACH = 2;
+  // M12：单次可见期内强制重挂的上限。页面若持续插入覆盖层，重挂只会让 iframe 反复重载，
+  // 达到上限后只保留廉价的样式自愈，直到面板重新打开 / 可见性切换时才重置。
+  const FLOAT_OCCLUSION_MAX_FORCED_REATTACH = 3;
   let floatOcclusionTimer = null;
   let floatOcclusionStrikes = 0;
+  let floatOcclusionForcedReattachCount = 0;
+
+  function matchesSelectorSafely(element, selector) {
+    try {
+      return Boolean(element?.closest?.(selector));
+    } catch {
+      // 旧浏览器不认识 :modal / :popover-open 时按“不在顶层”处理。
+      return false;
+    }
+  }
+
+  // 浏览器顶层（showModal 的 <dialog>、打开的 popover、全屏元素）永远高于任何 z-index，
+  // 重挂也盖不过它们；这类遮挡属于页面正常交互，不应触发重挂。
+  function isBrowserTopLayerActive(hit) {
+    try {
+      if (document.fullscreenElement || document.webkitFullscreenElement) {
+        return true;
+      }
+    } catch {
+      // 忽略。
+    }
+    return matchesSelectorSafely(hit, ':modal') || matchesSelectorSafely(hit, ':popover-open');
+  }
 
   function isFloatPanelOccluded() {
     if (!floatUi?.panelVisible || !document.body) {
+      return false;
+    }
+    if (isBrowserTopLayerActive(null)) {
       return false;
     }
 
@@ -363,10 +430,17 @@
       return false;
     }
     // closed ShadowRoot 会把命中的内部节点重定向为 host；命中 host 即表示面板在最上层。
-    return hit !== floatUi.host && !panel.contains(hit) && !floatUi.button.contains(hit);
+    if (hit === floatUi.host || panel.contains(hit) || floatUi.button.contains(hit)) {
+      return false;
+    }
+    // 命中浏览器顶层元素时重挂无效，不算遮挡（M12）。
+    return !isBrowserTopLayerActive(hit);
   }
 
   function runFloatOcclusionCheck() {
+    if (!ensureExtensionContextAlive()) {
+      return;
+    }
     if (!floatUi?.panelVisible) {
       floatOcclusionStrikes = 0;
       return;
@@ -384,6 +458,11 @@
       return;
     }
     floatOcclusionStrikes = 0;
+    // 已连续强制重挂多次仍被遮挡：说明页面在持续压盖，继续重挂只会反复重载 iframe。
+    if (floatOcclusionForcedReattachCount >= FLOAT_OCCLUSION_MAX_FORCED_REATTACH) {
+      return;
+    }
+    floatOcclusionForcedReattachCount += 1;
     // 重挂会重新插入 iframe（内容重载），先清掉入场动画避免顺带重播一次。
     clearPanelEnterAnimation();
     bringFloatUiToFront({ force: true });
@@ -452,6 +531,8 @@
         return;
       }
       lastPanelStateChangeTime = now;
+      // 可见性切换即重新给遮挡兜底一次机会（M12 重挂上限按“单次可见期”计）。
+      floatOcclusionForcedReattachCount = 0;
     }
 
     if (visible) {
@@ -624,6 +705,20 @@
       return !element.disabled && !element.readOnly && !blockedTypes.has(element.type);
     }
     return false;
+  }
+
+  // L19：contenteditable 内部的 <p>/<span> 也有 isContentEditable，
+  // 选取、焦点记录与填入都应落到编辑根，否则规则只绑到其中一个段落。
+  function normalizeEditableTarget(element) {
+    if (!element?.isContentEditable) {
+      return element;
+    }
+    try {
+      const root = element.closest?.('[contenteditable]:not([contenteditable="false"])');
+      return root?.isContentEditable ? root : element;
+    } catch {
+      return element;
+    }
   }
 
   function isElementVisible(element) {
@@ -961,6 +1056,11 @@
       && left.every((value, index) => value === right[index]);
   }
 
+  // L25：规则集按“当前可解析子集”匹配 —— 分步登录（先邮箱后密码）、独立验证码页等
+  // 场景下，页面只露出部分已绑定字段。规则：
+  //   - 选择器找不到唯一可见目标、或已保存的输入特征对不上：该字段本页不可解析，跳过；
+  //   - 已解析字段必须满足各自的 formSignature，且全部位于同一表单、互不重复，否则整套拒绝；
+  //   - 至少解析出一个字段才算匹配，只填可解析的字段；旧版无 formSignature 的规则仍须全部解析。
   function matchRuleMode(mode, searchRoots, candidates) {
     const rules = getRuleFields(mode);
     const entries = Object.entries(rules);
@@ -970,30 +1070,53 @@
     let scope = null;
     for (const [kind, rule] of entries) {
       const target = queryEditableElement(rule.selector, rule.contextPath, () => searchRoots);
-      if (!target || !isCompatibleField(target, kind, rule) || used.has(target)) return null;
+      if (!target || !isCompatibleField(target, kind, rule)) continue;
+      // 两条规则解析到同一个输入框说明规则互相冲突，整套拒绝而非择一。
+      if (used.has(target)) return null;
       const targetScope = getFormScope(target);
       if (scope && scope !== targetScope) return null;
-      scope = targetScope;
       if (rule.formSignature && !sameFormSignature(rule.formSignature, getFormSignature(target, candidates))) return null;
+      scope = targetScope;
       used.add(target);
       targets.set(kind, target);
     }
+    if (!targets.size) return null;
+    // 旧版规则没有 formSignature，无法确认“这还是当初绑定的那张表单”：
+    // 部分匹配只对带表单特征的字段放开，否则同 ID 的登录页会被旧注册规则部分命中而错填。
+    if (targets.size < entries.length && [...targets.keys()].some((kind) => !rules[kind].formSignature)) return null;
     const scopedInputs = candidates.filter((candidate) => getFormScope(candidate) === scope);
-    if (scopedInputs.length < entries.length) return null;
-    // 场景由各自保存的实际表单特征和完整目标集决定，而非预设“登录必须两个框”、
-    // “密码必须 type=password”等模板。两套规则同时命中仍交由上层拒绝歧义。
-    return { mode, rules, targets, scope, signature: getFormSignature([...targets.values()][0], candidates) };
+    if (scopedInputs.length < targets.size) return null;
+    // 场景由各自保存的实际表单特征和已解析目标决定，而非预设“登录必须两个框”、
+    // “密码必须 type=password”等模板。两套规则解析数相同仍交由上层拒绝歧义。
+    return {
+      mode,
+      rules,
+      targets,
+      scope,
+      complete: targets.size === entries.length,
+      signature: getFormSignature([...targets.values()][0], candidates)
+    };
   }
 
   function getFillContext() {
     const searchRoots = getSearchRoots();
     const candidates = getEditableCandidates(searchRoots);
-    const matches = ['register', 'login'].map((mode) => matchRuleMode(mode, searchRoots, candidates)).filter(Boolean);
-    if (matches.length === 1) return { ...matches[0], candidates, searchRoots };
-    // 两套规则都匹配也不按顺序抢占（含同页同时展示两种表单）。
-    if (matches.length > 1) return { error: '注册与登录规则同时匹配，请重新绑定不同表单的输入框。' };
+    const matches = ['register', 'login'].map((mode) => matchRuleMode(mode, searchRoots, candidates))
+      .filter(Boolean)
+      .sort((left, right) => right.targets.size - left.targets.size);
+    // 两套规则都能匹配时：
+    //   - 两套都完整命中且位于不同表单（同页并存登录与注册表单），无法判断用户意图，保持拒绝歧义；
+    //   - 否则解析字段更多的那套更贴近当前表单；数量相同不按顺序抢占。
+    if (matches.length > 1
+      && ((matches[0].complete && matches[1].complete && matches[0].scope !== matches[1].scope)
+        || matches[0].targets.size === matches[1].targets.size)) {
+      return { error: '注册与登录规则同时匹配，请重新绑定不同表单的输入框。' };
+    }
+    if (matches.length) return { ...matches[0], candidates, searchRoots };
     if (Object.keys(getRuleFields('register')).length || Object.keys(getRuleFields('login')).length) {
-      return { error: RULE_MATCH_ERROR };
+      // noRuleMatch：已有规则但本页一个都解析不到。整组填充仍拒绝猜测，
+      // 单字段填入（fill-value）可据此回退到该字段的自动识别。
+      return { error: RULE_MATCH_ERROR, noRuleMatch: true, candidates, searchRoots };
     }
     return { mode: 'auto', rules: {}, candidates, searchRoots };
   }
@@ -1012,6 +1135,26 @@
     if (candidates.length === 1) return candidates[0];
     if (options.preferFocused !== false && candidates.includes(lastFocusedElement)) return lastFocusedElement;
     return null;
+  }
+
+  // 单字段填入 / 预览（fill-value、preview-fill-target）的目标解析。
+  // L25：规则集没有该字段、该字段本页未命中、或已有规则但本页一个都解析不到时，
+  // 回退到该字段的自动识别（仍要求语义唯一），并排除已绑定给其他字段的输入框。
+  // 注册/登录同时匹配属于规则冲突，不回退。
+  function resolveSingleFillTarget(kind, context, options = {}) {
+    if (context.error && !context.noRuleMatch) {
+      return { target: null, error: context.error };
+    }
+    if (!context.error) {
+      const target = resolveFillTarget(kind, { ...options, context });
+      if (target || context.mode === 'auto') {
+        return { target, mode: context.mode };
+      }
+    }
+    const boundTargets = context.targets ? new Set(context.targets.values()) : new Set();
+    const autoContext = { mode: 'auto', rules: {}, candidates: context.candidates || [], searchRoots: context.searchRoots };
+    const target = resolveFillTarget(kind, { ...options, context: autoContext, exclude: boundTargets });
+    return { target, mode: 'auto' };
   }
 
   function getElementQueryRoot(element) {
@@ -1037,9 +1180,12 @@
     while (current && current.nodeType === Node.ELEMENT_NODE && current !== stopElement) {
       if (current.id) {
         const idSelector = `#${escapeSelectorToken(current.id)}`;
-        if (isUniqueSelector(idSelector, element)) {
-          segments.unshift(idSelector);
-          return segments.join(' > ');
+        // L18：祖先锚点要校验的是祖先自身唯一，拼好的完整路径再对目标元素做唯一性校验。
+        if (isUniqueSelector(idSelector, current, root)) {
+          const anchoredPath = [idSelector, ...segments].join(' > ');
+          if (isUniqueSelector(anchoredPath, element, root)) {
+            return anchoredPath;
+          }
         }
       }
 
@@ -1089,7 +1235,7 @@
       break;
     }
 
-    return reversed.reverse().filter((step) => step.selector);
+    return reversed.reverse();
   }
 
   function createRuleSelector(element) {
@@ -1127,7 +1273,10 @@
       }
     }
 
-    return buildPathSelector(element);
+    // Shadow root 里的路径没有 body 锚点（如 `div > input`），可能命中更深层的同构节点；
+    // 路径结果同样必须唯一，否则返回空串交由调用方报错，不能静默保存会错填的规则。
+    const pathSelector = buildPathSelector(element);
+    return pathSelector && isUniqueSelector(pathSelector, element, root) ? pathSelector : '';
   }
 
   function describeRuleElement(element) {
@@ -1153,9 +1302,15 @@
     if (!['register', 'login'].includes(mode) || !Object.hasOwn(FIELD_LABELS, kind)) {
       throw new Error('不支持的规则类型');
     }
+    element = normalizeEditableTarget(element);
     if (!isEditableElement(element) || !isElementVisible(element)) throw new Error('请选择可见且可编辑的输入框');
     const selector = createRuleSelector(element);
-    if (!selector) throw new Error('无法为当前输入框生成规则');
+    if (!selector) throw new Error('无法为当前输入框生成唯一规则，请换一个输入框或为其添加唯一属性');
+    // Shadow 宿主 / iframe 任一层无法唯一定位时，丢掉这一层会让规则落到错误的根上。
+    const contextPath = buildElementContextPath(element);
+    if (contextPath.some((step) => !step.selector)) {
+      throw new Error('无法唯一定位输入框所在的 Shadow DOM / iframe 容器，未保存规则');
+    }
     const latest = await storageGet([PAGE_FILL_RULES_KEY]);
     const nextRules = { ...(latest[PAGE_FILL_RULES_KEY] || allFillRules) };
     const originRules = { ...(nextRules[window.location.origin] || {}) };
@@ -1168,7 +1323,7 @@
     }
     const rule = {
       selector,
-      contextPath: buildElementContextPath(element),
+      contextPath,
       description: describeRuleElement(element),
       input: getInputFingerprint(element),
       formSignature: getFormSignature(element, getEditableCandidates(searchRoots)),
@@ -1187,8 +1342,10 @@
     let current = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement || null;
 
     while (current) {
-      if (isEditableElement(current) && isElementVisible(current)) {
-        return current;
+      // L19：命中 contenteditable 内部节点时绑定到编辑根。
+      const candidate = normalizeEditableTarget(current);
+      if (isEditableElement(candidate) && isElementVisible(candidate)) {
+        return candidate;
       }
       const parent = current.parentElement;
       if (parent) {
@@ -1258,23 +1415,99 @@
     }));
   }
 
+  // L24：悬浮窗关闭（floatUi 为空）时从工具栏弹窗发起字段选取，页面上也要有提示。
+  // 此时单独挂一个 closed ShadowRoot 宿主承载提示，样式全部走内联 CSSOM
+  // （不依赖异步加载的 content.css，也不受页面 CSP 对 <style> 的限制），用完即移除。
+  // 刻意不打 FLOAT_HOST_MARKER：后台按该标记统计悬浮窗宿主数量，多一个会被误判为重复 UI。
+  let standaloneHintHost = null;
+  const SELECTION_HINT_TONE_BACKGROUND = {
+    info: 'rgba(32, 33, 36, 0.94)',
+    success: 'rgba(30, 142, 62, 0.96)',
+    error: 'rgba(217, 48, 37, 0.96)',
+  };
+
+  function getSelectionHintContainer() {
+    if (floatUi?.shadowRoot) {
+      return floatUi.shadowRoot;
+    }
+    const mountPoint = document.body || document.documentElement;
+    if (!mountPoint) {
+      return null;
+    }
+    if (!standaloneHintHost) {
+      const host = document.createElement('div');
+      host.style.setProperty('all', 'initial', 'important');
+      host.style.setProperty('display', 'contents', 'important');
+      standaloneHintHost = { host, shadowRoot: host.attachShadow({ mode: 'closed' }) };
+    }
+    if (standaloneHintHost.host.parentNode !== mountPoint) {
+      mountPoint.appendChild(standaloneHintHost.host);
+    }
+    return standaloneHintHost.shadowRoot;
+  }
+
+  function applyStandaloneHintStyles(element, tone) {
+    const styles = {
+      position: 'fixed',
+      top: '16px',
+      right: '16px',
+      'max-width': 'min(360px, calc(100vw - 32px))',
+      padding: '10px 14px',
+      'border-radius': '10px',
+      background: SELECTION_HINT_TONE_BACKGROUND[tone] || SELECTION_HINT_TONE_BACKGROUND.info,
+      color: '#fff',
+      'font-family': 'system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif',
+      'font-size': '13px',
+      'line-height': '1.5',
+      'box-shadow': '0 8px 24px rgba(0, 0, 0, 0.28)',
+      'z-index': FLOAT_TOP_Z_INDEX,
+      // 提示层不拦截点击：选取期间点到提示上也应穿透到下方输入框。
+      'pointer-events': 'none',
+      'box-sizing': 'border-box',
+    };
+    Object.entries(styles).forEach(([property, value]) => {
+      element.style.setProperty(property, value, 'important');
+    });
+  }
+
+  function detachSelectionHintElement() {
+    selectionHintElement?.remove();
+    selectionHintElement = null;
+    if (standaloneHintHost) {
+      standaloneHintHost.host.remove();
+      standaloneHintHost = null;
+    }
+  }
+
   function removeSelectionHint() {
     if (selectionHintTimer !== null) {
       window.clearTimeout(selectionHintTimer);
       selectionHintTimer = null;
     }
-    selectionHintElement?.remove();
-    selectionHintElement = null;
+    detachSelectionHintElement();
   }
 
   function showSelectionHint(text, tone = 'info', autoRemoveDelay = 0) {
-    if (!floatUi?.shadowRoot) {
+    const container = getSelectionHintContainer();
+    if (!container) {
       return;
+    }
+    // 悬浮窗在提示期间被创建或拆除时，提示元素要换到当前容器里。
+    if (selectionHintElement && selectionHintElement.getRootNode?.() !== container) {
+      selectionHintElement.remove();
+      selectionHintElement = null;
     }
     if (!selectionHintElement) {
       selectionHintElement = document.createElement('div');
       selectionHintElement.id = 'temp-email-fill-selection-hint';
-      floatUi.shadowRoot.appendChild(selectionHintElement);
+      container.appendChild(selectionHintElement);
+    }
+    if (standaloneHintHost && container === standaloneHintHost.shadowRoot) {
+      applyStandaloneHintStyles(selectionHintElement, tone);
+    } else if (standaloneHintHost) {
+      // 已切回悬浮窗容器，独立宿主不再需要。
+      standaloneHintHost.host.remove();
+      standaloneHintHost = null;
     }
     selectionHintElement.textContent = text;
     selectionHintElement.dataset.tone = tone;
@@ -1286,8 +1519,7 @@
       selectionHintTimer = window.setTimeout(() => {
         selectionHintTimer = null;
         if (!fieldSelection) {
-          selectionHintElement?.remove();
-          selectionHintElement = null;
+          detachSelectionHintElement();
         }
       }, autoRemoveDelay);
     }
@@ -1386,6 +1618,9 @@
     hideFloatPanelForFieldSelection();
 
     const onMouseMove = (event) => {
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       const eventTarget = event.composedPath?.()[0] || event.target;
       const target = getEditableTargetFromNode(eventTarget)
         || getEditableTargetFromPoint(event.clientX, event.clientY, event.currentTarget || document);
@@ -1399,6 +1634,10 @@
     };
 
     const onClick = (event) => {
+      // 上下文已失效时直接拆除并放行这次点击，不吞掉用户操作。
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation?.();
@@ -1535,7 +1774,7 @@
 
   async function previewFillTarget(kind) {
     await ensureFillRulesLoaded();
-    const target = resolveFillTarget(kind, { preferFocused: false });
+    const { target } = resolveSingleFillTarget(kind, getFillContext(), { preferFocused: false });
     setPreviewTargets(target ? [target] : []);
     return { ok: true, matched: Boolean(target) };
   }
@@ -1623,12 +1862,12 @@
   async function fillSingleValue(value, kind) {
     await ensureFillRulesLoaded();
     const context = getFillContext();
-    if (context.error) return { ok: false, error: context.error };
-    const target = resolveFillTarget(kind, { context });
+    const { target, mode, error } = resolveSingleFillTarget(kind, context);
+    if (error) return { ok: false, error };
     if (!target) return { ok: false, error: '当前规则未绑定该字段，或未找到唯一对应的输入框' };
     if (!fillElement(target, value)) return { ok: false, error: '聚焦时页面结构发生变化，已取消填入' };
     lastFocusedElement = target;
-    return { ok: true, kind, mode: context.mode };
+    return { ok: true, kind, mode };
   }
 
   async function fillProfile(fields, options = {}) {
@@ -1794,6 +2033,35 @@
     };
   }
 
+  // M10：单轴缩放。从起始边（左 / 上）拖动时对边固定，起始边被限制在 [0, 对边 - 最小尺寸]，
+  // 尺寸由对边反推 —— 拖出视口也不会让对边跟着外移、面板越拖越大。
+  // 从末端边（右 / 下）拖动时起点固定，尺寸受视口剩余空间限制。
+  function resizePanelAxis(start, size, delta, fromStartEdge, minSize, viewportSize) {
+    if (fromStartEdge) {
+      const end = start + size;
+      const nextStart = clamp(start + delta, 0, Math.max(0, end - minSize));
+      return { start: nextStart, size: end - nextStart };
+    }
+    const nextSize = clamp(size + delta, minSize, Math.max(minSize, viewportSize - start));
+    return { start: clamp(start, 0, Math.max(0, viewportSize - nextSize)), size: nextSize };
+  }
+
+  function computePanelResizeRect(startRect, direction, dx, dy, viewport) {
+    let { left, top, width, height } = startRect;
+    const dir = String(direction || '');
+    if (dir.includes('w') || dir.includes('e')) {
+      const axis = resizePanelAxis(left, width, dx, dir.includes('w'), MIN_PANEL_WIDTH, viewport.width);
+      left = axis.start;
+      width = axis.size;
+    }
+    if (dir.includes('n') || dir.includes('s')) {
+      const axis = resizePanelAxis(top, height, dy, dir.includes('n'), MIN_PANEL_HEIGHT, viewport.height);
+      top = axis.start;
+      height = axis.size;
+    }
+    return { left, top, width, height };
+  }
+
   function applyFloatWindowStyle(options = {}) {
     if (!floatUi) {
       return FIXED_FLOAT_WINDOW_STYLE;
@@ -1901,6 +2169,9 @@
     }
     inboxBallTimer = window.setTimeout(() => {
       inboxBallTimer = null;
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       updateBallVisibility();
     }, Math.max(0, expiresAt - Date.now()) + 50);
   }
@@ -1947,7 +2218,7 @@
   // 由 handleStorageChanged 按 requestId 兑现这里的 Promise。
   function sendPanelCommand(command) {
     const requestId = `cmd_${Date.now().toString(36)}_${++panelCommandSeq}`;
-    return new Promise((resolve, reject) => {
+    const promise = new Promise((resolve, reject) => {
       const timer = window.setTimeout(() => {
         pendingPanelCommands.delete(requestId);
         reject(new Error('面板未响应'));
@@ -1972,6 +2243,29 @@
         reject(error);
       });
     });
+    // M11：命令一旦有结果（成功 / 失败 / 超时 / 拆除）就从 storage 撤下，
+    // 否则 iframe 在 10 秒新鲜期内重载时会补捞到同一条命令再执行一次（如重复建邮箱）。
+    const clearCommand = () => {
+      clearPanelCommandIfCurrent(requestId);
+    };
+    promise.then(clearCommand, clearCommand);
+    return promise;
+  }
+
+  // 只删仍属于本条请求的记录：期间若已有新命令写入（其他标签页 / 下一次点击），不能误删。
+  function clearPanelCommandIfCurrent(requestId) {
+    try {
+      storageGet([PANEL_COMMAND_KEY])
+        .then((result) => {
+          if (result?.[PANEL_COMMAND_KEY]?.requestId !== requestId) {
+            return null;
+          }
+          return storageRemove(PANEL_COMMAND_KEY);
+        })
+        .catch(() => {});
+    } catch {
+      // 扩展上下文失效时 storage 访问会同步抛错，命令本身也已无人执行，忽略即可。
+    }
   }
 
   function settlePanelCommandResult(result) {
@@ -2014,11 +2308,22 @@
   // 以保住 v3.0.3「消除多标签页请求风暴」的优化。
   // token 通过 URL hash 传给面板，供它在 storage 广播里认领属于自己的命令。
   function ensurePanelLoaded() {
-    if (!floatUi || floatUi.iframeLoaded) {
-      return;
+    if (!floatUi) {
+      return false;
+    }
+    if (floatUi.iframeLoaded) {
+      return true;
+    }
+    // L21：扩展上下文失效后 getURL 会抛错；失败时保持未加载状态，由调用方恢复 UI。
+    let panelUrl = '';
+    try {
+      panelUrl = chrome.runtime.getURL('popup.html');
+    } catch {
+      return false;
     }
     floatUi.iframeLoaded = true;
-    floatUi.iframe.src = `${chrome.runtime.getURL('popup.html')}#fmtoken=${encodeURIComponent(FLOAT_INSTANCE_TOKEN)}`;
+    floatUi.iframe.src = `${panelUrl}#fmtoken=${encodeURIComponent(FLOAT_INSTANCE_TOKEN)}`;
+    return true;
   }
 
   function createFunctionBall(kind, title, iconSvg) {
@@ -2200,12 +2505,19 @@
 
     function showPanel() {
       if (!floatUi) {
-        return;
+        return false;
       }
       // 延迟加载：仅在真正需要面板时才加载 iframe 内容，
       // 避免标签页初始化时批量创建 iframe 导致请求风暴。
-      ensurePanelLoaded();
+      if (!ensurePanelLoaded()) {
+        // getURL 失败基本意味着扩展上下文已失效：能检测到就整体拆除，否则提示用户刷新。
+        if (ensureExtensionContextAlive()) {
+          showSelectionHint('面板加载失败，请刷新页面后重试。', 'error', 3000);
+        }
+        return false;
+      }
       setFloatPanelVisible(true);
+      return true;
     }
 
     function hidePanel() {
@@ -2232,6 +2544,9 @@
 
     const onButtonClick = (event) => {
       event.stopPropagation();
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       if (!wasDragged) {
         floatUi.panelVisible ? hidePanel() : showPanel();
       }
@@ -2244,7 +2559,9 @@
     // 用户「上次停留的页」，而且跨实例同步守卫在面板正看邮件时会静默忽略切页。
     const onRulesBallClick = (event) => {
       event.stopPropagation();
-      showPanel();
+      if (!ensureExtensionContextAlive() || !showPanel()) {
+        return;
+      }
       sendPanelCommand('open-fill-rules').catch(() => {
         showSelectionHint('打开规则页失败，请重试。', 'error', 3000);
       });
@@ -2255,12 +2572,25 @@
     // 快填球：不打开面板（面板会盖住正要填的表单），只让 iframe 在后台加载并执行。
     const onFastFillBallClick = (event) => {
       event.stopPropagation();
-      if (floatUi.fastFillBusy) {
+      if (!ensureExtensionContextAlive() || floatUi.fastFillBusy) {
         return;
       }
       // 防连点：重复触发会创建两个邮箱，且后一次会覆盖历史首条，让收件球指向错误收件箱。
       setFastFillBallBusy(true);
-      ensurePanelLoaded();
+      let panelReady = false;
+      try {
+        panelReady = ensurePanelLoaded();
+      } catch {
+        panelReady = false;
+      }
+      if (!panelReady) {
+        // L21：面板加载失败时必须恢复 busy，否则快填球永久禁用。
+        setFastFillBallBusy(false);
+        if (ensureExtensionContextAlive()) {
+          showSelectionHint('面板加载失败，请刷新页面后重试。', 'error', 3600);
+        }
+        return;
+      }
       showSelectionHint('正在生成并填入资料...', 'info');
       sendPanelCommand('run-fast-fill')
         .then((result) => {
@@ -2285,7 +2615,9 @@
     // 收件球：交给面板复用 fastFillJumpToInbox（它已处理 Temp/Moe 差异与邮箱重建）。
     const onInboxBallClick = (event) => {
       event.stopPropagation();
-      showPanel();
+      if (!ensureExtensionContextAlive() || !showPanel()) {
+        return;
+      }
       sendPanelCommand('open-fast-fill-inbox').catch(() => {
         showSelectionHint('打开收件箱失败，请重试。', 'error', 3000);
       });
@@ -2315,6 +2647,10 @@
     }
 
     const onButtonMouseDown = (event) => {
+      // L22：只响应主键。右键/中键进入拖拽后，右键菜单会吞掉 mouseup，面板会一直跟着鼠标走。
+      if (event.button !== 0 || !ensureExtensionContextAlive()) {
+        return;
+      }
       attachDragListeners();
       isButtonDragging = true;
       wasDragged = false;
@@ -2338,6 +2674,9 @@
 
     const onHeaderMouseDown = (event) => {
       event.stopPropagation();
+      if (event.button !== 0 || !ensureExtensionContextAlive()) {
+        return;
+      }
       if (event.target.closest('.temp-email-header-btn')) {
         event.preventDefault();
         return;
@@ -2365,8 +2704,11 @@
     let resizeStartTop = 0;
 
     const onPanelMouseDown = (event) => {
+      if (event.button !== 0) {
+        return;
+      }
       const handle = event.target.closest('.temp-email-resize');
-      if (!handle) {
+      if (!handle || !ensureExtensionContextAlive()) {
         return;
       }
       attachDragListeners();
@@ -2432,32 +2774,15 @@
       }
 
       if (isResizing) {
-        const dx = event.clientX - resizeStartX;
-        const dy = event.clientY - resizeStartY;
-        let width = resizeStartWidth;
-        let height = resizeStartHeight;
-        let left = resizeStartLeft;
-        let top = resizeStartTop;
-
-        if (resizeDirection.includes('e')) {
-          width = Math.max(MIN_PANEL_WIDTH, resizeStartWidth + dx);
-        }
-        if (resizeDirection.includes('w')) {
-          width = Math.max(MIN_PANEL_WIDTH, resizeStartWidth - dx);
-          left = resizeStartLeft + (resizeStartWidth - width);
-        }
-        if (resizeDirection.includes('s')) {
-          height = Math.max(MIN_PANEL_HEIGHT, resizeStartHeight + dy);
-        }
-        if (resizeDirection.includes('n')) {
-          height = Math.max(MIN_PANEL_HEIGHT, resizeStartHeight - dy);
-          top = resizeStartTop + (resizeStartHeight - height);
-        }
-
-        width = Math.min(width, window.innerWidth - left);
-        height = Math.min(height, window.innerHeight - top);
-        left = clamp(left, 0, Math.max(0, window.innerWidth - width));
-        top = clamp(top, 0, Math.max(0, window.innerHeight - height));
+        const { left, top, width, height } = computePanelResizeRect({
+          left: resizeStartLeft,
+          top: resizeStartTop,
+          width: resizeStartWidth,
+          height: resizeStartHeight,
+        }, resizeDirection, event.clientX - resizeStartX, event.clientY - resizeStartY, {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        });
 
         setImportantStyle(panel, 'width', `${width}px`);
         setImportantStyle(panel, 'height', `${height}px`);
@@ -2499,6 +2824,9 @@
     floatUi.cleanup.push(detachDragListeners);
 
     const onDocumentMouseDown = (event) => {
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       if (floatUi.panelVisible && !floatUi.isPinned && !panel.contains(event.target) && event.target !== button) {
         hidePanel();
       }
@@ -2535,7 +2863,7 @@
     let resizeFrameId = 0;
     const applyResizeLayout = () => {
       resizeFrameId = 0;
-      if (!floatUi) {
+      if (!floatUi || !ensureExtensionContextAlive()) {
         return;
       }
       floatUi.buttonLayout = applyButtonLayout(button, floatUi.buttonLayout);
@@ -2622,6 +2950,9 @@
 
       window.setTimeout(() => {
         reattachScheduled = false;
+        if (!ensureExtensionContextAlive()) {
+          return;
+        }
         const didReattach = reattachIfMissing();
         if (didReattach) {
           reattachBurstCount += 1;
@@ -2633,6 +2964,10 @@
     };
 
     const observer = new MutationObserver((mutations) => {
+      // L21：失效实例不能再把旧宿主挂回页面。
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       for (const mutation of mutations) {
         // 忽略页面普通 DOM 更新；只在悬浮节点被移除/挪出 body 时再挂回。
         // 填充、表单校验、SPA 渲染常会新增节点，旧逻辑会误触发重挂导致闪烁。
@@ -2654,6 +2989,9 @@
     floatUi.observedBody = document.body;
 
     const documentObserver = new MutationObserver(() => {
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       if (floatUi && document.body && floatUi.observedBody !== document.body) {
         scheduleReattach(0);
       }
@@ -2662,6 +3000,9 @@
     floatUi.documentObserver = documentObserver;
 
     const onVisibilityChange = () => {
+      if (!ensureExtensionContextAlive()) {
+        return;
+      }
       if (document.visibilityState === 'visible') {
         reattachIfMissing();
         syncLockedScrollPosition();
@@ -2704,20 +3045,21 @@
    */
   function matchesFloatSitePattern(rawUrl, pattern) {
     if (!rawUrl || !pattern) return false;
-    const p = String(pattern).trim();
+    // L23：域名大小写不敏感，模式统一转小写（`*.Example.com`、`HTTPS://…` 都能命中）。
+    const p = String(pattern).trim().toLowerCase();
     if (!p) return false;
 
     // 完整 origin 精确匹配
-    if (p.startsWith('http://') || p.startsWith('https://')) {
+    if (/^https?:\/\//i.test(p)) {
       try {
         const patternOrigin = new URL(p).origin;
         let origin;
-        try { origin = new URL(rawUrl).origin; } catch { origin = rawUrl; }
+        try { origin = new URL(rawUrl).origin; } catch { origin = String(rawUrl).toLowerCase(); }
         return patternOrigin === origin;
       } catch { return false; }
     }
 
-    const hostname = extractFloatHostname(rawUrl);
+    const hostname = extractFloatHostname(rawUrl).toLowerCase();
     if (!hostname) return false;
 
     // 通配符匹配
@@ -2728,7 +3070,7 @@
     }
 
     // 关键词匹配
-    return hostname.toLowerCase().includes(p.toLowerCase());
+    return hostname.includes(p);
   }
 
   function matchesAnyFloatSitePattern(rawUrl, patterns) {
@@ -2760,19 +3102,83 @@
     return true;
   }
 
+  // L20：focusin 在同源 iframe 内不会冒泡到顶层 document，因此对每个可访问文档单独监听；
+  // 已绑定的文档记在集合里避免重复绑定，teardown 时逐个解绑。
+  // 后加载的同源 iframe 通过各文档上捕获阶段的 load 事件补绑（iframe 的 load 不冒泡，
+  // 但捕获阶段仍会经过其所在文档）。
+  const focusTrackedDocuments = new Set();
+
+  function bindFocusTrackingToDocument(targetDocument) {
+    if (!targetDocument || focusTrackedDocuments.has(targetDocument)) {
+      return;
+    }
+    try {
+      targetDocument.addEventListener('focusin', handleDocumentFocusIn, true);
+      targetDocument.addEventListener('load', handleTrackedDocumentLoad, true);
+      focusTrackedDocuments.add(targetDocument);
+    } catch {
+      // 文档已卸载或不可访问时跳过。
+    }
+  }
+
+  function unbindFocusTrackingFromDocument(targetDocument) {
+    try {
+      targetDocument.removeEventListener('focusin', handleDocumentFocusIn, true);
+      targetDocument.removeEventListener('load', handleTrackedDocumentLoad, true);
+    } catch {
+      // 文档已卸载时忽略。
+    }
+    focusTrackedDocuments.delete(targetDocument);
+  }
+
+  function handleTrackedDocumentLoad(event) {
+    const frame = event.target;
+    if (!focusTrackingBound || String(frame?.tagName || '').toLowerCase() !== 'iframe') {
+      return;
+    }
+    if (!ensureExtensionContextAlive()) {
+      return;
+    }
+    // 顺带清理已被替换 / 卸载的旧文档，避免集合无限增长。
+    focusTrackedDocuments.forEach((trackedDocument) => {
+      if (trackedDocument !== document && !trackedDocument.defaultView) {
+        unbindFocusTrackingFromDocument(trackedDocument);
+      }
+    });
+    let childDocument = null;
+    try {
+      childDocument = frame.contentDocument;
+    } catch {
+      childDocument = null;
+    }
+    if (!childDocument) {
+      return;
+    }
+    const roots = [];
+    collectSearchRoots(childDocument, roots, new Set([childDocument]));
+    roots.filter((root) => root.nodeType === Node.DOCUMENT_NODE).forEach(bindFocusTrackingToDocument);
+  }
+
   function bindFocusTracking() {
     if (focusTrackingBound || pageToolsDisposed) {
       return;
     }
-    document.addEventListener('focusin', handleDocumentFocusIn, true);
     focusTrackingBound = true;
+    let documents = [document];
+    try {
+      documents = getAccessibleDocuments();
+    } catch {
+      // 扫描失败时至少保证顶层文档有追踪。
+    }
+    bindFocusTrackingToDocument(document);
+    documents.forEach(bindFocusTrackingToDocument);
   }
 
   function unbindFocusTracking() {
     if (!focusTrackingBound) {
       return;
     }
-    document.removeEventListener('focusin', handleDocumentFocusIn, true);
+    Array.from(focusTrackedDocuments).forEach(unbindFocusTrackingFromDocument);
     focusTrackingBound = false;
   }
 
@@ -2858,13 +3264,21 @@
   }
 
   function handleDocumentFocusIn(event) {
-    if (isEditableElement(event.target)) {
-      lastFocusedElement = event.target;
+    if (!ensureExtensionContextAlive()) {
+      return;
+    }
+    // L20：open Shadow DOM 里的输入框在文档层会被重定向为宿主，取 composedPath 的首项才是真实目标。
+    const target = normalizeEditableTarget(event.composedPath?.()[0] || event.target);
+    if (isEditableElement(target)) {
+      lastFocusedElement = target;
     }
   }
 
   function handleStorageChanged(changes, area) {
     if (pageToolsDisposed || area !== 'local') {
+      return;
+    }
+    if (!ensureExtensionContextAlive()) {
       return;
     }
 
@@ -2995,8 +3409,9 @@
       if (message?.type === 'get-fill-context') {
         await ensureFillRulesLoaded();
         const context = getFillContext();
+        // kinds 只报本页实际解析到的字段（L25 子集匹配），popup 据此决定生成/复用哪些资料。
         sendResponse(context.error ? { ok: false, error: context.error }
-          : { ok: true, mode: context.mode, kinds: Object.keys(context.rules), origin: window.location.origin });
+          : { ok: true, mode: context.mode, kinds: context.targets ? [...context.targets.keys()] : Object.keys(context.rules), origin: window.location.origin });
         return;
       }
 
@@ -3049,11 +3464,20 @@
     teardownFloatWindow();
     unbindFocusTracking();
     lastFocusedElement = null;
-    if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.removeListener) {
-      chrome.storage.onChanged.removeListener(handleStorageChanged);
+    // 上下文失效（L21）时访问 chrome.* 可能直接抛 “Extension context invalidated”。
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage?.onChanged?.removeListener) {
+        chrome.storage.onChanged.removeListener(handleStorageChanged);
+      }
+    } catch {
+      // 忽略。
     }
-    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.removeListener) {
-      chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage?.removeListener) {
+        chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+      }
+    } catch {
+      // 忽略。
     }
     if (window.__floatMailPageToolsController === pageToolsController) {
       delete window.__floatMailPageToolsController;

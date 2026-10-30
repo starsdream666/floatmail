@@ -52,10 +52,11 @@ const CONST_NAMES = [
 ];
 
 const FUNCTION_NAMES = [
-  'getCodePrecedingContext', 'normalizeAnchorText', 'hasVerifyKeywordNearby',
+  'getCodePrecedingContext', 'normalizeAnchorText', 'stripInsightCodeSpaces', 'hasVerifyKeywordNearby',
   'collectCodeCandidates', 'collectLinkCandidates', 'rankInsightCandidates',
   'trimUrlPunctuation', 'formatInsightLinkLabel', 'normalizeTranslationSource',
-  'mergeInsightValues', 'buildLocalInsightResult', 'parseMailInsightJson'
+  'mergeInsightValues', 'buildLocalInsightResult', 'parseMailInsightJson',
+  'verifyCodesAgainstSource', 'normalizeAiInsightCode'
 ];
 
 function engine() {
@@ -128,6 +129,35 @@ test('带分隔符的验证码保留原文分组', () => {
   const scope = engine();
   const result = codeRank(scope, '验证码：123-456');
   assert.equal(result[0].value, '123-456');
+});
+
+// ── 空格剥离：只去半角空格，其它字符一律保留 ─────────────────────────
+test('分组空格的验证码被提取时会去掉空格', () => {
+  const scope = engine();
+  const result = codeRank(scope, '你的验证码是 12 34 56，请在 10 分钟内输入');
+  assert.deepEqual(plain(values(result)), ['123456']);
+});
+
+test('连字符与大小写不参与剥离，只去半角空格', () => {
+  const scope = engine();
+  assert.equal(scope.stripInsightCodeSpaces('123-456'), '123-456');
+  assert.equal(scope.stripInsightCodeSpaces('AB-12-CD'), 'AB-12-CD');
+  assert.equal(scope.stripInsightCodeSpaces('AbC123'), 'AbC123');
+  assert.equal(scope.stripInsightCodeSpaces('5 5 7 4 1 1'), '557411');
+  // 制表符/换行不是半角空格，按“其它字符”保留
+  assert.equal(scope.stripInsightCodeSpaces('12\t34'), '12\t34');
+});
+
+test('AI 返回的分组验证码同样去掉空格', () => {
+  const scope = engine();
+  assert.equal(scope.normalizeAiInsightCode('12 34 56'), '123456');
+  assert.equal(scope.normalizeAiInsightCode('123-456'), '123-456');
+});
+
+test('verifyCodesAgainstSource 在原文含分组空格时回填去空格值', () => {
+  const scope = engine();
+  const verified = scope.verifyCodesAgainstSource(['123456'], 'Your code is 12 34 56');
+  assert.deepEqual(plain(verified), ['123456']);
 });
 
 test('紧贴 Code: 提示词的十六进制串正常入选', () => {

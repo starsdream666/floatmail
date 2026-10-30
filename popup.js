@@ -236,6 +236,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // ===================== 统一设置页元素 =====================
   const settingsPage = document.getElementById('settings-page');
+  const aiSettingsPage = document.getElementById('ai-settings-page');
   const configIOPage = document.getElementById('config-io-page');
   const settingsConfigIOSlot = document.getElementById('settings-config-io-slot');
   const configIOPageSlot = document.getElementById('config-io-page-slot');
@@ -248,6 +249,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const moeConnectionMessage = document.getElementById('moe-connection-message');
   const saveSettingsBtn = document.getElementById('save-settings');
   const settingsMessage = document.getElementById('settings-message');
+  const saveAiSettingsBtn = document.getElementById('save-ai-settings');
+  const aiSettingsMessage = document.getElementById('ai-settings-message');
   const floatToggle = document.getElementById('float-toggle');
   const defaultTabSelect = document.getElementById('default-tab-select');
   const themePicker = document.getElementById('theme-picker');
@@ -265,11 +268,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   const translationModelInput = document.getElementById('translation-model');
   const translationTargetLanguageInput = document.getElementById('translation-target-language');
   const mailInsightApiModeSelect = document.getElementById('mail-insight-api-mode');
+  const mailInsightExtractionModeSelect = document.getElementById('mail-insight-extraction-mode');
+  const insightJudgeSettings = document.getElementById('mail-insight-judge-settings');
+  const insightJudgeBackendSelect = document.getElementById('mail-insight-judge-backend');
+  const clefSettingsFields = document.getElementById('clef-settings-fields');
+  const clefAccountsList = document.getElementById('clef-accounts-list');
+  const clefAddAccountButton = document.getElementById('clef-add-account');
+  const clefModelSelect = document.getElementById('clef-model');
+  const aiConnectionTester = window.PopupAiConnectionTest.createTester({
+    requestChatCompletion,
+    request: (url, init) => fetchWithTimeout(url, init, AI_REQUEST_TIMEOUT_MS),
+    clef: window.PopupClefInsight,
+    parseInsight: parseMailInsightJson
+  });
+  const clefAccountsEditor = window.PopupClefAccounts.createEditor(clefAccountsList, clefAddAccountButton, {
+    getModel: () => clefModelSelect.value || 'clef',
+    testAccount: (account, model) => aiConnectionTester.testClefAccount(account, model)
+  });
   const mailInsightCustomApiFields = document.getElementById('mail-insight-custom-api-fields');
   const mailInsightApiBaseInput = document.getElementById('mail-insight-api-base');
   const mailInsightApiKeyInput = document.getElementById('mail-insight-api-key');
   const mailInsightModelInput = document.getElementById('mail-insight-model');
-  const jevEnabledToggle = document.getElementById('jev-enabled-toggle');
   const jevSettingsFields = document.getElementById('jev-settings-fields');
   const jevApiBaseInput = document.getElementById('jev-api-base');
   const jevApiKeyInput = document.getElementById('jev-api-key');
@@ -280,6 +299,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const translationModelSelect = document.getElementById('translation-model-select');
   const fetchInsightModelsBtn = document.getElementById('fetch-insight-models-btn');
   const mailInsightModelSelect = document.getElementById('mail-insight-model-select');
+  const testTranslationApiBtn = document.getElementById('test-translation-api-btn');
+  const testInsightApiBtn = document.getElementById('test-insight-api-btn');
+  const testJevApiBtn = document.getElementById('test-jev-api-btn');
+  const testClefAccountsBtn = document.getElementById('test-clef-accounts-btn');
   const generatedResultAutoCloseSecondsInput = document.getElementById('generated-result-auto-close-seconds');
   const siteAccessModeSelect = document.getElementById('site-access-mode');
   const currentSiteOriginDiv = document.getElementById('current-site-origin');
@@ -303,17 +326,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightApiMode = normalizeMailInsightApiMode(mailInsightApiModeSelect.value);
     syncMailInsightApiFieldsVisibility();
   });
-  // Jev 开关：只切换字段可见性，不触发任何网络请求。
-  if (jevEnabledToggle) {
-    jevEnabledToggle.addEventListener('change', () => {
-      jevEnabled = jevEnabledToggle.checked === true;
+  if (mailInsightExtractionModeSelect) {
+    mailInsightExtractionModeSelect.addEventListener('change', () => {
+      mailInsightExtractionMode = normalizeInsightExtractionMode(mailInsightExtractionModeSelect.value);
       syncJevSettingsVisibility();
     });
+  }
+  // 切换字段可见性；保存后由 storage.onChanged 重新提取当前邮件。
+  if (insightJudgeBackendSelect) {
+    insightJudgeBackendSelect.addEventListener('change', () => {
+      mailInsightJudgeBackend = normalizeInsightJudgeBackend(insightJudgeBackendSelect.value);
+      jevEnabled = mailInsightJudgeBackend === 'jev';
+      syncJevSettingsVisibility();
+    });
+  }
   if (jevRecallModeToggle) {
     jevRecallModeToggle.addEventListener('change', () => {
       jevRecallMode = jevRecallModeToggle.checked === true;
     });
-  }
   }
   const VERIFY_INTERVAL_PRESETS = Object.freeze([
     Object.freeze({ key: '0', value: 0, unit: 'minutes' }),
@@ -359,6 +389,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const MAIL_INSIGHT_API_BASE_KEY = 'mailInsightApiBase';
   const MAIL_INSIGHT_API_KEY_KEY = 'mailInsightApiKey';
   const MAIL_INSIGHT_MODEL_KEY = 'mailInsightModel';
+  const MAIL_INSIGHT_EXTRACTION_MODE_KEY = 'mailInsightExtractionMode';
+  const MAIL_INSIGHT_JUDGE_BACKEND_KEY = 'mailInsightJudgeBackend';
+  const CLEF_ACCOUNT_ID_KEY = 'clefAccountId';
+  const CLEF_ACCOUNTS_KEY = 'clefAccounts';
+  const CLEF_API_TOKEN_KEY = 'clefApiToken';
+  const CLEF_MODEL_KEY = 'clefModel';
   // Jev 判定增强（可选）：不配置时验证码提取走本地规则 + 上面的 AI 提取，功能完全不受影响。
   const JEV_ENABLED_KEY = 'jevEnabled';
   const JEV_API_BASE_KEY = 'jevApiBase';
@@ -369,6 +405,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   // new-api 因为 Jev 是名为 typesafe 的 task 插件，路径多一层前缀。
   const DEFAULT_JEV_ENDPOINT_PATH = '/typesafe/v1/systemone';
   const DEFAULT_JEV_MODEL = 'jev-latest';
+  // 首次请求失败后最多再换 3 个未尝试过的密钥，总计最多尝试 4 个。
+  const JEV_MAX_KEY_RETRIES = 3;
   // 多选判定阈值：实测真链接 noul 0.75~0.79、噪声最高 0.04，中间留有很宽的安全空档。
   const JEV_LINK_THRESHOLD = 0.5;
   // 候选池上限。放宽容纳上限是为了配合「召回优先」：阈值降下来后候选变多，
@@ -391,6 +429,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const INSIGHT_LINK_MIN_SCORE = 2;
   const INTERACTIVE_REQUEST_TIMEOUT_MS = 15000;
   const AI_REQUEST_TIMEOUT_MS = 45000;
+  // 翻译按段请求的正文上限。index-translate 网关默认只给约 2048 token 的输出预算：
+  // 整封长邮件一次请求要么被网关约 10 秒超时打断（504），要么译文被硬截断；
+  // 按 2000 字符分段后每段都能拿到完整译文（实测每段输出约 1500 字，finish_reason=stop）。
+  const TRANSLATION_CHUNK_MAX_CHARS = 2000;
   const GENERATED_PROFILE_KEY = 'generatedProfile';
   const GENERATED_HISTORY_KINDS = new Set(['password', 'name', 'birthday', 'age', 'address']);
   const PAGE_FILL_FIELD_DEFS = [
@@ -407,14 +449,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   ];
   let currentTheme = 'ocean-blue';
   let activeTab = 'temp-email'; // 当前激活的选项卡
+  // L9：显式声明，避免依赖非严格模式的隐式全局（初始化前被 getter 读取会抛 ReferenceError）。
+  let generatedResultAutoCloseSeconds = DEFAULT_GENERATED_RESULT_AUTO_CLOSE_SECONDS;
 
+  // L7：超时同时覆盖「响应头」与「响应体读取」。
+  // 以前计时器在 fetch 返回头后就在 finally 里清掉，网关发完头就挂住时 res.json() 会永远等待。
+  // 这里在同一个计时器/AbortController 约束下先把 body 完整读成字节，再清计时器，
+  // 然后返回一个内容相同的新 Response，调用方仍可照常 res.ok / res.status / await res.json()。
   async function fetchWithTimeout(url, init = {}, timeoutMs = INTERACTIVE_REQUEST_TIMEOUT_MS) {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(url, {
+      const res = await fetch(url, {
         ...init,
         signal: controller.signal
+      });
+      // 不透明响应（status 0）等 Response 构造器不接受的状态码，原样返回。
+      // DELETE / HEAD 调用方只看 res.ok，不预读 body：保持「收到 2xx 响应头即成功」的
+      // 删除判定，避免 body 读取中断把已成功的删除误报为失败。
+      const method = String(init?.method || 'GET').toUpperCase();
+      if (!(res.status >= 200 && res.status <= 599) || method === 'DELETE' || method === 'HEAD') {
+        return res;
+      }
+      const bodyBuffer = await res.arrayBuffer();
+      // 这些状态码规范上不允许带响应体，构造时必须传 null。
+      const nullBodyStatus = [204, 205, 304].includes(res.status);
+      return new Response(nullBodyStatus ? null : bodyBuffer, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers
       });
     } catch (error) {
       if (error?.name === 'AbortError') {
@@ -422,7 +485,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       throw error;
     } finally {
-      window.clearTimeout(timer);
+      clearTimeout(timer);
     }
   }
 
@@ -470,9 +533,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   let mailInsightApiBase = DEFAULT_TRANSLATION_API_BASE;
   let mailInsightApiKey = '';
   let mailInsightModel = '';
+  let mailInsightExtractionMode = 'hybrid';
+  let mailInsightJudgeBackend = 'none';
+  let clefAccountId = '';
+  let clefApiToken = '';
+  let clefAccounts = null;
+  let clefModel = 'clef';
   // Jev 为可选项：enabled 为 false 时下面这些值完全不参与任何请求。
   let jevEnabled = false;
   let jevApiBase = '';
+  // 沿用 jevApiKey 存储键兼容旧配置；新值为每行一个密钥的规范化字符串。
   let jevApiKey = '';
   let jevEndpointPath = DEFAULT_JEV_ENDPOINT_PATH;
   let jevModel = DEFAULT_JEV_MODEL;
@@ -500,6 +570,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     localStorageApi.set(items, resolve);
+  });
+  const storageRemove = (keys) => new Promise((resolve) => {
+    const localStorageApi = globalThis.chrome?.storage?.local;
+    if (!localStorageApi || typeof localStorageApi.remove !== 'function') {
+      resolve();
+      return;
+    }
+    localStorageApi.remove(keys, resolve);
   });
   const tabsQuery = (query) => new Promise((resolve) => chrome.tabs.query(query, resolve));
 
@@ -1005,7 +1083,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (error) {
       button.innerHTML = originalHTML;
       button.disabled = false;
-      showMessage(fillProfileMessage, `填充失败: ${error.message}`, 'error');
+      // L26：生成历史位于独立的「生成历史」页，tools 页的 fill-profile-message 在这里不可见，
+      // 改用全局 toast 提示失败原因。
+      showToast(`填充失败: ${error.message}`, 'error');
     }
   }
   function formatBirthdayResult(dateStr) {
@@ -1167,20 +1247,41 @@ document.addEventListener('DOMContentLoaded', async () => {
   function createDomainLoader({ select, createButton, messageElement, fetchDomains }) {
     let loaded = false;
     let loadPromise = null;
+    let loadPromiseForced = false;
     let generation = 0;
+
+    // L8：旧代次的请求被丢弃时，如果没有更新的请求接管界面，
+    // 就把下拉框恢复为可操作的提示状态，不能一直卡在「加载中...」且禁用。
+    function restoreIdleUiIfOrphaned(requestPromise) {
+      if (loadPromise && loadPromise !== requestPromise) {
+        return;
+      }
+      select.innerHTML = '<option value="">域名未加载，请点击刷新</option>';
+      select.disabled = false;
+      createButton.disabled = false;
+    }
 
     async function load(options = {}) {
       const forceRefresh = options.forceRefresh === true;
       if (!forceRefresh && loaded) return;
-      if (loadPromise) return loadPromise;
+      // L8：非强制请求可以复用在途请求；强制刷新不能复用在途的非强制请求，
+      // 否则「刷新」按钮会拿到旧缓存结果。这里让旧请求作废（代次 +1）后重新发起。
+      if (loadPromise && (!forceRefresh || loadPromiseForced)) return loadPromise;
+      if (loadPromise) {
+        generation += 1;
+      }
 
       const requestGeneration = generation;
-      const requestPromise = (async () => {
+      let requestPromise = null;
+      requestPromise = (async () => {
         select.disabled = true;
         select.innerHTML = '<option value="">加载中...</option>';
         createButton.disabled = true;
         const domains = await fetchDomains(forceRefresh);
-        if (requestGeneration !== generation) return;
+        if (requestGeneration !== generation) {
+          restoreIdleUiIfOrphaned(requestPromise);
+          return;
+        }
         select.innerHTML = '';
         if (domains.length === 0) {
           select.innerHTML = '<option value="">无可用域名</option>';
@@ -1197,13 +1298,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         createButton.disabled = false;
         loaded = true;
       })().catch((error) => {
-        if (requestGeneration !== generation) return;
+        if (requestGeneration !== generation) {
+          restoreIdleUiIfOrphaned(requestPromise);
+          return;
+        }
         select.innerHTML = '<option value="">加载失败</option>';
         showMessage(messageElement, `获取域名失败: ${error.message}`, 'error');
       }).finally(() => {
-        if (loadPromise === requestPromise) loadPromise = null;
+        if (loadPromise === requestPromise) {
+          loadPromise = null;
+          loadPromiseForced = false;
+        }
       });
       loadPromise = requestPromise;
+      loadPromiseForced = forceRefresh;
       return loadPromise;
     }
 
@@ -1213,6 +1321,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         generation += 1;
         loaded = false;
         loadPromise = null;
+        loadPromiseForced = false;
       }
     };
   }
@@ -1396,8 +1505,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   }, true);
 
   // ===================== 选项卡切换 =====================
-  const allPages = [fastFillPage, tempPage, moePage, bookmarksPage, toolsPage, generatedHistoryPage, fillRulesPage, themesPage, settingsPage, configIOPage];
-  const MAIN_TABS = new Set(['fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools', 'generated-history', 'fill-rules', 'themes', 'settings', 'config-io']);
+  const allPages = [fastFillPage, tempPage, moePage, bookmarksPage, toolsPage, generatedHistoryPage, fillRulesPage, themesPage, aiSettingsPage, settingsPage, configIOPage];
+  const MAIN_TABS = new Set(['fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools', 'generated-history', 'fill-rules', 'themes', 'ai-settings', 'settings', 'config-io']);
 
   function normalizeTabForLayout(tab) {
     const fallbackTab = 'temp-email';
@@ -1546,6 +1655,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       'generated-history': generatedHistoryPage,
       'fill-rules': fillRulesPage,
       'themes': themesPage,
+      'ai-settings': aiSettingsPage,
       'settings': settingsPage,
       'config-io': configIOPage
     };
@@ -1613,7 +1723,8 @@ document.addEventListener('DOMContentLoaded', async () => {
    */
   function matchesSitePattern(rawUrl, pattern) {
     if (!rawUrl || !pattern) return false;
-    const p = String(pattern).trim();
+    // L23：域名大小写不敏感，模式统一转小写后再匹配（协议前缀也不区分大小写）。
+    const p = String(pattern).trim().toLowerCase();
     if (!p) return false;
 
     // 完整 origin 精确匹配
@@ -1621,12 +1732,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       try {
         const patternOrigin = new URL(p).origin;
         let origin;
-        try { origin = new URL(rawUrl).origin; } catch { origin = rawUrl; }
+        try { origin = new URL(rawUrl).origin; } catch { origin = String(rawUrl).toLowerCase(); }
         return patternOrigin === origin;
       } catch { return false; }
     }
 
-    const hostname = extractHostname(rawUrl);
+    const hostname = extractHostname(rawUrl).toLowerCase();
     if (!hostname) return false;
 
     // 通配符匹配
@@ -1637,7 +1748,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 关键词匹配（忽略大小写）
-    return hostname.toLowerCase().includes(p.toLowerCase());
+    return hostname.includes(p);
   }
 
   function matchesAnySitePattern(rawUrl, patterns) {
@@ -2059,6 +2170,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   const FAST_FILL_HISTORY_KEY = 'fastFillHistory';
   const FAST_FILL_NAME_REGION_KEY = 'fastFillNameRegion';
   const FAST_FILL_NAME_GENDER_KEY = 'fastFillNameGender';
+  // L32：快填历史保存上限。登录复用要在全部历史里找本站最新一条，
+  // 不能只保留最近 3 条；界面上仍只展示最近几条。
+  const FAST_FILL_HISTORY_MAX = 50;
+  const FAST_FILL_HISTORY_DISPLAY_COUNT = 3;
   let fastFillEmailSource = 'temp';
   let fastFillDomainMode = 'random';
   let fastFillDomainSpecific = '';
@@ -2091,9 +2206,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const sourceDomains = fastFillEmailSource === 'moe' ? fastFillMoeDomains : fastFillTempDomains;
     if (!sourceDomains.length) return [];
     if (fastFillDomainMode === 'specific') {
-      return fastFillDomainSpecific ? [fastFillDomainSpecific] : [];
+      // M13：指定域名必须属于当前来源，否则切换来源后会拿别的服务的域名去创建。
+      return fastFillDomainSpecific && sourceDomains.includes(fastFillDomainSpecific)
+        ? [fastFillDomainSpecific]
+        : [];
     }
     if (fastFillDomainMode === 'whitelist' && fastFillDomainWhitelist.length) {
+      // L28：白名单可能同时包含两个来源的条目，这里只取属于当前来源的部分。
       return fastFillDomainWhitelist.filter(d => sourceDomains.includes(d));
     }
     if (fastFillDomainMode === 'blacklist') {
@@ -2161,7 +2280,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function fastFillRefreshDomainUI() {
     const sourceDomains = fastFillEmailSource === 'moe' ? fastFillMoeDomains : fastFillTempDomains;
-    const available = getFastFillAvailableDomains();
 
     // Update domain select
     fastFillDomainSelect.innerHTML = '';
@@ -2175,7 +2293,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (d === fastFillDomainSpecific) opt.selected = true;
         fastFillDomainSelect.appendChild(opt);
       });
+      // M13：当前记录的指定域名不在本来源列表里（首次进入 / 切换了来源）时，
+      // 下拉框实际显示的是第一项；把状态同步成显示值并保存，保证「看到的」就是「用到的」。
+      if (fastFillDomainMode === 'specific' && !sourceDomains.includes(fastFillDomainSpecific) && fastFillDomainSelect.value) {
+        fastFillDomainSpecific = fastFillDomainSelect.value;
+        saveFastFillConfig();
+      }
     }
+    const available = getFastFillAvailableDomains();
 
     // Update whitelist checklist
     renderDomainChecklist(fastFillDomainWhitelistList, sourceDomains, fastFillDomainWhitelist, (selected) => {
@@ -2218,11 +2343,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       cb.type = 'checkbox';
       cb.checked = selectedSet.has(d.toLowerCase());
       cb.addEventListener('change', () => {
-        const next = allDomains.filter(dom => {
-          if (dom === d) return cb.checked;
-          return selectedSet.has(dom.toLowerCase());
-        });
-        onChange(next);
+        // L28：只增删当前这一项，保留列表里的其他条目（包括另一来源的域名），
+        // 不能按当前来源的域名列表整体重建，否则切换来源后勾选会清掉另一来源的设置。
+        const lower = d.toLowerCase();
+        const kept = (selectedList || []).filter(item => String(item).toLowerCase() !== lower);
+        onChange(cb.checked ? [...kept, d] : kept);
       });
       label.appendChild(cb);
       label.appendChild(document.createTextNode(d));
@@ -2255,13 +2380,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       fastFillGenerateBtn.disabled = true;
     } else {
       fastFillRulesSummary.textContent = `注册：${registerKinds.join('、') || '未绑定'}；登录：${loginKinds.join('、') || '未绑定'}。填入时自动匹配，登录按绑定字段复用本站历史资料；验证码请使用本次有效值。`;
-      fastFillGenerateBtn.disabled = loginKinds.length === 0 && getFastFillAvailableDomains().length === 0;
+      // M14：只有注册规则绑定了邮箱字段时才需要创建邮箱，也才需要可用域名；
+      // 只填密码/姓名等字段的站点不应因为没有域名而被禁用。
+      const registerNeedsEmail = Boolean(registerRules.email?.selector);
+      fastFillGenerateBtn.disabled = loginKinds.length === 0
+        && registerNeedsEmail
+        && getFastFillAvailableDomains().length === 0;
     }
   }
 
   function saveFastFillHistory(entry) {
     fastFillHistory.unshift(entry);
-    if (fastFillHistory.length > 3) fastFillHistory = fastFillHistory.slice(0, 3);
+    if (fastFillHistory.length > FAST_FILL_HISTORY_MAX) fastFillHistory = fastFillHistory.slice(0, FAST_FILL_HISTORY_MAX);
     storageSet({ [FAST_FILL_HISTORY_KEY]: fastFillHistory }).catch(() => {});
     renderFastFillHistory();
   }
@@ -2273,7 +2403,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     fastFillHistoryList.innerHTML = '';
-    fastFillHistory.forEach((entry) => {
+    // L32：历史保留更多条供登录复用查找，界面只展示最近几条。
+    fastFillHistory.slice(0, FAST_FILL_HISTORY_DISPLAY_COUNT).forEach((entry) => {
       const item = document.createElement('div');
       item.className = 'fast-fill-history-item';
 
@@ -2353,7 +2484,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!email) return;
     const [name, domain] = email.split('@');
     if (!name || !domain) return;
-    const expiryMs = entry.expiryMs || 0;
     const source = entry.emailSource || 'temp';
 
     if (source === 'moe') {
@@ -2375,10 +2505,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Recreate MoeMail email
       try {
+        // H3：0 表示「永久」，只有缺失/非法时才兜底为 1 天，不能用 || 把 0 吞掉。
+        const parsedExpiry = Number.parseInt(entry.expiryMs, 10);
+        const moeExpiryTime = Number.isNaN(parsedExpiry) ? 86400000 : parsedExpiry;
         const createRes = await moeFetch(`${moeApiUrl}/api/emails/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey },
-          body: JSON.stringify({ name, domain, expiryTime: expiryMs || 86400000 })
+          body: JSON.stringify({ name, domain, expiryTime: moeExpiryTime })
         });
         if (!createRes.ok) {
           const errData = await createRes.json().catch(() => ({}));
@@ -2394,6 +2527,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           setTimeout(() => { moeOpenInbox(found); }, 400);
           return;
         }
+        // L32：重建成功但列表里暂时找不到（列表加载失败或上游尚未返回）时给出可见提示。
+        showMessage(fastFillMessage, `已重新创建 ${newAddr}，但暂未在 Moe Mail 列表中找到，请稍后到 Moe Mail 页面刷新查看`, 'info');
       } catch (e) {
         showMessage(fastFillMessage, `重新创建失败: ${e.message}`, 'error');
         return;
@@ -2495,8 +2630,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       return { ok: false, errorKind: 'no-rules' };
     }
 
-    const domain = pickRandomDomain();
-    if (!domain) {
+    // L27：在生成开始时固定邮箱来源，创建、写历史、结果区「收件箱 →」都用同一个来源，
+    // 不受生成过程中/生成后用户切换来源下拉框的影响。
+    const emailSource = fastFillEmailSource === 'moe' ? 'moe' : 'temp';
+    // H3：「永久」选项的值是 "0"，只有解析失败（NaN）才兜底为 1 天。
+    const parsedMoeExpiry = Number.parseInt(fastFillMoeExpiry.value, 10);
+    const moeExpiryTime = Number.isNaN(parsedMoeExpiry) ? 86400000 : parsedMoeExpiry;
+    const tempExpiryMs = Number.parseInt(fastFillTempExpiry.value, 10) || 0;
+
+    // M14：只有规则里绑定了邮箱字段才需要创建邮箱，也才需要可用域名；
+    // 只填密码/姓名等字段时不应因为没有域名（或未配置邮箱后端）而无法使用。
+    const needsEmail = neededKinds.includes('email');
+    const domain = needsEmail ? pickRandomDomain() : null;
+    if (needsEmail && !domain) {
       showMessage(fastFillMessage, '无可用域名，请检查邮箱配置', 'error');
       return { ok: false, errorKind: 'no-domain' };
     }
@@ -2512,7 +2658,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       // Generate email first if needed
-      if (neededKinds.includes('email')) {
+      if (needsEmail) {
         const name = (() => {
           const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
           let n = '';
@@ -2521,8 +2667,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         })();
 
         let emailAddr = '';
-        if (fastFillEmailSource === 'moe') {
-          const expiryTime = parseInt(fastFillMoeExpiry.value) || 86400000;
+        if (emailSource === 'moe') {
+          const expiryTime = moeExpiryTime;
           const res = await moeFetch(`${moeApiUrl}/api/emails/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-API-Key': moeApiKey },
@@ -2554,11 +2700,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!emailAddr) throw new Error('未能获取邮箱地址');
         generatedFields.email = emailAddr;
         updateGeneratedProfile({ email: emailAddr });
-        if (fastFillEmailSource !== 'moe' && typeof addHistory === 'function') {
-          const tempExpiryMs = parseInt(fastFillTempExpiry.value) || 0;
+        if (emailSource !== 'moe' && typeof addHistory === 'function') {
           addHistory(emailAddr, tempExpiryMs);
         }
-        resultItems.push({ kind: 'email', label: '邮箱', value: emailAddr, isEmail: true });
+        resultItems.push({ kind: 'email', label: '邮箱', value: emailAddr, isEmail: true, emailSource });
       }
 
       // Generate password if needed
@@ -2635,10 +2780,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         // origin 供页面内的收件悬浮球判断「这次快填是否发生在当前站点」。
         // 旧条目没有该字段，content.js 会视为不匹配而不显示收件球。
         origin: currentSiteOrigin,
-        emailSource: fastFillEmailSource,
-        expiryMs: fastFillEmailSource === 'moe'
-          ? (parseInt(fastFillMoeExpiry.value) || 86400000)
-          : (parseInt(fastFillTempExpiry.value) || 0)
+        emailSource,
+        expiryMs: emailSource === 'moe' ? moeExpiryTime : tempExpiryMs
       });
 
       // Render result
@@ -2668,7 +2811,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           inboxBtn.className = 'btn primary-btn fast-fill-inbox-btn';
           inboxBtn.textContent = '收件箱 →';
           inboxBtn.addEventListener('click', async () => {
-            if (fastFillEmailSource === 'moe') {
+            // L27：按生成时记录的来源跳转，而不是点击时下拉框的当前值。
+            if (item.emailSource === 'moe') {
               switchTab('moe-mail');
               // Load emails then open the inbox for the newly created address
               try {
@@ -2774,6 +2918,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     fillProfileBtn.classList.toggle('hidden', !hasFillData);
   }
 
+  // L26：收件箱里的「填入验证码」失败提示原本写到 tools 页的 fill-profile-message，
+  // 在收件箱页根本看不到。这里给渲染模块传一个占位的消息目标，
+  // 由包装后的 showMessage 把写到该目标的提示转成全局 toast；其他目标仍按原样写入。
+  const mailInsightMessageTarget = { isToastTarget: true };
   const {
     htmlToText,
     isStubPlainText,
@@ -2791,8 +2939,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     copyToClipboard,
     sendToActivePage,
     bindFillPreview,
-    showMessage,
-    fillProfileMessage
+    showMessage: (element, text, type) => {
+      if (element === mailInsightMessageTarget || !element) {
+        showToast(text, type);
+        return;
+      }
+      showMessage(element, text, type);
+    },
+    fillProfileMessage: mailInsightMessageTarget
   });
 
   function normalizeTranslationSetting(value, fallback = '') {
@@ -2838,23 +2992,164 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
+  function readTranslationTestConfig() {
+    return { apiBase: translationApiBaseInput.value.trim(), apiKey: translationApiKeyInput.value.trim(),
+      model: translationModelInput.value.trim() };
+  }
+
+  function readInsightTestConfig() {
+    if (mailInsightApiModeSelect.value === 'none') throw new Error('请先选择提取 API 来源，再测试连接');
+    return mailInsightApiModeSelect.value === 'custom'
+      ? { apiBase: mailInsightApiBaseInput.value.trim(), apiKey: mailInsightApiKeyInput.value.trim(), model: mailInsightModelInput.value.trim() }
+      : readTranslationTestConfig();
+  }
+
+  function bindAiConnectionTests() {
+    window.PopupAiConnectionTest.bindButton(testTranslationApiBtn, document.getElementById('translation-api-test-message'),
+      readTranslationTestConfig, (config) => aiConnectionTester.testChat(config),
+      [translationApiBaseInput, translationApiKeyInput, translationModelInput, translationModelSelect]);
+    window.PopupAiConnectionTest.bindButton(testInsightApiBtn, document.getElementById('insight-api-test-message'),
+      readInsightTestConfig, (config) => aiConnectionTester.testChat(config, 'insight'),
+      [mailInsightApiModeSelect, mailInsightApiBaseInput, mailInsightApiKeyInput, mailInsightModelInput, mailInsightModelSelect,
+        translationApiBaseInput, translationApiKeyInput, translationModelInput, translationModelSelect]);
+    window.PopupAiConnectionTest.bindButton(testJevApiBtn, document.getElementById('jev-api-test-message'),
+      () => ({ apiBase: jevApiBaseInput.value.trim(), apiKeys: jevApiKeyInput.value,
+        endpointPath: jevEndpointPathInput.value.trim() || DEFAULT_JEV_ENDPOINT_PATH,
+        model: jevModelInput.value.trim() || DEFAULT_JEV_MODEL }),
+      (config) => aiConnectionTester.testJev(config), [jevApiBaseInput, jevApiKeyInput, jevEndpointPathInput, jevModelInput]);
+    window.PopupAiConnectionTest.bindButton(testClefAccountsBtn, document.getElementById('clef-api-test-message'),
+      () => ({ accounts: clefAccountsEditor.getDraftAccounts(), model: clefModelSelect.value || 'clef' }),
+      () => clefAccountsEditor.testAllAccounts(), [clefModelSelect, clefAccountsList, clefAddAccountButton]);
+    clefModelSelect.addEventListener('change', () => clefAccountsEditor.clearStatuses());
+  }
+
   function hasMailInsightConfig() {
     const config = getMailInsightApiConfig();
     return Boolean(config.apiBase && config.apiKey && config.model);
   }
 
+  function normalizeInsightExtractionMode(value) {
+    return ['ai-only', 'ai-judge'].includes(value) ? value : 'hybrid';
+  }
+
+  function usesLocalInsightExtraction() {
+    return mailInsightExtractionMode === 'hybrid';
+  }
+
+  function normalizeInsightJudgeBackend(value, legacyEnabled = false) {
+    return ['none', 'jev', 'clef'].includes(value) ? value : legacyEnabled ? 'jev' : 'none';
+  }
+
+  function getInsightJudgeLabel() {
+    return mailInsightJudgeBackend === 'clef' ? 'Clef' : 'Jev';
+  }
+
+  function getClefConfig() {
+    return {
+      accounts: clefAccounts || [],
+      model: clefModel === 'clef-flash' ? 'clef-flash' : 'clef'
+    };
+  }
+
+  // 初始化、导入和多面板 storage 同步共用，旧 jevEnabled 只在缺少新选择项时迁移。
+  function applyInsightPipelineSettings(values) {
+    if (Object.hasOwn(values, MAIL_INSIGHT_EXTRACTION_MODE_KEY)) {
+      mailInsightExtractionMode = normalizeInsightExtractionMode(values[MAIL_INSIGHT_EXTRACTION_MODE_KEY]);
+    }
+    if (Object.hasOwn(values, MAIL_INSIGHT_JUDGE_BACKEND_KEY) || Object.hasOwn(values, JEV_ENABLED_KEY)) {
+      mailInsightJudgeBackend = normalizeInsightJudgeBackend(values[MAIL_INSIGHT_JUDGE_BACKEND_KEY], values[JEV_ENABLED_KEY] === true);
+      jevEnabled = mailInsightJudgeBackend === 'jev';
+    }
+    if (Object.hasOwn(values, CLEF_ACCOUNT_ID_KEY)) clefAccountId = normalizeTranslationSetting(values[CLEF_ACCOUNT_ID_KEY]);
+    if (Object.hasOwn(values, CLEF_API_TOKEN_KEY)) clefApiToken = normalizeJevApiKeysText(values[CLEF_API_TOKEN_KEY]);
+    const hasAccounts = Object.hasOwn(values, CLEF_ACCOUNTS_KEY);
+    if (hasAccounts || clefAccounts === null) {
+      clefAccounts = window.PopupClefInsight.normalizeConfig(hasAccounts
+        ? { accounts: values[CLEF_ACCOUNTS_KEY] }
+        : { accountId: clefAccountId, apiToken: clefApiToken }).accounts;
+      clefAccountsEditor?.setAccounts(clefAccounts);
+    }
+    if (Object.hasOwn(values, CLEF_MODEL_KEY)) clefModel = values[CLEF_MODEL_KEY] === 'clef-flash' ? 'clef-flash' : 'clef';
+    if (mailInsightExtractionModeSelect) mailInsightExtractionModeSelect.value = mailInsightExtractionMode;
+    if (insightJudgeBackendSelect) insightJudgeBackendSelect.value = mailInsightJudgeBackend;
+    if (clefModelSelect) clefModelSelect.value = clefModel;
+    syncJevSettingsVisibility();
+  }
+
+  function hasInsightJudgeConfig() {
+    if (mailInsightExtractionMode === 'ai-only') return false;
+    if (mailInsightJudgeBackend === 'clef') return window.PopupClefInsight?.hasConfig(getClefConfig()) === true;
+    return mailInsightJudgeBackend === 'jev' && hasJevConfig();
+  }
+
+  async function adjudicateInsights(linkCandidates, codeCandidates, sourceText) {
+    if (mailInsightJudgeBackend !== 'clef') {
+      return adjudicateInsightsWithJev(linkCandidates, codeCandidates, sourceText);
+    }
+    const limit = getInsightLinkLimit();
+    const sorted = (records) => [...(records || [])].sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, limit);
+    const links = sorted(dedupeLinksByNormalizedKey(linkCandidates));
+    const codes = sorted(codeCandidates);
+    return window.PopupClefInsight.adjudicate(links, codes, sourceText, getClefConfig(), {
+      request: (url, init) => fetchWithTimeout(url, init, AI_REQUEST_TIMEOUT_MS),
+      onAccountFailure: (account) => clefAccountsEditor?.setAccountStatus(account, false),
+      onAccountSuccess: (account) => clefAccountsEditor?.setAccountStatus(account, true)
+    });
+  }
+
+  function buildInsightJudgeResult(verdict, fallback, options = {}) {
+    if (verdict.judgeVerdict === 'unknown') {
+      return {
+        ...fallback,
+        judgeBackend: 'clef',
+        judgeVerdict: 'unknown',
+        judgeSignals: verdict.judgeSignals,
+        judgeWarning: 'Clef 判定置信度不足，以下保留为未确认的参考结果。',
+        aiError: options.aiError || ''
+      };
+    }
+    const judgeOnly = options.judgeOnly === true;
+    const empty = !verdict.codes.length && !verdict.links.length;
+    return {
+      ...verdict,
+      codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
+      links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
+      judgeBackend: verdict.source,
+      judgeOnly,
+      judgeEmpty: empty,
+      ...(verdict.source === 'jev' ? { jevOnly: judgeOnly, jevEmpty: empty } : {}),
+      ...(options.aiError ? { aiError: options.aiError } : {})
+    };
+  }
+
   // ===================== Jev 判定增强（完全可选） =====================
 
   function syncJevSettingsVisibility() {
+    const onlyAi = mailInsightExtractionMode === 'ai-only';
+    if (insightJudgeSettings) insightJudgeSettings.classList.toggle('hidden', onlyAi);
     if (jevSettingsFields) {
-      jevSettingsFields.classList.toggle('hidden', jevEnabled !== true);
+      jevSettingsFields.classList.toggle('hidden', mailInsightJudgeBackend !== 'jev');
     }
+    if (clefSettingsFields) clefSettingsFields.classList.toggle('hidden', mailInsightJudgeBackend !== 'clef');
+    if (jevRecallModeToggle) jevRecallModeToggle.disabled = !usesLocalInsightExtraction();
+  }
+
+  function normalizeJevApiKeysText(value) {
+    const values = Array.isArray(value) ? value : [value];
+    const keys = values
+      .flatMap((item) => typeof item === 'string' ? item.split(/\r?\n/) : [])
+      .map((key) => key.trim())
+      .filter(Boolean);
+    return Array.from(new Set(keys)).join('\n');
   }
 
   function getJevConfig() {
+    const apiKeys = normalizeJevApiKeysText(jevApiKey).split('\n').filter(Boolean);
     return {
       apiBase: normalizeTranslationSetting(jevApiBase).replace(/\/+$/, ''),
-      apiKey: normalizeTranslationSetting(jevApiKey),
+      // 保留 apiKey 兼容原有调用/测试；实际请求从 apiKeys 中随机选取。
+      apiKey: apiKeys[0] || '',
+      apiKeys,
       endpointPath: normalizeTranslationSetting(jevEndpointPath, DEFAULT_JEV_ENDPOINT_PATH),
       model: normalizeTranslationSetting(jevModel, DEFAULT_JEV_MODEL)
     };
@@ -2869,7 +3164,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return false;
     }
     const config = getJevConfig();
-    return Boolean(config.apiBase && config.apiKey && config.endpointPath && config.model);
+    return Boolean(config.apiBase && config.apiKeys.length && config.endpointPath && config.model);
   }
 
   /**
@@ -2880,7 +3175,7 @@ document.addEventListener('DOMContentLoaded', async () => {
    * 所以无论开关怎么设，只要 Jev 不可用就一律回落到精确优先的旧参数。
    */
   function getInsightSamplingParams() {
-    const recall = jevRecallMode === true && hasJevConfig();
+    const recall = jevRecallMode === true && hasInsightJudgeConfig();
     return recall
       ? { minScore: INSIGHT_CODE_MIN_SCORE_RECALL, limit: JEV_MAX_CANDIDATES_RECALL, recall: true }
       : { minScore: INSIGHT_CODE_MIN_SCORE, limit: JEV_MAX_CANDIDATES, recall: false };
@@ -2888,7 +3183,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   /** 链接候选的取样上限：一样受召回优先影响，但阈值不变（链接侧已有硬排除规则）。 */
   function getInsightLinkLimit() {
-    return jevRecallMode === true && hasJevConfig() ? JEV_MAX_CANDIDATES_RECALL : JEV_MAX_CANDIDATES;
+    return jevRecallMode === true && hasInsightJudgeConfig() ? JEV_MAX_CANDIDATES_RECALL : JEV_MAX_CANDIDATES;
   }
 
   /**
@@ -2924,45 +3219,64 @@ document.addEventListener('DOMContentLoaded', async () => {
       model: options.model || config.model,
       questions
     };
-    const response = await fetchWithTimeout(
-      config.apiBase + config.endpointPath,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          Authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify(payload)
-      },
-      options.timeout || AI_REQUEST_TIMEOUT_MS
-    );
+    // Fisher-Yates 洗牌后按顺序尝试，既保证首个密钥随机，也避免重试时重复使用失败密钥。
+    const apiKeys = [...config.apiKeys];
+    for (let index = apiKeys.length - 1; index > 0; index -= 1) {
+      const randomIndex = Math.floor(Math.random() * (index + 1));
+      [apiKeys[index], apiKeys[randomIndex]] = [apiKeys[randomIndex], apiKeys[index]];
+    }
 
-    let data = null;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
+    const maxAttempts = Math.min(apiKeys.length, JEV_MAX_KEY_RETRIES + 1);
+    let lastError = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const response = await fetchWithTimeout(
+          config.apiBase + config.endpointPath,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              Authorization: `Bearer ${apiKeys[attempt]}`
+            },
+            body: JSON.stringify(payload)
+          },
+          options.timeout || AI_REQUEST_TIMEOUT_MS
+        );
+
+        let data = null;
+        try {
+          data = await response.json();
+        } catch {
+          data = null;
+        }
+        if (!response.ok) {
+          const detail = data?.error?.message || data?.detail || data?.message || `${response.status}`;
+          throw new Error(`Jev 请求失败: ${detail}`);
+        }
+        // System One 是同步返回的，答案就在响应体里，没有异步任务要轮询。
+        if (!data || typeof data !== 'object' || !data.answers || typeof data.answers !== 'object') {
+          throw new Error('Jev 响应缺少 answers 字段');
+        }
+        return data;
+      } catch (error) {
+        lastError = error;
+      }
     }
-    if (!response.ok) {
-      const detail = data?.error?.message || data?.detail || data?.message || `${response.status}`;
-      throw new Error(`Jev 请求失败: ${detail}`);
-    }
-    // System One 是同步返回的，答案就在响应体里，没有异步任务要轮询。
-    if (!data || typeof data !== 'object' || !data.answers || typeof data.answers !== 'object') {
-      throw new Error('Jev 响应缺少 answers 字段');
-    }
-    return data;
+
+    const detail = lastError?.message || String(lastError || '未知错误');
+    const attemptsNote = maxAttempts > 1 ? `（已尝试 ${maxAttempts} 个不同密钥）` : '';
+    throw new Error(`${detail}${attemptsNote}`);
   }
 
   function getMailInsightConfigErrorMessage() {
     if (mailInsightApiMode === 'custom') {
-      return '请先在设置页填写提取 API Base、API Key 和模型名称';
+      return '请先在「AI 配置」页填写提取 API Base、API Key 和模型名称';
     }
     if (mailInsightApiMode === 'none') {
-      return '当前已设为「不使用 AI 提取」，验证码提取将只依赖本地规则（+ 可选的 Jev 判定）';
+      return '当前已设为「不使用 AI 提取」，请先选择提取 API 来源';
     }
-    return '请先在设置页填写翻译 API Base、API Key 和模型名称，或切换为独立提取 API';
+    return '请先在「AI 配置」页填写翻译 API Base、API Key 和模型名称，或切换为独立提取 API';
   }
 
   const INSIGHT_VERIFY_KEYWORDS = [
@@ -3061,6 +3375,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     return String(value || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   }
 
+  // 验证码展示/复制/填充统一去掉空格："5 5 7 4 1 1" → "557411"。
+  // 只移除半角空格（U+0020），连字符、大小写以及任何其它字符一律保留。
+  function stripInsightCodeSpaces(value) {
+    return String(value || '').replace(/ /g, '');
+  }
+
   function hasVerifyKeywordNearby(text, index, valueLength) {
     const window = String(text || '')
       .slice(Math.max(0, index - 60), Math.min(text.length, index + valueLength + 30))
@@ -3157,7 +3477,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           : (nearKeyword ? '验证码相关上下文'
             : (INSIGHT_NOISE_CONTEXT_PATTERN.test(preceding) ? '订单/发票类上下文'
               : (hasDigit && /[A-Za-z]/.test(compact) ? '字母数字混合串' : '独立数字串')));
-        records.push({ value: raw, key: compact.toUpperCase(), score, index, label });
+        // 候选 value 直接去掉分隔空格：正则只负责找边界，展示值不再带空格。
+        records.push({ value: stripInsightCodeSpaces(raw), key: compact.toUpperCase(), score, index, label });
       }
       pattern.lastIndex = 0;
     });
@@ -3265,7 +3586,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       const exactIndex = source.toLowerCase().indexOf(normalized.toLowerCase());
       if (exactIndex >= 0) {
-        verified.push(source.slice(exactIndex, exactIndex + normalized.length));
+        verified.push(stripInsightCodeSpaces(source.slice(exactIndex, exactIndex + normalized.length)));
         return;
       }
 
@@ -3279,14 +3600,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         .join('[\\s-]*');
       const match = source.match(new RegExp(`(^|[^A-Za-z0-9])(${flexiblePattern})(?=$|[^A-Za-z0-9])`, 'i'));
       if (match?.[2]) {
-        verified.push(match[2]);
+        verified.push(stripInsightCodeSpaces(match[2]));
       }
     });
     return Array.from(new Set(verified)).slice(0, 3);
   }
 
   function normalizeAiInsightCode(code) {
-    const normalized = String(code || '').trim().replace(/\s+/g, ' ');
+    const normalized = stripInsightCodeSpaces(String(code || '').trim().replace(/\s+/g, ' '));
     const compact = normalized.replace(/[\s-]+/g, '');
     return /^[A-Z0-9]{4,16}$/i.test(compact) ? normalized : '';
   }
@@ -3441,6 +3762,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function buildMailInsightRenderOptions(reader) {
     const status = reader.getInsightStatus();
+    const judged = reader.getInsights() || {};
+    if (['success', 'fallback'].includes(status) && ['unknown', 'quarantine'].includes(judged.judgeVerdict)) {
+      const quarantine = judged.judgeVerdict === 'quarantine';
+      return {
+        statusText: quarantine ? 'Clef 检测到索取验证码的风险' : 'Clef 判定未确认',
+        statusType: quarantine ? 'error' : 'info',
+        noteText: quarantine
+          ? '这封邮件可能诱导你向他人透露验证码或凭据，本次不展示可操作的提取结果。'
+          : `${judged.aiError ? 'AI 提取未成功；' : ''}${judged.judgeWarning}`,
+        onRetry: () => triggerMailAiInsights(reader, true),
+        retryLabel: '重新提取'
+      };
+    }
     if (status === 'loading') {
       return {
         statusText: 'AI 提取中... ',
@@ -3453,7 +3787,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     if (status === 'success') {
       const insights = reader.getInsights() || {};
-      if (insights.source === 'jev') {
+      if (insights.source === 'jev' || insights.source === 'clef') {
+        const label = insights.source === 'clef' ? 'Clef' : 'Jev';
         // 三种情况要分开说，否则用户不知道 AI 到底跑没跑：
         //   jevOnly + aiError → AI 配置了但失败，这次靠 Jev 兜底
         //   jevOnly           → 明确没用 AI（选择了「不使用 AI 提取」或没配）
@@ -3461,17 +3796,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         const aiFailed = String(insights.aiError || '').slice(0, 80);
         let statusText;
         if (aiFailed) {
-          statusText = 'AI 提取失败，已由 Jev 判定';
+          statusText = `AI 提取失败，已由 ${label} 判定`;
         } else {
-          statusText = insights.jevOnly ? 'Jev 判定已完成' : 'AI 提取 + Jev 判定已完成';
+          statusText = (insights.judgeOnly || insights.jevOnly) ? `${label} 判定已完成` : `AI 提取 + ${label} 判定已完成`;
         }
         let noteText;
         if (aiFailed) {
-          noteText = `本次 AI 提取未成功（${aiFailed}），已改用 Jev 对本地候选做判定，结果同样经过模型确认。`;
-        } else if (insights.jevEmpty) {
-          noteText = 'Jev 认为这封邮件里没有真正的验证码或验证链接。';
+          noteText = `本次 AI 提取未成功（${aiFailed}），已改用 ${label} 对本地候选做判定，结果同样经过模型确认。`;
+        } else if (insights.judgeEmpty || insights.jevEmpty) {
+          noteText = `${label} 未在候选中确认可用的验证码或验证链接。`;
         } else {
-          noteText = '当前显示经 Jev 结构化判定后的验证码与验证链接（已过滤噪声与重复链接）。';
+          noteText = `当前显示经 ${label} 结构化判定后的验证码与验证链接。`;
         }
         return {
           statusText,
@@ -3482,12 +3817,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
       }
       // AI 成功但 Jev 判定失败：仍然算成功，但要把「这次没走 Jev」说清楚，否则用户以为 Jev 白配了。
-      const jevFailed = String(insights.jevError || '').slice(0, 80);
+      const jevFailed = String(insights.judgeError || insights.jevError || '').slice(0, 80);
+      const label = getInsightJudgeLabel();
       return {
-        statusText: jevFailed ? 'AI 提取已完成（Jev 判定未生效）' : 'AI 提取已完成',
+        statusText: jevFailed ? `AI 提取已完成（${label} 判定未生效）` : 'AI 提取已完成',
         statusType: 'success',
         noteText: jevFailed
-          ? `本次为 AI 提取结果，Jev 判定失败已忽略：${jevFailed}`
+          ? `本次保留 AI 提取结果，${label} 判定未成功：${jevFailed}`
           : '当前显示 AI 提取到的高置信验证码与验证链接。',
         onRetry: () => triggerMailAiInsights(reader, true),
         retryLabel: '重新提取'
@@ -3496,16 +3832,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (status === 'fallback') {
       const insights = reader.getInsights() || {};
       const aiOn = hasMailInsightConfig();
-      const jevOn = hasJevConfig();
+      const jevOn = hasInsightJudgeConfig();
       const jevOnly = !aiOn && jevOn;
       // 只有「本来要走 Jev」时才把原因算给 Jev；配了 AI 提取就以 AI 为主体，别让它替 Jev 背锅。
       const reason = String(
-        (jevOnly ? (insights.jevError || reader.getInsightError()) : reader.getInsightError()) || ''
+        (jevOnly ? (insights.judgeError || insights.jevError || reader.getInsightError()) : reader.getInsightError()) || ''
       ).slice(0, 80);
       return {
         // 什么都没配时不该说「XX 不可用」——那只是本地提取，不是模型失败。
         statusText: reason && (aiOn || jevOn)
-          ? `${jevOnly ? 'Jev' : 'AI'} 不可用，已使用本地提取（${reason}）`
+          ? `${jevOnly ? getInsightJudgeLabel() : 'AI'} 不可用，已使用本地提取（${reason}）`
           : '已使用本地规则提取',
         statusType: 'info',
         noteText: '以下结果由本地规则提取，未经模型确认，请自行核对后再使用。',
@@ -3523,12 +3859,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       };
     }
     if (!hasMailInsightConfig()) {
+      if (!usesLocalInsightExtraction()) {
+        return { statusText: '请先配置 AI 提取 API', statusType: 'info', noteText: '当前提取方式不使用本地规则。' };
+      }
       // Jev 独立可用：即使没配 AI 提取 API，只要开了 Jev 就仍然会做判定。
-      if (hasJevConfig()) {
+      if (hasInsightJudgeConfig()) {
         return {
-          statusText: '已启用 Jev 判定（未配置 AI 提取）',
+          statusText: `已启用 ${getInsightJudgeLabel()} 判定（未配置 AI 提取）`,
           statusType: 'info',
-          noteText: '本地规则负责找出候选，Jev 负责判定与去重；未配置 AI 提取 API 不影响使用。',
+          noteText: `本地规则负责找出候选，${getInsightJudgeLabel()} 负责判定；未配置 AI 提取 API 不影响使用。`,
           onRetry: () => triggerMailAiInsights(reader, true),
           retryLabel: '立即提取'
         };
@@ -3536,7 +3875,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       return {
         statusText: '未配置 AI 提取 API',
         statusType: 'info',
-        noteText: '未配置 AI 时会自动使用本地规则提取；也可在设置页选择复用翻译 API、填写独立提取 API，或启用可选的 Jev 判定。',
+        noteText: '当前使用本地规则；可在「AI 配置」页配置 AI 提取，或选择 JEV / Clef 判定。',
       };
     }
     return {
@@ -3615,19 +3954,125 @@ document.addEventListener('DOMContentLoaded', async () => {
     return normalizeTranslationSource(`${String(text || '').slice(0, bodyBudget)}\n\n${linkBlock}`);
   }
 
+  // 判断一段文本是不是原始 MIME 头部残留（兜底取材与正文检查共用）。
+  function looksLikeRawMime(str) {
+    if (!str) return false;
+    const upper = str.slice(0, 500).toUpperCase();
+    return upper.includes('CONTENT-TYPE:') || upper.includes('CONTENT-TRANSFER-ENCODING:')
+        || upper.includes('MIME-VERSION:') || upper.includes('BOUNDARY=');
+  }
+
+  /**
+   * 兜底 MIME 取材：只采信 text/plain 与 text/html 部分。
+   *
+   * 背景：正文只有图片的邮件经 htmlToText 后为空，会走到这条兜底路径。
+   * 旧实现把每个分段的原始内容直接当文本拼接，图片部分（base64）因此混进
+   * 翻译/洞察请求体；实测这类请求在 index-translate 网关上直接 504。
+   * 这里按 MIME 头部过滤：图片、附件等非文本部分一律丢弃，文本部分按
+   * Content-Transfer-Encoding 解码后再取材。
+   */
+  function extractTextFromRawMimeFallback(raw) {
+    const source = String(raw || '');
+    if (!source) {
+      return '';
+    }
+
+    function parsePartHeaders(headerText) {
+      const headers = {};
+      let lastKey = '';
+      String(headerText || '').split(/\r?\n/).forEach((line) => {
+        if (/^[ \t]/.test(line) && lastKey) {
+          headers[lastKey] = `${headers[lastKey]} ${line.trim()}`;
+          return;
+        }
+        const match = /^([^:]+):[ \t]*(.*)$/.exec(line);
+        if (!match) {
+          return;
+        }
+        lastKey = match[1].trim().toLowerCase();
+        headers[lastKey] = match[2].trim();
+      });
+      return headers;
+    }
+
+    function parseHeaderValue(value) {
+      const segments = String(value || '').split(';');
+      const main = String(segments.shift() || '').trim().toLowerCase();
+      const params = {};
+      segments.forEach((segment) => {
+        const match = /^\s*([^=]+)=(?:"([^"]*)"|([^;]*))\s*$/.exec(segment);
+        if (!match) {
+          return;
+        }
+        params[match[1].trim().toLowerCase()] = String(match[2] !== undefined ? match[2] : match[3] || '').trim();
+      });
+      return { value: main, params };
+    }
+
+    function collectTextPart(headerText, bodyText) {
+      const headers = parsePartHeaders(headerText);
+      const contentType = parseHeaderValue(headers['content-type'] || '');
+      const type = contentType.value || 'text/plain';
+      const disposition = parseHeaderValue(headers['content-disposition'] || '');
+      const hasFileName = [contentType.params, disposition.params]
+        .some((params) => Object.keys(params).some((name) => /^(?:file)?name(?:\*|$)/.test(name)));
+      // 与渲染器一致：显式 attachment，或带 filename/name 且未声明 inline 的，都按附件处理。
+      if (disposition.value === 'attachment' || (hasFileName && disposition.value !== 'inline')) {
+        return '';
+      }
+      if (type !== 'text/plain' && type !== 'text/html') {
+        return '';
+      }
+      const encoding = String(headers['content-transfer-encoding'] || '').trim().toLowerCase();
+      let decoded = bodyText;
+      if (encoding === 'base64') {
+        decoded = decodeBase64UTF8(bodyText, contentType.params.charset || '');
+      } else if (encoding === 'quoted-printable') {
+        decoded = decodeQuotedPrintable(bodyText, contentType.params.charset || '');
+      }
+      const text = String(decoded || '').trim();
+      if (!text || looksLikeRawMime(text)) {
+        return '';
+      }
+      return type === 'text/html' ? htmlToText(text) : text;
+    }
+
+    const headerEnd = source.indexOf('\r\n\r\n');
+    const bodyOnly = headerEnd !== -1 ? source.slice(headerEnd + 4) : source;
+    const boundaryMatch = bodyOnly.match(/^--([a-zA-Z0-9_=\-\.]+)/m);
+    if (boundaryMatch) {
+      const segments = bodyOnly.split(`--${boundaryMatch[1]}`);
+      const texts = [];
+      for (const segment of segments) {
+        const partHeaderEnd = segment.indexOf('\r\n\r\n');
+        const headerText = partHeaderEnd !== -1 ? segment.slice(0, partHeaderEnd) : '';
+        const partBody = (partHeaderEnd !== -1 ? segment.slice(partHeaderEnd + 4) : segment).trim();
+        if (!partBody || partBody.startsWith('--')) {
+          continue;
+        }
+        const text = collectTextPart(headerText, partBody);
+        if (text) {
+          texts.push(text);
+        }
+      }
+      return texts.join('\n\n');
+    }
+
+    // 单段邮件：只有顶层声明为 text/* 才按文本采信（整封 base64 图片等一律丢弃）。
+    const topHeaderText = headerEnd !== -1 ? source.slice(0, headerEnd) : '';
+    const topContentType = parseHeaderValue(parsePartHeaders(topHeaderText)['content-type'] || '');
+    const topType = topContentType.value || 'text/plain';
+    if (topType !== 'text/plain' && topType !== 'text/html') {
+      return '';
+    }
+    return collectTextPart(topHeaderText, bodyOnly.trim());
+  }
+
   function getTempMailTranslationSource(mail, options = {}) {
     if (!mail) {
       return '';
     }
     const parsed = parseEmailBody(mail.raw || '');
-
-    // Quick check: if "text" looks like raw MIME headers, discard it
-    function looksLikeRawMime(str) {
-      if (!str) return false;
-      const upper = str.slice(0, 500).toUpperCase();
-      return upper.includes('CONTENT-TYPE:') || upper.includes('CONTENT-TRANSFER-ENCODING:')
-          || upper.includes('MIME-VERSION:') || upper.includes('BOUNDARY=');
-    }
 
     // Collect all usable text sources
     const parts = [];
@@ -3648,47 +4093,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
 
-    // 3. Last resort: manually strip MIME headers and QP-decode the raw body
+    // 3. Last resort: 只采信 MIME 里的 text/plain 与 text/html 分段。
+    //    旧实现直接把每个分段的原始内容拼起来，图片分段的 base64 会混进
+    //    翻译/洞察请求体（index-translate 网关实测 504），这里统一过滤。
     if (parts.length === 0) {
-      const raw = mail.raw || '';
-      // Find the body after the MIME headers (first empty line)
-      const headerEnd = raw.indexOf('\r\n\r\n');
-      let bodyOnly = headerEnd !== -1 ? raw.slice(headerEnd + 4) : raw;
-      // If it's a multipart, try to extract just the HTML or text parts
-      const boundaryMatch = bodyOnly.match(/^--([a-zA-Z0-9_=\-\.]+)/m);
-      if (boundaryMatch) {
-        const boundary = boundaryMatch[1];
-        const segments = bodyOnly.split('--' + boundary);
-        const texts = [];
-        for (const seg of segments) {
-          const partHeaderEnd = seg.indexOf('\r\n\r\n');
-          const partBody = partHeaderEnd !== -1
-            ? seg.slice(partHeaderEnd + 4).trim()
-            : seg.trim();
-          if (partBody && !partBody.startsWith('--') && partBody.length > 10) {
-            const decoded = partBody
-              .replace(/=\r?\n/g, '')
-              .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-              .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
-              .trim();
-            if (decoded && !looksLikeRawMime(decoded)) {
-              texts.push(decoded);
-            }
-          }
-        }
-        if (texts.length > 0) {
-          parts.push(texts.join('\n\n'));
-        }
-      } else {
-        // Single part: just QP-decode and clean
-        const cleaned = bodyOnly
-          .replace(/=\r?\n/g, '')
-          .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-          .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
-          .trim();
-        if (cleaned && cleaned.length > 20 && !looksLikeRawMime(cleaned)) {
-          parts.push(cleaned);
-        }
+      const fallbackText = extractTextFromRawMimeFallback(mail.raw || '');
+      if (fallbackText) {
+        parts.push(fallbackText);
       }
     }
 
@@ -3714,12 +4125,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       : normalizeTranslationSource(text);
   }
 
+  // 翻译/洞察取材的统一出口。图片 data URI 与整行 base64 属于二进制载荷，
+  // 混入请求体会让 body 暴涨（index-translate 网关实测直接 504），必须剥离；
+  // 短于 48 字符的行一律保留，验证码/订单号不会被误伤
+  //（回归测试见 tests/translation-source.test.cjs）。
   function normalizeTranslationSource(text) {
     if (typeof text !== 'string') {
       return '';
     }
     return text
       .replace(/\r\n/g, '\n')
+      // 图片/字体 data URI 整体剥离（含 base64 关键字），只留占位空格。
+      .replace(/data:[\w.+-]+\/[\w.+-]+(?:;[^,;\s]+)*;base64,[a-z0-9+/=]+/gi, ' ')
+      // MIME 分段残留的整行 base64 数据整行删除；阈值 48 是长度下限，
+      // 正常文本（验证码、订单号、句子）远短于此，不受影响。
+      .replace(/^[A-Za-z0-9+/=]{48,}[ \t]*$/gm, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim()
       .slice(0, MAX_TRANSLATION_SOURCE_CHARS);
@@ -3768,8 +4188,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // （召回优先时是 16）。这里如果再固定砍回 8，调用方放宽的候选会被二次截断，
     // 实测会直接导致「同分噪声淹没时真码漏报」。
     const linkLimit = getInsightLinkLimit();
-    const links = dedupeLinksByNormalizedKey(linkCandidates).slice(0, linkLimit);
-    const codes = (codeCandidates || []).slice(0, linkLimit);
+    // M9：截断前先按 score 降序排序（稳定排序，同分保持原有文档顺序）。
+    // collectLinkCandidates 返回的是文档顺序，AI 补进来的高分候选（score 99）排在末尾；
+    // 直接 slice 取前 N 个会把靠后的真实验证链接/验证码挤掉，让 Jev 看不到它们。
+    const sortByScoreDesc = (records) => (records || [])
+      .map((record, order) => ({ record, order }))
+      .sort((a, b) => ((b.record?.score || 0) - (a.record?.score || 0)) || (a.order - b.order))
+      .map((item) => item.record);
+    const links = sortByScoreDesc(dedupeLinksByNormalizedKey(linkCandidates)).slice(0, linkLimit);
+    const codes = sortByScoreDesc(codeCandidates).slice(0, linkLimit);
     if (!links.length && !codes.length) {
       return null;
     }
@@ -3860,37 +4287,31 @@ document.addEventListener('DOMContentLoaded', async () => {
    * 无论 AI 成功还是失败，只要 Jev 可用就一定会被调用。
    */
   async function fallbackToJevOrLocal(sourceText, localResult, reason) {
-    if (!hasJevConfig()) {
+    if (!usesLocalInsightExtraction()) throw new Error(reason);
+    if (!hasInsightJudgeConfig()) {
       return { ...localResult, error: reason };
     }
     try {
-      const verdict = await adjudicateInsightsWithJev(
+      const verdict = await adjudicateInsights(
         collectLinkCandidates(sourceText),
         rankInsightCandidates(collectCodeCandidates(sourceText), getFallbackSamplingParams()),
         sourceText
       );
       if (verdict) {
-        return {
-          codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
-          links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
-          source: 'jev',
-          jevModel: verdict.jevModel,
-          jevOnly: true,
-          jevEmpty: verdict.codes.length === 0 && verdict.links.length === 0,
-          // 保留 AI 的失败原因：UI 会显示「AI 提取失败，已由 Jev 判定」，
-          // 既不隐瞒失败，也不让用户以为必须修好 AI 才能用。
-          aiError: reason
-        };
+        return buildInsightJudgeResult(verdict, localResult, { judgeOnly: true, aiError: reason });
       }
     } catch (error) {
-      return { ...localResult, error: reason, jevError: error?.message || 'Jev 判定失败' };
+      const detail = error?.message || `${getInsightJudgeLabel()} 判定失败`;
+      return { ...localResult, error: reason, judgeError: detail, ...(mailInsightJudgeBackend === 'jev' ? { jevError: detail } : {}) };
     }
     return { ...localResult, error: reason };
   }
 
   async function extractMailInsightsWithApi(text, options = {}) {
     const sourceText = normalizeTranslationSource(text);
-    const localResult = buildLocalInsightResult(sourceText);
+    const localResult = usesLocalInsightExtraction()
+      ? buildLocalInsightResult(sourceText)
+      : { codes: [], links: [], source: 'ai' };
     // 记录 Jev 的失败原因，供 UI 说明为什么这次没走 Jev；不影响返回结果。
     let jevError = '';
 
@@ -3898,32 +4319,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!sourceText) {
       return localResult;
     }
+    if (!usesLocalInsightExtraction() && !hasMailInsightConfig()) {
+      throw new Error(getMailInsightConfigErrorMessage());
+    }
+    if (mailInsightExtractionMode === 'ai-judge' && !hasInsightJudgeConfig()) {
+      throw new Error('AI + 判定模式需要配置可用的 JEV 或 Clef');
+    }
 
     // 没配置 AI 提取 API —— 但**如果配了 Jev，仍要让它对本地候选做裁决**。
     // 这正是「Jev 独立于 AI 提取」的意义：两条链路互不依赖。
     if (!hasMailInsightConfig()) {
-      if (!hasJevConfig()) {
+      if (!hasInsightJudgeConfig()) {
         return localResult;
       }
       try {
-        const verdict = await adjudicateInsightsWithJev(
+        const verdict = await adjudicateInsights(
           collectLinkCandidates(sourceText),
           rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams()),
           sourceText
         );
         if (verdict) {
-          return {
-            codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
-            links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
-            source: 'jev',
-            jevModel: verdict.jevModel,
-            jevOnly: true,
-            jevEmpty: verdict.codes.length === 0 && verdict.links.length === 0
-          };
+          return buildInsightJudgeResult(verdict, localResult, { judgeOnly: true });
         }
       } catch (error) {
         // Jev 失败就退回本地结果，绝不因为 Jev 而让功能不可用。
-        return { ...localResult, jevError: error?.message || 'Jev 判定失败' };
+        const detail = error?.message || `${getInsightJudgeLabel()} 判定失败`;
+        return { ...localResult, judgeError: detail, ...(mailInsightJudgeBackend === 'jev' ? { jevError: detail } : {}) };
       }
       return localResult;
     }
@@ -3932,21 +4353,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const subject = options.subject ? String(options.subject).trim() : '';
     const from = options.from ? String(options.from).trim() : '';
 
-    let response = null;
+    let content = '';
     try {
-      response = await fetchWithTimeout(`${config.apiBase}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify({
-          model: config.model,
-          temperature: 0.1,
-          messages: [
-            {
-              role: 'system',
-              content: `你是一个高精度邮件验证码与验证链接提取器。你的任务是“复制原文中已经存在的信息”，不是推测、补全或生成信息。严格遵守以下规则：
+      content = await requestChatCompletion({
+        apiBase: config.apiBase,
+        apiKey: config.apiKey,
+        model: config.model,
+        temperature: 0.1,
+        messages: [
+          {
+            role: 'system',
+            content: `你是一个高精度邮件验证码与验证链接提取器。你的任务是“复制原文中已经存在的信息”，不是推测、补全或生成信息。严格遵守以下规则：
 
 一、验证码提取
 1. 验证码可能出现在 code、verification code、security code、OTP、one-time password、验证码、验证代码、动态码、一次性密码等提示词附近，也可能单独成行。
@@ -3964,31 +4381,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 9. 严格禁止编造。codes 和 links 中的每一项都必须来自当前邮件原文。宁可返回空数组，也不要猜测。
 10. 只返回一个合法 JSON 对象，不要使用 Markdown，不要添加解释。结构固定为：{"codes":["原文验证码"],"links":[{"url":"原文中的完整URL","label":"简短用途"}]}。
 11. 最多返回 3 个验证码和 3 个链接。没有验证码时返回 codes:[]；没有真实完整链接时返回 links:[]。`
-            },
-            {
-              role: 'user',
-              content: `请严格从下面这封邮件中复制验证码和完整验证链接。不得使用系统提示词中的格式示例作为结果。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n===== 邮件原文开始 =====\n${sourceText}\n===== 邮件原文结束 =====`
-            }
-          ]
-        })
-      }, AI_REQUEST_TIMEOUT_MS);
+          },
+          {
+            role: 'user',
+            content: `请严格从下面这封邮件中复制验证码和完整验证链接。不得使用系统提示词中的格式示例作为结果。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n===== 邮件原文开始 =====\n${sourceText}\n===== 邮件原文结束 =====`
+          }
+        ]
+      });
     } catch (error) {
-      return fallbackToJevOrLocal(sourceText, localResult, error?.message || 'AI 提取请求失败');
+      return fallbackToJevOrLocal(sourceText, localResult, `AI 提取请求失败: ${error?.message || error}`);
     }
 
-    let data = null;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
-    }
-
-    if (!response.ok) {
-      const errorMessage = data?.error?.message || data?.message || `${response.status}`;
-      return fallbackToJevOrLocal(sourceText, localResult, `AI 提取请求失败: ${errorMessage}`);
-    }
-
-    const content = data?.choices?.[0]?.message?.content?.trim();
     const parsed = parseMailInsightJson(content);
     if (!parsed) {
       return fallbackToJevOrLocal(sourceText, localResult, '模型返回了空内容或非法 JSON');
@@ -4001,7 +4404,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const verifiedLinks = verifyLinksAgainstSource(aiResult.links, sourceText);
 
     // 收集「本地 + AI」的完整候选池。Jev 开启时由它裁决；关闭时沿用原有回落逻辑。
-    const codeCandidates = rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams());
+    const codeCandidates = usesLocalInsightExtraction()
+      ? rankInsightCandidates(collectCodeCandidates(sourceText), getInsightSamplingParams()) : [];
     // AI 提到的验证码（已校验存在）补进候选池，并用最高分标记 —— 它们至少和提示词紧邻的候选一样可信。
     const codePool = codeCandidates.slice();
     const codePoolKeys = new Set(codePool.map((record) => record.key));
@@ -4014,7 +4418,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     const linkCandidates = dedupeLinksByNormalizedKey([
-      ...collectLinkCandidates(sourceText),
+      ...(usesLocalInsightExtraction() ? collectLinkCandidates(sourceText) : []),
       ...verifiedLinks.map((link) => ({
         value: link.url,
         url: link.url,
@@ -4025,22 +4429,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     ]);
 
     // ---- Jev 判定增强（可选）：成功就用它的裁决结果 ----
-    if (hasJevConfig()) {
+    const aiReference = { codes: verifiedCodes, links: verifiedLinks, source: 'ai' };
+    if (hasInsightJudgeConfig()) {
       try {
-        const verdict = await adjudicateInsightsWithJev(linkCandidates, codePool, sourceText);
+        const verdict = await adjudicateInsights(linkCandidates, codePool, sourceText);
         if (verdict) {
-          return {
-            codes: verdict.codes.slice(0, INSIGHT_MAX_ITEMS),
-            links: verdict.links.slice(0, INSIGHT_MAX_ITEMS),
-            source: 'jev',
-            jevModel: verdict.jevModel,
-            // Jev 说“都没有”时保留这个标记，让 UI 能说明原因。
-            jevEmpty: verdict.codes.length === 0 && verdict.links.length === 0
-          };
+          return buildInsightJudgeResult(verdict, aiReference);
         }
       } catch (error) {
         // Jev 失败不能影响提取：记录原因，下面照常走原有回落逻辑。
-        jevError = error?.message || 'Jev 判定失败';
+        jevError = error?.message || `${getInsightJudgeLabel()} 判定失败`;
       }
     }
 
@@ -4050,30 +4448,163 @@ document.addEventListener('DOMContentLoaded', async () => {
       ? mergeInsightValues(verifiedCodes, localResult.codes, INSIGHT_MAX_ITEMS)
       : [];
 
-    // 链接此时已按归一化 key 去重，并且 AI 结果排在前面（score 99）。
-    const rankedLinks = linkCandidates
-      .slice()
-      .sort((a, b) => (b.score || 0) - (a.score || 0))
-      .slice(0, INSIGHT_MAX_ITEMS)
-      .map((record) => ({ url: record.url, label: formatInsightLinkLabel(record.url, record.anchorText) }));
-
+    // M8：链接与验证码同样尊重 AI 的明确作答。AI 说“没有验证链接”（verifiedLinks 为空）时
+    // 直接返回 []，不再把未过阈值的本地候选当作 AI 结果展示（source 为 'ai'，文案是“AI 提取到的…”）。
+    // 本地候选仍会在 triggerMailAiInsights 中以 fallback 文案作为参考附上。
     const links = verifiedLinks.length
       ? mergeInsightValues(
         verifiedLinks.map((link) => link.url),
         localResult.links.map((link) => link.url),
         INSIGHT_MAX_ITEMS
       ).map((url) => verifiedLinks.find((link) => link.url === url) || { url, label: formatInsightLinkLabel(url) })
-      : rankedLinks;
+      : [];
     const result = { codes, links, source: 'ai' };
     if (jevError) {
-      result.jevError = jevError;   // UI 用它说明这次为什么没走 Jev
+      result.judgeError = jevError;
+      if (mailInsightJudgeBackend === 'jev') result.jevError = jevError;
     }
     return result;
   }
 
+  /**
+   * 统一的 chat/completions 请求，优先走流式（stream:true）。
+   *
+   * 背景：index-translate 这类网关对稍长的输入（实测 ≥1KB）非流式请求会在约
+   * 10 秒处直接返回 504 Gateway Time-out，整封邮件根本翻译不了。流式响应头
+   * 立即返回、分片持续回传，网关不再判定超时；配合按段调用还能绕开网关默认
+   * 约 2048 token 的输出上限，长邮件也能拿到完整译文。
+   * 服务端不支持流式而直接返回普通 JSON 时，这里回退到 JSON 解析。
+   */
+  async function requestChatCompletion({ apiBase, apiKey, model, temperature, messages, onDelta }) {
+    const controller = new AbortController();
+    let idleTimer = null;
+    // 空闲超时：只要还有分片回传就重置，长译文不会被整体超时误杀。
+    const armIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), AI_REQUEST_TIMEOUT_MS);
+    };
+    const clearIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+    const timeoutError = () => new Error(`请求超时（${Math.round(AI_REQUEST_TIMEOUT_MS / 1000)} 秒无响应）`);
+    armIdleTimer();
+
+    let response = null;
+    try {
+      response = await fetch(`${apiBase}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({ model, temperature, stream: true, messages }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      clearIdleTimer();
+      throw error?.name === 'AbortError' ? timeoutError() : error;
+    }
+
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    // 非流式回退：服务端忽略 stream 参数时仍按普通 JSON 解析，兼容不支持流式的服务。
+    if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = null;
+      }
+      clearIdleTimer();
+      if (!response.ok) {
+        const message = data?.error?.message || data?.message || `${response.status}`;
+        throw new Error(message);
+      }
+      return String(data?.choices?.[0]?.message?.content || '').trim();
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let text = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        armIdleTimer();
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          let chunk = null;
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (typeof delta === 'string' && delta) {
+            text += delta;
+            if (onDelta) {
+              try {
+                onDelta(delta, text);
+              } catch {
+                // 进度回调出错不影响主流程。
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      throw error?.name === 'AbortError' ? timeoutError() : error;
+    } finally {
+      clearIdleTimer();
+    }
+    return text.trim();
+  }
+
+  /**
+   * 把正文按行切成不超过 maxChars 的若干段。
+   * 超长单行（例如营销邮件里上千字符的追踪链接）按字符硬切，保证每段都在上限内。
+   */
+  function splitTranslationChunks(text, maxChars = TRANSLATION_CHUNK_MAX_CHARS) {
+    const limit = Math.max(1, Number(maxChars) || TRANSLATION_CHUNK_MAX_CHARS);
+    const chunks = [];
+    let current = '';
+    String(text || '').split('\n').forEach((rawLine) => {
+      let line = rawLine;
+      while (line.length > limit) {
+        if (current) {
+          chunks.push(current);
+          current = '';
+        }
+        chunks.push(line.slice(0, limit));
+        line = line.slice(limit);
+      }
+      if (!current) {
+        current = line;
+      } else if (current.length + 1 + line.length <= limit) {
+        current += `\n${line}`;
+      } else {
+        chunks.push(current);
+        current = line;
+      }
+    });
+    if (current) {
+      chunks.push(current);
+    }
+    return chunks.filter((chunk) => chunk.length > 0);
+  }
+
   async function translateTextWithApi(text, options = {}) {
     if (!hasTranslationConfig()) {
-      throw new Error('请先在设置页填写翻译 API Base、API Key 和模型名称');
+      throw new Error('请先在「AI 配置」页填写翻译 API Base、API Key 和模型名称');
     }
     const sourceText = normalizeTranslationSource(text);
     if (!sourceText) {
@@ -4083,45 +4614,52 @@ document.addEventListener('DOMContentLoaded', async () => {
     const targetLanguage = normalizeTranslationSetting(translationTargetLanguage, DEFAULT_TRANSLATION_TARGET_LANGUAGE);
     const subject = options.subject ? String(options.subject).trim() : '';
     const from = options.from ? String(options.from).trim() : '';
-    const response = await fetchWithTimeout(`${apiBase}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${translationApiKey}`
-      },
-      body: JSON.stringify({
-        model: translationModel,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'system',
-            content: `你是一个专业的邮件翻译助手。请将邮件翻译为${targetLanguage}。保持原文结构清晰，保留换行。邮箱地址、网址、验证码、订单号、代码、数字、专有名词尽量原样保留，不要凭空补充内容。`
-          },
-          {
-            role: 'user',
-            content: `请翻译以下邮件内容。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n邮件正文：\n${sourceText}`
-          }
-        ]
-      })
-    }, AI_REQUEST_TIMEOUT_MS);
+    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
+    const systemPrompt = `你是一个专业的邮件翻译助手。请将邮件翻译为${targetLanguage}。保持原文结构清晰，保留换行。邮箱地址、网址、验证码、订单号、代码、数字、专有名词尽量原样保留，不要凭空补充内容。`;
 
-    let data = null;
-    try {
-      data = await response.json();
-    } catch {
-      data = null;
+    const chunks = splitTranslationChunks(sourceText);
+    const total = chunks.length;
+    const translatedParts = [];
+    for (let index = 0; index < total; index += 1) {
+      const chunk = chunks[index];
+      // 分段时只在第一段带主题/发件人，避免每段译文都重复邮件头。
+      let userContent = '';
+      if (total === 1) {
+        userContent = `请翻译以下邮件内容。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n邮件正文：\n${chunk}`;
+      } else if (index === 0) {
+        userContent = `请翻译以下邮件内容（共 ${total} 段，这是第 1 段，只输出这一段的译文）。\n\n主题：${subject || '(无主题)'}\n发件人：${from || '(未知)'}\n\n邮件正文：\n${chunk}`;
+      } else {
+        userContent = `请继续翻译同一封邮件的后续内容（第 ${index + 1}/${total} 段，只输出这一段的译文，不要重复主题或发件人）。\n\n${chunk}`;
+      }
+      let part = '';
+      try {
+        part = await requestChatCompletion({
+          apiBase,
+          apiKey: translationApiKey,
+          model: translationModel,
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent }
+          ]
+        });
+      } catch (error) {
+        const prefix = total > 1 ? `第 ${index + 1}/${total} 段翻译失败` : '翻译请求失败';
+        throw new Error(`${prefix}: ${error?.message || error}`);
+      }
+      if (!part) {
+        throw new Error(total > 1 ? `第 ${index + 1}/${total} 段模型返回了空内容` : '模型返回了空内容');
+      }
+      translatedParts.push(part);
+      if (onProgress) {
+        try {
+          onProgress(translatedParts.join('\n'));
+        } catch {
+          // 进度回调出错不影响主流程。
+        }
+      }
     }
-
-    if (!response.ok) {
-      const errorMessage = data?.error?.message || data?.message || `${response.status}`;
-      throw new Error(`翻译请求失败: ${errorMessage}`);
-    }
-
-    const translated = data?.choices?.[0]?.message?.content?.trim();
-    if (!translated) {
-      throw new Error('模型返回了空内容');
-    }
-    return translated;
+    return translatedParts.join('\n');
   }
 
   function getMailActionIconMarkup(kind) {
@@ -4153,7 +4691,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   function updateMailActionButtons(reader, renderResult) {
     const hasMail = Boolean(reader.getMail());
     const translateButton = reader.elements.translateButton;
-    const translationInFlight = translateButton.disabled && translateButton.title === '翻译中...';
+    // M3：用显式的在途状态判断，不再依赖「disabled 且 title === '翻译中...'」这种 UI 推断。
+    const translationInFlight = isMailTranslationInFlight(reader);
     if (!translationInFlight) {
       const translationExpanded = Boolean(reader.getTranslationText())
         && !reader.elements.translation.classList.contains('hidden');
@@ -4254,8 +4793,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderBody: (mail, options) => renderMoeEmailBody(moeMailBody, mail, options)
   });
 
+  // M3：每个 reader 的翻译在途状态（值为发起请求时的 token）。
+  // 切换邮件时 beginMailReader 会清除它并重置翻译按钮；旧请求完成后发现 token 已失效，
+  // 不会再改动新邮件的按钮状态。Temp 与 Moe 共用这一套逻辑。
+  const mailTranslationInFlight = new WeakMap();
+
+  function isMailTranslationInFlight(reader) {
+    return mailTranslationInFlight.has(reader);
+  }
+
+  // 请求结束时调用：只有 token 仍是当前 reader 的最新请求时才清除在途状态并返回 true。
+  function settleMailTranslation(reader, requestToken) {
+    if (!reader.isTranslationTokenCurrent(requestToken)) {
+      return false;
+    }
+    if (mailTranslationInFlight.get(reader) === requestToken) {
+      mailTranslationInFlight.delete(reader);
+    }
+    return true;
+  }
+
+  // 把翻译按钮恢复为非在途的默认状态（有邮件时可点）。
+  function resetMailTranslateButton(reader, options = {}) {
+    setMailActionButtonState(reader.elements.translateButton, {
+      icon: 'translate',
+      title: hasTranslationConfig() ? '翻译邮件' : '请先配置翻译 API',
+      disabled: options.disabled === true || !reader.getMail()
+    });
+  }
+
   function beginMailReader(reader, mail = null) {
     reader.begin(mail);
+    // M3：切换邮件时统一把翻译按钮恢复为非在途状态（Temp / Moe 一致），
+    // 正文渲染完成后 updateMailActionButtons 会再按新邮件刷新一次。
+    mailTranslationInFlight.delete(reader);
+    resetMailTranslateButton(reader, { disabled: true });
     reader.elements.insights.classList.add('hidden');
     reader.elements.insights.innerHTML = '';
     resetTranslationPanel(
@@ -4325,17 +4897,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     const extractedSource = extracted?.source;
     const aiAnswered = extractedSource === 'ai';
     // Jev 判定成功同样属于「已由模型确认」：结果来自模型裁决，不是本地规则打分。
-    const jevAnswered = extractedSource === 'jev';
+    const jevAnswered = extractedSource === 'jev' || extractedSource === 'clef';
     const hasItems = Boolean(extracted && (extracted.codes.length || extracted.links.length));
 
-    if (aiAnswered && hasItems) {
+    if (!usesLocalInsightExtraction() && !extracted) {
+      reader.setInsights({ codes: [], links: [] });
+      reader.setInsightStatus('error');
+      reader.setInsightError(failureMessage || 'AI 提取失败');
+    } else if (extracted?.judgeVerdict === 'unknown') {
+      reader.setInsights(extracted);
+      reader.setInsightStatus(extractedSource === 'local' ? 'fallback' : 'success');
+      reader.setInsightError('');
+    } else if (aiAnswered && hasItems) {
       reader.setInsights(extracted);
       reader.setInsightStatus('success');
       reader.setInsightError('');
     } else if (aiAnswered) {
       // AI 明确说“这封邮件里没有验证码/链接”。尊重它，但仍把本地候选作为参考附上，
       // 避免召回被砍掉，同时用 fallback 文案明确标注这些不是 AI 判定的。
-      const local = buildLocalInsightResult(source);
+      const local = usesLocalInsightExtraction() ? buildLocalInsightResult(source) : { codes: [], links: [] };
       const hasLocal = Boolean(local.codes.length || local.links.length);
       reader.setInsights(hasLocal ? local : extracted);
       reader.setInsightStatus(hasLocal ? 'fallback' : 'success');
@@ -4372,10 +4952,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     );
     reader.elements.retranslateButton.classList.add('hidden');
     reader.elements.copyTranslationButton.classList.add('hidden');
+    mailTranslationInFlight.set(reader, requestToken);
     setMailActionButtonState(reader.elements.translateButton, { icon: 'loading', title: '翻译中...', disabled: true });
     try {
-      const translated = await translateTextWithApi(reader.getTranslationSource(mail), reader.getMetadata(mail));
-      if (!reader.isTranslationTokenCurrent(requestToken) || !reader.getMail() || reader.getIdentity() !== identity) return;
+      const translated = await translateTextWithApi(reader.getTranslationSource(mail), {
+        ...reader.getMetadata(mail),
+        // 长邮件会按段请求，逐段回显可以让用户看到进度而不是干等。
+        onProgress: (partial) => {
+          if (!reader.getMail() || reader.getIdentity() !== identity) return;
+          if (!reader.isTranslationTokenCurrent(requestToken)) return;
+          renderTranslationPanel(
+            reader.elements.translation,
+            reader.elements.translationTitle,
+            reader.elements.translationBody,
+            reader.elements.copyTranslationButton,
+            partial,
+            'AI 翻译 · 正在处理',
+            reader.elements.retranslateButton
+          );
+          // 在途状态保持「复制 / 重新翻译」隐藏，避免中途操作半成品译文。
+          reader.elements.retranslateButton.classList.add('hidden');
+          reader.elements.copyTranslationButton.classList.add('hidden');
+        }
+      });
+      if (!settleMailTranslation(reader, requestToken)) return;
+      if (!reader.getMail() || reader.getIdentity() !== identity) {
+        resetMailTranslateButton(reader);
+        return;
+      }
       reader.setTranslationText(translated);
       renderTranslationPanel(
         reader.elements.translation,
@@ -4388,7 +4992,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       );
       setMailActionButtonState(reader.elements.translateButton, { icon: 'collapseTranslation', title: '收起翻译', disabled: false });
     } catch (error) {
-      if (!reader.isTranslationTokenCurrent(requestToken) || reader.getIdentity() !== identity) return;
+      if (!settleMailTranslation(reader, requestToken)) return;
+      if (reader.getIdentity() !== identity) {
+        resetMailTranslateButton(reader);
+        return;
+      }
       renderTranslationPanel(
         reader.elements.translation,
         reader.elements.translationTitle,
@@ -4490,7 +5098,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const seen = new Set();
     const result = [];
     for (const line of lines) {
-      const trimmed = line.trim();
+      // L23：保存时统一规范化为小写，域名/协议本身不区分大小写。
+      const trimmed = line.trim().toLowerCase();
       if (!trimmed || seen.has(trimmed)) continue;
       seen.add(trimmed);
       result.push(trimmed);
@@ -4562,7 +5171,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function isBroadSitePattern(pattern) {
     const value = String(pattern || '').trim();
     if (!value) return false;
-    return !(value.startsWith('http://') || value.startsWith('https://'));
+    return !/^https?:\/\//i.test(value);
   }
 
   async function handleCurrentSiteToggle() {
@@ -4631,15 +5240,49 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   applyTabLayoutMode();
 
+  // 默认过期时间存的是下拉框的字符串值，"0" 表示永久；只有缺失时才回落到 1 天。
+  function normalizeExpirySettingValue(value) {
+    return value === undefined || value === null || value === '' ? '86400000' : String(value);
+  }
+
+  // L4：把默认过期时间写入内存，并回填设置页与各创建页的下拉框。
+  // 初始化与跨实例同步共用；只处理 values 里出现的键。
+  function applyDefaultExpirySettings(values = {}) {
+    const has = (key) => Object.prototype.hasOwnProperty.call(values, key);
+    // L-4：走安全赋值，任一控件缺失都不应中断整条初始化链
+    if (has(DEFAULT_FF_TEMP_EXPIRY_KEY)) {
+      defaultFfTempExpiry = normalizeExpirySettingValue(values[DEFAULT_FF_TEMP_EXPIRY_KEY]);
+      setElementValueById('setting-ff-temp-expiry', defaultFfTempExpiry);
+      if (fastFillTempExpiry) fastFillTempExpiry.value = defaultFfTempExpiry;
+    }
+    if (has(DEFAULT_FF_MOE_EXPIRY_KEY)) {
+      defaultFfMoeExpiry = normalizeExpirySettingValue(values[DEFAULT_FF_MOE_EXPIRY_KEY]);
+      setElementValueById('setting-ff-moe-expiry', defaultFfMoeExpiry);
+      if (fastFillMoeExpiry) fastFillMoeExpiry.value = defaultFfMoeExpiry;
+    }
+    if (has(DEFAULT_TEMP_EXPIRY_KEY)) {
+      defaultTempExpiry = normalizeExpirySettingValue(values[DEFAULT_TEMP_EXPIRY_KEY]);
+      setElementValueById('setting-temp-expiry', defaultTempExpiry);
+      if (tempExpirySelect) tempExpirySelect.value = defaultTempExpiry;
+    }
+    if (has(DEFAULT_MOE_EXPIRY_KEY)) {
+      defaultMoeExpiry = normalizeExpirySettingValue(values[DEFAULT_MOE_EXPIRY_KEY]);
+      setElementValueById('setting-moe-expiry', defaultMoeExpiry);
+      if (moeExpirySelect) moeExpirySelect.value = defaultMoeExpiry;
+    }
+  }
+
   // ===================== 初始化加载 =====================
   storageGet([
     'apiUrl', 'adminToken', 'emailHistory', 'floatWindowEnabled', 'activeTab',
     'moeApiUrl', 'moeApiKey', 'moeEmailCache', 'defaultTab', 'bookmarks', 'verifyInterval', 'bookmarkSort',
     'verifyStatusCache', 'tempUnreadCounts', 'moeUnreadCounts', 'mailPollingInterval',
-    'notificationsEnabled', 'defaultRemoteImagesEnabled', TRANSLATION_API_BASE_KEY, TRANSLATION_API_KEY_KEY, TRANSLATION_MODEL_KEY, TRANSLATION_TARGET_LANGUAGE_KEY, MAIL_INSIGHT_API_MODE_KEY, MAIL_INSIGHT_API_BASE_KEY, MAIL_INSIGHT_API_KEY_KEY, MAIL_INSIGHT_MODEL_KEY, JEV_ENABLED_KEY, JEV_API_BASE_KEY, JEV_API_KEY_KEY, JEV_ENDPOINT_PATH_KEY, JEV_MODEL_KEY, JEV_RECALL_MODE_KEY, 'siteAccessMode', 'siteAllowlist', 'siteBlocklist',
+    'notificationsEnabled', 'defaultRemoteImagesEnabled', TRANSLATION_API_BASE_KEY, TRANSLATION_API_KEY_KEY, TRANSLATION_MODEL_KEY, TRANSLATION_TARGET_LANGUAGE_KEY, MAIL_INSIGHT_API_MODE_KEY, MAIL_INSIGHT_API_BASE_KEY, MAIL_INSIGHT_API_KEY_KEY, MAIL_INSIGHT_MODEL_KEY, MAIL_INSIGHT_EXTRACTION_MODE_KEY, MAIL_INSIGHT_JUDGE_BACKEND_KEY, CLEF_ACCOUNTS_KEY, CLEF_ACCOUNT_ID_KEY, CLEF_API_TOKEN_KEY, CLEF_MODEL_KEY, JEV_ENABLED_KEY, JEV_API_BASE_KEY, JEV_API_KEY_KEY, JEV_ENDPOINT_PATH_KEY, JEV_MODEL_KEY, JEV_RECALL_MODE_KEY, 'siteAccessMode', 'siteAllowlist', 'siteBlocklist',
     TAB_LAYOUT_MODE_KEY, GENERATED_RESULT_AUTO_CLOSE_KEY, PAGE_FILL_RULES_KEY, GENERATED_PROFILE_KEY, GENERATED_HISTORY_KEY,
     THEME_KEY, FLOAT_WINDOW_STYLE_KEY,
     FAST_FILL_EMAIL_SOURCE_KEY, FAST_FILL_DOMAIN_MODE_KEY, FAST_FILL_DOMAIN_SPECIFIC_KEY, FAST_FILL_DOMAIN_WHITELIST_KEY, FAST_FILL_DOMAIN_BLACKLIST_KEY,
+    // M2：姓名地区 / 性别必须读取，否则每次打开都被重置并在下次保存时覆盖用户设置。
+    FAST_FILL_NAME_REGION_KEY, FAST_FILL_NAME_GENDER_KEY,
     FAST_FILL_HISTORY_KEY,
     TEMP_MAIL_META_KEY,
     DEFAULT_FF_TEMP_EXPIRY_KEY, DEFAULT_FF_MOE_EXPIRY_KEY, DEFAULT_TEMP_EXPIRY_KEY, DEFAULT_MOE_EXPIRY_KEY,
@@ -4674,20 +5317,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     tempMailMeta = result[TEMP_MAIL_META_KEY] || {};
 
     // Default expiry settings
-    defaultFfTempExpiry = result[DEFAULT_FF_TEMP_EXPIRY_KEY] || '86400000';
-    defaultFfMoeExpiry = result[DEFAULT_FF_MOE_EXPIRY_KEY] || '86400000';
-    defaultTempExpiry = result[DEFAULT_TEMP_EXPIRY_KEY] || '86400000';
-    defaultMoeExpiry = result[DEFAULT_MOE_EXPIRY_KEY] || '86400000';
-    // L-4：走安全赋值，任一控件缺失都不应中断整条初始化链
-    setElementValueById('setting-ff-temp-expiry', defaultFfTempExpiry);
-    setElementValueById('setting-ff-moe-expiry', defaultFfMoeExpiry);
-    setElementValueById('setting-temp-expiry', defaultTempExpiry);
-    setElementValueById('setting-moe-expiry', defaultMoeExpiry);
-    // Apply defaults to the active pages
-    if (tempExpirySelect) tempExpirySelect.value = defaultTempExpiry;
-    if (moeExpirySelect) moeExpirySelect.value = defaultMoeExpiry;
-    if (fastFillTempExpiry) fastFillTempExpiry.value = defaultFfTempExpiry;
-    if (fastFillMoeExpiry) fastFillMoeExpiry.value = defaultFfMoeExpiry;
+    applyDefaultExpirySettings({
+      [DEFAULT_FF_TEMP_EXPIRY_KEY]: result[DEFAULT_FF_TEMP_EXPIRY_KEY],
+      [DEFAULT_FF_MOE_EXPIRY_KEY]: result[DEFAULT_FF_MOE_EXPIRY_KEY],
+      [DEFAULT_TEMP_EXPIRY_KEY]: result[DEFAULT_TEMP_EXPIRY_KEY],
+      [DEFAULT_MOE_EXPIRY_KEY]: result[DEFAULT_MOE_EXPIRY_KEY]
+    });
 
     renderHistory();
 
@@ -4743,7 +5378,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightModel = normalizeTranslationSetting(result[MAIL_INSIGHT_MODEL_KEY]);
     jevEnabled = result[JEV_ENABLED_KEY] === true;
     jevApiBase = normalizeTranslationSetting(result[JEV_API_BASE_KEY]);
-    jevApiKey = normalizeTranslationSetting(result[JEV_API_KEY_KEY]);
+    jevApiKey = normalizeJevApiKeysText(result[JEV_API_KEY_KEY]);
     jevEndpointPath = normalizeTranslationSetting(result[JEV_ENDPOINT_PATH_KEY], DEFAULT_JEV_ENDPOINT_PATH);
     jevModel = normalizeTranslationSetting(result[JEV_MODEL_KEY], DEFAULT_JEV_MODEL);
     jevRecallMode = result[JEV_RECALL_MODE_KEY] === true;
@@ -4755,7 +5390,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailInsightApiBaseInput.value = mailInsightApiBase;
     mailInsightApiKeyInput.value = mailInsightApiKey;
     mailInsightModelInput.value = mailInsightModel;
-    if (jevEnabledToggle) jevEnabledToggle.checked = jevEnabled;
+    applyInsightPipelineSettings(result);
     if (jevApiBaseInput) jevApiBaseInput.value = jevApiBase;
     if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
     if (jevEndpointPathInput) jevEndpointPathInput.value = jevEndpointPath;
@@ -4779,7 +5414,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     fastFillDomainSpecific = result[FAST_FILL_DOMAIN_SPECIFIC_KEY] || '';
     fastFillDomainWhitelist = Array.isArray(result[FAST_FILL_DOMAIN_WHITELIST_KEY]) ? result[FAST_FILL_DOMAIN_WHITELIST_KEY] : [];
     fastFillDomainBlacklist = Array.isArray(result[FAST_FILL_DOMAIN_BLACKLIST_KEY]) ? result[FAST_FILL_DOMAIN_BLACKLIST_KEY] : [];
-    fastFillHistory = Array.isArray(result[FAST_FILL_HISTORY_KEY]) ? result[FAST_FILL_HISTORY_KEY].slice(0, 3) : [];
+    fastFillHistory = Array.isArray(result[FAST_FILL_HISTORY_KEY]) ? result[FAST_FILL_HISTORY_KEY].slice(0, FAST_FILL_HISTORY_MAX) : [];
     fastFillNameRegion = result[FAST_FILL_NAME_REGION_KEY] || 'en';
     fastFillNameGender = result[FAST_FILL_NAME_GENDER_KEY] || 'random';
     const ffNameRegionEl = document.getElementById('ff-name-region');
@@ -4836,7 +5471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     resolvePanelInitReady();
   });
 
-  // ===================== 统一保存设置 =====================
+  // ===================== 通用设置与 AI 配置分别保存 =====================
   saveSettingsBtn.addEventListener('click', async () => {
     const newUrl = apiUrlInput.value.trim().replace(/\/$/, "");
     const newToken = adminTokenInput.value.trim();
@@ -4871,21 +5506,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const newNotificationsEnabled = notificationsToggle.checked;
     const newDefaultRemoteImagesEnabled = defaultRemoteImagesToggle.checked;
-    const newTranslationApiBase = normalizeTranslationSetting(translationApiBaseInput.value, DEFAULT_TRANSLATION_API_BASE).replace(/\/$/, '');
-    const newTranslationApiKey = normalizeTranslationSetting(translationApiKeyInput.value);
-    const newTranslationModel = normalizeTranslationSetting(translationModelInput.value);
-    const newTranslationTargetLanguage = normalizeTranslationSetting(translationTargetLanguageInput.value, DEFAULT_TRANSLATION_TARGET_LANGUAGE);
-    const newMailInsightApiMode = normalizeMailInsightApiMode(mailInsightApiModeSelect.value);
-    const newMailInsightApiBase = normalizeTranslationSetting(mailInsightApiBaseInput.value, DEFAULT_TRANSLATION_API_BASE).replace(/\/$/, '');
-    const newMailInsightApiKey = normalizeTranslationSetting(mailInsightApiKeyInput.value);
-    const newMailInsightModel = normalizeTranslationSetting(mailInsightModelInput.value);
-    // Jev 为可选项：读不到控件时沿用当前值，不让保存流程崩掉。
-    const newJevEnabled = jevEnabledToggle ? jevEnabledToggle.checked === true : jevEnabled;
-    const newJevApiBase = normalizeTranslationSetting(jevApiBaseInput?.value, '').replace(/\/+$/, '');
-    const newJevApiKey = normalizeTranslationSetting(jevApiKeyInput?.value);
-    const newJevEndpointPath = normalizeTranslationSetting(jevEndpointPathInput?.value, DEFAULT_JEV_ENDPOINT_PATH);
-    const newJevModel = normalizeTranslationSetting(jevModelInput?.value, DEFAULT_JEV_MODEL);
-    const newJevRecallMode = jevRecallModeToggle ? jevRecallModeToggle.checked === true : jevRecallMode;
     let newGeneratedResultAutoCloseSeconds = DEFAULT_GENERATED_RESULT_AUTO_CLOSE_SECONDS;
     try {
       newGeneratedResultAutoCloseSeconds = readGeneratedResultAutoCloseSeconds();
@@ -4919,20 +5539,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     mailPollingInterval = newMailPollingInterval;
     notificationsEnabled = newNotificationsEnabled;
     defaultRemoteImagesEnabled = newDefaultRemoteImagesEnabled;
-    translationApiBase = newTranslationApiBase;
-    translationApiKey = newTranslationApiKey;
-    translationModel = newTranslationModel;
-    translationTargetLanguage = newTranslationTargetLanguage;
-    mailInsightApiMode = newMailInsightApiMode;
-    mailInsightApiBase = newMailInsightApiBase;
-    mailInsightModel = newMailInsightModel;
-    jevEnabled = newJevEnabled;
-    jevApiBase = newJevApiBase;
-    jevApiKey = newJevApiKey;
-    jevEndpointPath = newJevEndpointPath;
-    jevModel = newJevModel;
-    jevRecallMode = newJevRecallMode;
-    syncJevSettingsVisibility();
     generatedResultAutoCloseSeconds = newGeneratedResultAutoCloseSeconds;
     siteAccessMode = newSiteAccessMode;
     // 从 textarea 解析黑名单规则（覆盖变量中的旧值）
@@ -4941,7 +5547,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     defaultFfMoeExpiry = newDefaultFfMoeExpiry;
     defaultTempExpiry = newDefaultTempExpiry;
     defaultMoeExpiry = newDefaultMoeExpiry;
-    syncMailInsightApiFieldsVisibility();
 
     chrome.storage.local.set({
       apiUrl, adminToken,
@@ -4954,18 +5559,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       mailPollingInterval,
       notificationsEnabled,
       defaultRemoteImagesEnabled,
-      [TRANSLATION_API_BASE_KEY]: translationApiBase,
-      [TRANSLATION_API_KEY_KEY]: translationApiKey,
-      [TRANSLATION_MODEL_KEY]: translationModel,
-      [TRANSLATION_TARGET_LANGUAGE_KEY]: translationTargetLanguage,
-      [MAIL_INSIGHT_API_MODE_KEY]: mailInsightApiMode,
-      [MAIL_INSIGHT_MODEL_KEY]: mailInsightModel,
-      [JEV_ENABLED_KEY]: jevEnabled,
-      [JEV_API_BASE_KEY]: jevApiBase,
-      [JEV_API_KEY_KEY]: jevApiKey,
-      [JEV_ENDPOINT_PATH_KEY]: jevEndpointPath,
-      [JEV_MODEL_KEY]: jevModel,
-      [JEV_RECALL_MODE_KEY]: jevRecallMode,
       [GENERATED_RESULT_AUTO_CLOSE_KEY]: generatedResultAutoCloseSeconds,
       siteAccessMode,
       siteAllowlist,
@@ -4982,6 +5575,122 @@ document.addEventListener('DOMContentLoaded', async () => {
       refreshCurrentSiteInfo();
       setTimeout(() => { settingsMessage.textContent = ''; }, 2000);
     });
+  });
+
+  // AI 配置独立校验和保存，不读取通用设置页的未保存草稿。
+  saveAiSettingsBtn.addEventListener('click', async () => {
+    aiSettingsMessage.textContent = '';
+    const newTranslationApiBase = normalizeTranslationSetting(translationApiBaseInput.value, DEFAULT_TRANSLATION_API_BASE).replace(/\/$/, '');
+    const newTranslationApiKey = normalizeTranslationSetting(translationApiKeyInput.value);
+    const newTranslationModel = normalizeTranslationSetting(translationModelInput.value);
+    const newTranslationTargetLanguage = normalizeTranslationSetting(translationTargetLanguageInput.value, DEFAULT_TRANSLATION_TARGET_LANGUAGE);
+    const newMailInsightApiMode = normalizeMailInsightApiMode(mailInsightApiModeSelect.value);
+    const newMailInsightApiBase = normalizeTranslationSetting(mailInsightApiBaseInput.value, DEFAULT_TRANSLATION_API_BASE).replace(/\/$/, '');
+    const newMailInsightApiKey = normalizeTranslationSetting(mailInsightApiKeyInput.value);
+    const newMailInsightModel = normalizeTranslationSetting(mailInsightModelInput.value);
+    // Jev 为可选项：读不到控件时沿用当前值，不让保存流程崩掉。
+    const newExtractionMode = normalizeInsightExtractionMode(mailInsightExtractionModeSelect?.value || mailInsightExtractionMode);
+    const newJudgeBackend = normalizeInsightJudgeBackend(insightJudgeBackendSelect?.value || mailInsightJudgeBackend);
+    let newClefAccounts;
+    try {
+      newClefAccounts = clefAccountsEditor ? clefAccountsEditor.getAccounts() : (clefAccounts || []);
+    } catch (error) {
+      showMessage(aiSettingsMessage, error.message, 'error');
+      return;
+    }
+    const newClefConfig = {
+      accounts: newClefAccounts,
+      model: clefModelSelect?.value === 'clef-flash' ? 'clef-flash' : 'clef'
+    };
+    if (newExtractionMode !== 'hybrid' && (newMailInsightApiMode === 'none'
+      || !(newMailInsightApiMode === 'custom'
+        ? newMailInsightApiBase && newMailInsightApiKey && newMailInsightModel
+        : newTranslationApiBase && newTranslationApiKey && newTranslationModel))) {
+      showMessage(aiSettingsMessage, '此提取方式需要先配置可用的 AI 提取 API', 'error');
+      return;
+    }
+    if (newExtractionMode === 'ai-judge' && newJudgeBackend === 'none') {
+      showMessage(aiSettingsMessage, 'AI + 判定模式需要选择 JEV 或 Clef', 'error');
+      return;
+    }
+    if (newExtractionMode !== 'ai-only' && newJudgeBackend === 'clef' && !window.PopupClefInsight.hasConfig(newClefConfig)) {
+      showMessage(aiSettingsMessage, '请至少添加一个 Clef 账号，并绑定有效的 Account ID 与 API Token', 'error');
+      return;
+    }
+    const newJevEnabled = newJudgeBackend === 'jev';
+    const newJevApiBase = normalizeTranslationSetting(jevApiBaseInput?.value, '').replace(/\/+$/, '');
+    const newJevApiKey = normalizeJevApiKeysText(jevApiKeyInput ? jevApiKeyInput.value : jevApiKey);
+    const newJevEndpointPath = normalizeTranslationSetting(jevEndpointPathInput?.value, DEFAULT_JEV_ENDPOINT_PATH);
+    const newJevModel = normalizeTranslationSetting(jevModelInput?.value, DEFAULT_JEV_MODEL);
+    const newJevRecallMode = jevRecallModeToggle ? jevRecallModeToggle.checked === true : jevRecallMode;
+    if (newExtractionMode === 'ai-judge' && newJudgeBackend === 'jev'
+      && !(newJevApiBase && newJevApiKey && newJevEndpointPath && newJevModel)) {
+      showMessage(aiSettingsMessage, '请先填写完整的 JEV API 配置', 'error');
+      return;
+    }
+    translationApiBase = newTranslationApiBase;
+    translationApiKey = newTranslationApiKey;
+    translationModel = newTranslationModel;
+    translationTargetLanguage = newTranslationTargetLanguage;
+    mailInsightApiMode = newMailInsightApiMode;
+    mailInsightApiBase = newMailInsightApiBase;
+    // H2：独立提取 API 的 Key 也要同步到内存，否则本次会话仍用旧 Key 请求。
+    mailInsightApiKey = newMailInsightApiKey;
+    mailInsightModel = newMailInsightModel;
+    jevEnabled = newJevEnabled;
+    mailInsightExtractionMode = newExtractionMode;
+    mailInsightJudgeBackend = newJudgeBackend;
+    clefAccounts = newClefAccounts;
+    clefAccountsEditor?.setAccounts(clefAccounts);
+    // 新数组是唯一配置来源；清空旧字段，避免删掉的 Key 从旧配置中复活。
+    clefAccountId = '';
+    clefApiToken = '';
+    clefModel = newClefConfig.model;
+    jevApiBase = newJevApiBase;
+    jevApiKey = newJevApiKey;
+    if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
+    jevEndpointPath = newJevEndpointPath;
+    jevModel = newJevModel;
+    jevRecallMode = newJevRecallMode;
+    syncJevSettingsVisibility();
+    syncMailInsightApiFieldsVisibility();
+    saveAiSettingsBtn.disabled = true;
+    try {
+      await new Promise((resolve, reject) => {
+        chrome.storage.local.set({
+          [TRANSLATION_API_BASE_KEY]: translationApiBase,
+          [TRANSLATION_API_KEY_KEY]: translationApiKey,
+          [TRANSLATION_MODEL_KEY]: translationModel,
+          [TRANSLATION_TARGET_LANGUAGE_KEY]: translationTargetLanguage,
+          [MAIL_INSIGHT_API_MODE_KEY]: mailInsightApiMode,
+          // H2：独立提取 API 的地址与 Key 必须落库，否则重开面板后回到旧值。
+          [MAIL_INSIGHT_API_BASE_KEY]: mailInsightApiBase,
+          [MAIL_INSIGHT_API_KEY_KEY]: mailInsightApiKey,
+          [MAIL_INSIGHT_MODEL_KEY]: mailInsightModel,
+          [MAIL_INSIGHT_EXTRACTION_MODE_KEY]: mailInsightExtractionMode,
+          [MAIL_INSIGHT_JUDGE_BACKEND_KEY]: mailInsightJudgeBackend,
+          [CLEF_ACCOUNTS_KEY]: clefAccounts,
+          [CLEF_ACCOUNT_ID_KEY]: clefAccountId,
+          [CLEF_API_TOKEN_KEY]: clefApiToken,
+          [CLEF_MODEL_KEY]: clefModel,
+          [JEV_ENABLED_KEY]: jevEnabled,
+          [JEV_API_BASE_KEY]: jevApiBase,
+          [JEV_API_KEY_KEY]: jevApiKey,
+          [JEV_ENDPOINT_PATH_KEY]: jevEndpointPath,
+          [JEV_MODEL_KEY]: jevModel,
+          [JEV_RECALL_MODE_KEY]: jevRecallMode,
+        }, () => {
+          const error = chrome.runtime.lastError;
+          if (error) reject(new Error(error.message || 'AI 配置保存失败'));
+          else resolve();
+        });
+      });
+      showMessage(aiSettingsMessage, 'AI 配置已保存', 'success');
+    } catch (error) {
+      showMessage(aiSettingsMessage, error.message, 'error');
+    } finally {
+      saveAiSettingsBtn.disabled = false;
+    }
   });
 
   currentSiteToggleBtn.addEventListener('click', () => {
@@ -5031,6 +5740,52 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ===================== 风格页面事件监听 =====================
+  const themesMessage = document.getElementById('themes-message');
+  let themesMessageTimer = null;
+
+  // L31：风格页的提示写到风格页自己的消息元素，而不是 Temp 页的 createMessage
+  // （那里在风格页看不到，还会清掉 Temp 页正在显示的消息）。
+  function showThemesMessage(text) {
+    if (!themesMessage) {
+      showToast(text, 'success');
+      return;
+    }
+    showMessage(themesMessage, text, 'success');
+    clearTimeout(themesMessageTimer);
+    themesMessageTimer = setTimeout(() => {
+      themesMessage.textContent = '';
+      themesMessage.className = 'message';
+    }, 2000);
+  }
+
+  // L12：把 selectedStyle / selectedTheme 应用到 body 并同步风格卡片的激活状态。
+  // 初始化、跨实例同步与导入配置共用，避免只改了 html 的 data-theme 而 body 未更新。
+  function applySelectedStyleTheme(style, theme) {
+    const savedStyle = style || 'neumorphism';
+    const savedTheme = theme || 'ocean-blue';
+
+    document.body.setAttribute('data-style', savedStyle);
+    document.body.setAttribute('data-theme', savedTheme);
+
+    if (!themesPage) {
+      return;
+    }
+    // 更新主题卡片的激活状态
+    const allThemeCards = themesPage.querySelectorAll('.theme-card');
+    allThemeCards.forEach(card => {
+      card.classList.toggle('active', card.dataset.style === savedStyle);
+
+      // 如果是当前激活的风格，更新其颜色选择器状态
+      if (card.dataset.style === savedStyle) {
+        const allSwatches = card.querySelectorAll('.theme-color-swatch');
+        allSwatches.forEach(swatch => {
+          swatch.classList.toggle('active', swatch.dataset.theme === savedTheme);
+        });
+        card.dataset.theme = savedTheme;
+      }
+    });
+  }
+
   if (themesPage) {
     // 主题卡片点击事件 - 应用风格和颜色
     themesPage.addEventListener('click', (event) => {
@@ -5064,11 +5819,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         saveTheme(selectedTheme);
         
         // 显示应用成功提示
-        showMessage(createMessage, `已应用 ${themeCard.querySelector('.theme-name').textContent} - ${colorSwatch.title}`, 'success');
-        setTimeout(() => {
-          createMessage.textContent = '';
-          createMessage.className = 'message';
-        }, 2000);
+        showThemesMessage(`已应用 ${themeCard.querySelector('.theme-name').textContent} - ${colorSwatch.title}`);
         
         return;
       }
@@ -5106,35 +5857,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       saveTheme(selectedTheme);
       
       // 显示应用成功提示
-      showMessage(createMessage, `已应用 ${themeCard.querySelector('.theme-name').textContent}`, 'success');
-      setTimeout(() => {
-        createMessage.textContent = '';
-        createMessage.className = 'message';
-      }, 2000);
+      showThemesMessage(`已应用 ${themeCard.querySelector('.theme-name').textContent}`);
     });
     
     // 页面加载时应用已保存的风格和颜色
     chrome.storage.local.get(['selectedStyle', 'selectedTheme'], (result) => {
-      const savedStyle = result.selectedStyle || 'neumorphism';
-      const savedTheme = result.selectedTheme || 'ocean-blue';
-      
-      document.body.setAttribute('data-style', savedStyle);
-      document.body.setAttribute('data-theme', savedTheme);
-      
-      // 更新主题卡片的激活状态
-      const allThemeCards = themesPage.querySelectorAll('.theme-card');
-      allThemeCards.forEach(card => {
-        card.classList.toggle('active', card.dataset.style === savedStyle);
-        
-        // 如果是当前激活的风格，更新其颜色选择器状态
-        if (card.dataset.style === savedStyle) {
-          const allSwatches = card.querySelectorAll('.theme-color-swatch');
-          allSwatches.forEach(swatch => {
-            swatch.classList.toggle('active', swatch.dataset.theme === savedTheme);
-          });
-          card.dataset.theme = savedTheme;
-        }
-      });
+      applySelectedStyleTheme(result.selectedStyle, result.selectedTheme);
     });
   }
 
@@ -5188,11 +5916,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!confirmed) {
       return {
         ok: false,
-        message: '已取消。请先点「保存全部配置」把 MoeMail 地址保存好，再测试连接。'
+        message: '已取消。请先点「保存设置」把 MoeMail 地址保存好，再测试连接。'
       };
     }
 
-    // 与「保存全部配置」中 MoeMail 部分保持一致：同步模块变量并重置相关缓存
+    // 与「保存设置」中 MoeMail 部分保持一致：同步模块变量并重置相关缓存
     moeApiUrl = targetUrl;
     moeApiKey = targetKey;
     moeApiUrlInput.value = targetUrl;
@@ -5299,8 +6027,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         translationModelSelect.value = translationModelInput.value.trim();
       }
     } catch (error) {
-      showMessage(settingsMessage, error.message, 'error');
-      setTimeout(() => { settingsMessage.textContent = ''; }, 3000);
+      showMessage(aiSettingsMessage, error.message, 'error');
+      setTimeout(() => { aiSettingsMessage.textContent = ''; }, 3000);
     } finally {
       fetchTranslationModelsBtn.textContent = originalText;
       fetchTranslationModelsBtn.disabled = false;
@@ -5331,8 +6059,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         mailInsightModelSelect.value = mailInsightModelInput.value.trim();
       }
     } catch (error) {
-      showMessage(settingsMessage, error.message, 'error');
-      setTimeout(() => { settingsMessage.textContent = ''; }, 3000);
+      showMessage(aiSettingsMessage, error.message, 'error');
+      setTimeout(() => { aiSettingsMessage.textContent = ''; }, 3000);
     } finally {
       fetchInsightModelsBtn.textContent = originalInsightText;
       fetchInsightModelsBtn.disabled = false;
@@ -5342,6 +6070,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   mailInsightModelSelect.addEventListener('change', () => {
     mailInsightModelInput.value = mailInsightModelSelect.value;
   });
+  // 在模型下拉框写回输入框之后再使旧测试结果失效。
+  bindAiConnectionTests();
 
   // ===================== Temp Email: 创建邮箱 =====================
   createBtn.addEventListener('click', async () => {
@@ -5427,20 +6157,63 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ===================== Temp Email: 历史记录 =====================
+  // M15：tempMailMeta 可能被多个面板实例（悬浮窗 iframe / 工具栏弹窗）同时修改。
+  // 写入前先读 storage 最新值，在其上应用本次增删再写回，避免用本实例的旧快照
+  // 覆盖别的实例刚写入的条目（丢失过期信息后后台清理就不再处理那个邮箱）。
+  // mutator 只做「设置 / 删除某个地址」这类幂等操作；本地内存先乐观更新用于渲染。
+  let tempMailMetaWriteChain = Promise.resolve();
+  function updateTempMailMeta(mutator) {
+    const optimistic = { ...tempMailMeta };
+    mutator(optimistic);
+    tempMailMeta = optimistic;
+    const run = async () => {
+      const latest = await storageGet([TEMP_MAIL_META_KEY]);
+      const stored = latest?.[TEMP_MAIL_META_KEY];
+      // 读不到（例如存储代理失败返回空对象）时退回本地内存，避免把别的条目整体清空。
+      const base = stored && typeof stored === 'object' ? stored : tempMailMeta;
+      const next = { ...base };
+      mutator(next);
+      tempMailMeta = next;
+      await storageSet({ [TEMP_MAIL_META_KEY]: next });
+    };
+    tempMailMetaWriteChain = tempMailMetaWriteChain.then(run, run).catch((error) => {
+      console.warn('保存邮箱过期信息失败:', error?.message || error);
+    });
+    return tempMailMetaWriteChain;
+  }
+
+  // L2：未读数、已知邮件 id、轮询状态由后台统一维护（它会做增量合并）。
+  // 移除邮箱时只通知后台清理，不再用本实例的快照整对象覆盖 tempUnreadCounts / moeUnreadCounts。
+  function requestRemoveMailState(source, keys) {
+    const list = Array.from(keys || [])
+      .filter((key) => key !== undefined && key !== null && key !== '')
+      .map((key) => String(key));
+    if (!list.length) {
+      return;
+    }
+    runtimeSendMessage({ type: 'remove-mail-state', source, keys: list }).catch(() => {});
+  }
+
   function addHistory(addr, expiryMs = 0) {
     if (history.length > 0 && history[0] === addr) return;
     history.unshift(addr);
+    let removed = null;
     if (history.length > MAX_HISTORY) {
-      const removed = history.pop();
-      delete tempMailMeta[removed];
+      removed = history.pop();
     }
-    // Store creation metadata
-    if (expiryMs > 0) {
-      tempMailMeta[addr] = { createdAt: Date.now(), expiryMs };
-    } else {
-      tempMailMeta[addr] = { createdAt: Date.now(), expiryMs: 0 };
+    chrome.storage.local.set({ emailHistory: history });
+    // Store creation metadata（M15：合并写回，不整对象覆盖）
+    const createdAt = Date.now();
+    const normalizedExpiryMs = expiryMs > 0 ? expiryMs : 0;
+    updateTempMailMeta((meta) => {
+      if (removed && removed !== addr) delete meta[removed];
+      meta[addr] = { createdAt, expiryMs: normalizedExpiryMs };
+    });
+    if (removed && removed !== addr) {
+      // L2：被挤出历史的邮箱，其未读/轮询状态交给后台清理。
+      delete tempUnreadCounts[removed];
+      requestRemoveMailState('temp', [removed]);
     }
-    chrome.storage.local.set({ emailHistory: history, [TEMP_MAIL_META_KEY]: tempMailMeta });
     renderHistory();
   }
 
@@ -5581,12 +6354,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     tempMarkAllReadBtn.disabled = true;
+    // L2：本地内存乐观置 0 只用于刷新 UI；持久化交给后台的 clear-temp-unread，
+    // 不再整对象写 tempUnreadCounts（会覆盖后台刚合并的增量）。
     const nextTempUnreadCounts = { ...tempUnreadCounts };
     unreadAddresses.forEach((addr) => {
       nextTempUnreadCounts[addr] = 0;
     });
     tempUnreadCounts = nextTempUnreadCounts;
-    chrome.storage.local.set({ tempUnreadCounts });
     renderHistory();
     showMessage(verifyStatusDiv, `已将 ${unreadAddresses.length} 个邮箱标为已读`, 'success');
     verifyStatusDiv.classList.remove('hidden');
@@ -5639,28 +6413,37 @@ document.addEventListener('DOMContentLoaded', async () => {
       selected.forEach((addr) => {
         delete verifyStatus[addr];
         delete tempUnreadCounts[addr];
-        delete tempMailMeta[addr];
       });
       chrome.storage.local.set({
         emailHistory: history,
-        verifyStatusCache: verifyStatus,
-        tempUnreadCounts,
-        [TEMP_MAIL_META_KEY]: tempMailMeta
+        verifyStatusCache: verifyStatus
       });
+      // M15：meta 合并写回；L2：未读/已知 id/轮询状态交给后台清理。
+      updateTempMailMeta((meta) => {
+        selected.forEach((addr) => { delete meta[addr]; });
+      });
+      requestRemoveMailState('temp', selected);
     }
   });
 
   clearHistoryBtn.addEventListener('click', () => {
+    if (history.length === 0) return;
+    // L33：与清除失效、单删、批删保持一致，清空前先确认（仅新增确认，不改变删除语义）。
+    if (!confirm(`确定要清空全部 ${history.length} 个本地邮箱历史吗？\n这会移除本地保存的全部邮箱记录、验证状态和未读计数，此操作不可恢复。`)) return;
+    const removedAddresses = history.slice();
     history = [];
     verifyStatus = {};
     tempUnreadCounts = {};
-    tempMailMeta = {};
     chrome.storage.local.set({
       emailHistory: history,
-      verifyStatusCache: verifyStatus,
-      tempUnreadCounts,
-      [TEMP_MAIL_META_KEY]: tempMailMeta
+      verifyStatusCache: verifyStatus
     });
+    // M15：只删除本次清空的这些地址，其他实例刚新建的条目不受影响。
+    updateTempMailMeta((meta) => {
+      removedAddresses.forEach((addr) => { delete meta[addr]; });
+    });
+    // L2：未读/已知 id/轮询状态交给后台清理。
+    requestRemoveMailState('temp', removedAddresses);
     renderHistory();
   });
 
@@ -5768,14 +6551,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!confirm(`确定清除 ${invalidAddrs.length} 个已失效的邮箱？`)) return;
 
     history = history.filter(a => verifyStatus[a] !== 'invalid');
-    invalidAddrs.forEach(a => delete verifyStatus[a]);
+    invalidAddrs.forEach(a => {
+      delete verifyStatus[a];
+      delete tempUnreadCounts[a];
+    });
     chrome.storage.local.set({ emailHistory: history, verifyStatusCache: verifyStatus });
+    // 与其他移除路径一致：meta 合并删除，未读/已知 id/轮询状态交给后台清理。
+    updateTempMailMeta((meta) => {
+      invalidAddrs.forEach((addr) => { delete meta[addr]; });
+    });
+    requestRemoveMailState('temp', invalidAddrs);
     renderHistory();
     showMessage(verifyStatusDiv, `已清除 ${invalidAddrs.length} 个失效邮箱`, 'success');
     verifyStatusDiv.classList.remove('hidden');
   });
 
   // ===================== Temp Email: 收件箱 =====================
+  // 与 background.js 的 buildTempMailKey / buildMoeMailKey 保持同一口径：有 id 用 id，否则拼接回退字段。
+  function buildSeenMailKeys(messages, getFallbackParts) {
+    if (!Array.isArray(messages)) return [];
+    return messages.map((mail) => (mail?.id !== undefined && mail?.id !== null
+      ? String(mail.id)
+      : getFallbackParts(mail).map((value) => value || '').join('|')));
+  }
+
   function openInboxView(address) {
     tempInboxController?.open(address);
   }
@@ -5813,13 +6612,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     history = history.filter(a => a !== addr);
     delete verifyStatus[addr];
     delete tempUnreadCounts[addr];
-    delete tempMailMeta[addr];
     chrome.storage.local.set({
       emailHistory: history,
-      verifyStatusCache: verifyStatus,
-      tempUnreadCounts,
-      [TEMP_MAIL_META_KEY]: tempMailMeta
+      verifyStatusCache: verifyStatus
     });
+    // M15：meta 合并写回；L2：未读/已知 id/轮询状态交给后台清理。
+    updateTempMailMeta((meta) => { delete meta[addr]; });
+    requestRemoveMailState('temp', [addr]);
     liElement.style.transition = 'opacity 0.3s, transform 0.3s';
     liElement.style.opacity = '0';
     liElement.style.transform = 'translateX(20px)';
@@ -5852,7 +6651,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     );
     if (!fallbackRes.ok) {
-      throw new Error(`${res.status}`);
+      // L6：报告兜底接口自己的状态码，而不是恒为 404 的首个请求。
+      throw new Error(`${fallbackRes.status}`);
     }
 
     const fallbackData = await fallbackRes.json();
@@ -5920,9 +6720,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderHistory();
         runtimeSendMessage({ type: 'clear-temp-unread', address }).catch(() => {});
       },
-      onMessagesLoaded: (address) => {
+      onMessagesLoaded: (address, messages) => {
+        // L2：只在本地乐观置 0；持久化由后台 clear-temp-unread 负责，不整对象写 tempUnreadCounts。
+        // seenMailKeys：已展示给用户的邮件并入后台 known，避免首轮轮询把它们再计为新邮件。
         tempUnreadCounts[address] = 0;
-        chrome.storage.local.set({ tempUnreadCounts });
+        runtimeSendMessage({
+          type: 'clear-temp-unread',
+          address,
+          seenMailKeys: buildSeenMailKeys(messages, (mail) => [mail?.created_at, mail?.source, mail?.subject])
+        }).catch(() => {});
       },
       resetDetail: () => resetMailReader(tempMailReader),
       prepareDetail: (mail) => {
@@ -6056,7 +6862,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const previousCache = currentMoeEmails.map(email => ({
         id: email.id,
         address: email.address,
-        expiresAt: email.expiresAt
+        expiresAt: email.expiresAt,
+        // 后台首轮轮询以创建时间为分界判断“新邮件”（M1），MoeMail 列表接口返回 createdAt。
+        createdAt: email.createdAt
       }));
       const response = await runtimeSendMessage({
         type: 'get-moe-email-list',
@@ -6067,7 +6875,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const nextCache = currentMoeEmails.map(email => ({
         id: email.id,
         address: email.address,
-        expiresAt: email.expiresAt
+        expiresAt: email.expiresAt,
+        // 后台首轮轮询以创建时间为分界判断“新邮件”（M1），MoeMail 列表接口返回 createdAt。
+        createdAt: email.createdAt
       }));
       if (JSON.stringify(previousCache) !== JSON.stringify(nextCache)) {
         chrome.storage.local.set({ moeEmailCache: nextCache });
@@ -6204,12 +7014,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     moeMarkAllReadBtn.disabled = true;
+    // L2：本地内存乐观置 0 只用于刷新 UI；持久化交给后台的 clear-moe-unread。
     const nextMoeUnreadCounts = { ...moeUnreadCounts };
     unreadEmails.forEach((email) => {
       nextMoeUnreadCounts[String(email.id)] = 0;
     });
     moeUnreadCounts = nextMoeUnreadCounts;
-    chrome.storage.local.set({ moeUnreadCounts });
     renderMoeEmails();
     showMessage(moeCreateMessage, `已将 ${unreadEmails.length} 个邮箱标为已读`, 'success');
 
@@ -6249,7 +7059,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       selected.forEach((emailId) => {
         delete moeUnreadCounts[String(emailId)];
       });
-      chrome.storage.local.set({ moeUnreadCounts });
+      // L2：未读/已知 id/轮询状态交给后台清理，不整对象写 moeUnreadCounts。
+      requestRemoveMailState('moe', selected);
     },
     afterDelete: () => moeLoadEmails({ forceRefresh: true })
   });
@@ -6269,7 +7080,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         throw new Error(errData.error || `${res.status}`);
       }
       delete moeUnreadCounts[String(emailId)];
-      chrome.storage.local.set({ moeUnreadCounts });
+      // L2：未读/已知 id/轮询状态交给后台清理，不整对象写 moeUnreadCounts。
+      requestRemoveMailState('moe', [emailId]);
       cardElement.style.transition = 'opacity 0.3s, transform 0.3s';
       cardElement.style.opacity = '0';
       cardElement.style.transform = 'translateX(20px)';
@@ -6333,9 +7145,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderMoeEmails();
         runtimeSendMessage({ type: 'clear-moe-unread', emailId: email.id }).catch(() => {});
       },
-      onMessagesLoaded: (email) => {
+      onMessagesLoaded: (email, messages) => {
+        // L2：只在本地乐观置 0；持久化由后台 clear-moe-unread 负责，不整对象写 moeUnreadCounts。
         moeUnreadCounts[String(email.id)] = 0;
-        chrome.storage.local.set({ moeUnreadCounts });
+        runtimeSendMessage({
+          type: 'clear-moe-unread',
+          emailId: email.id,
+          seenMailKeys: buildSeenMailKeys(messages, (mail) => [mail?.received_at, mail?.from_address, mail?.subject])
+        }).catch(() => {});
       },
       resetDetail: () => resetMailReader(moeMailReader),
       prepareDetail: (mail) => {
@@ -6359,11 +7176,46 @@ document.addEventListener('DOMContentLoaded', async () => {
     element.className = `message ${type}`;
   }
 
+  // L26 / L31：轻量全局提示。用于当前页没有合适消息元素的场景（如生成历史页、收件箱详情），
+  // 固定显示在面板底部，几秒后自动消失。
+  let popupToastTimer = null;
+  function showToast(text, type = 'info') {
+    const message = String(text || '').trim();
+    if (!message) return;
+    let toast = document.getElementById('popup-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'popup-toast';
+      toast.setAttribute('role', 'status');
+      toast.setAttribute('aria-live', 'polite');
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.className = `popup-toast ${type || 'info'} visible`;
+    clearTimeout(popupToastTimer);
+    popupToastTimer = setTimeout(() => {
+      toast.className = `popup-toast ${type || 'info'}`;
+    }, type === 'error' ? 4000 : 2500);
+  }
+
   function copyToClipboard(text, btnElement) {
     const onSuccess = () => {
-      const originalHTML = btnElement.innerHTML;
+      if (!btnElement) return;
+      // L30：连点时第二次记下的会是「对勾」，最终停在对勾上。
+      // 只在首次记录原始 HTML，并清掉上一次的恢复定时器，由最后一次统一恢复。
+      if (btnElement.dataset.copyOriginalHtml === undefined) {
+        btnElement.dataset.copyOriginalHtml = btnElement.innerHTML;
+      }
+      clearTimeout(Number(btnElement.dataset.copyRestoreTimer));
       btnElement.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4caf50" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-      setTimeout(() => { btnElement.innerHTML = originalHTML; }, 1500);
+      const restoreTimer = setTimeout(() => {
+        if (btnElement.dataset.copyOriginalHtml !== undefined) {
+          btnElement.innerHTML = btnElement.dataset.copyOriginalHtml;
+        }
+        delete btnElement.dataset.copyOriginalHtml;
+        delete btnElement.dataset.copyRestoreTimer;
+      }, 1500);
+      btnElement.dataset.copyRestoreTimer = String(restoreTimer);
     };
 
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -6609,8 +7461,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>';
       delBtn.onclick = (e) => {
         e.stopPropagation();
-        bookmarks.splice(idx, 1);
-        chrome.storage.local.set({ bookmarks });
+        // L29：淡出的 300ms 内卡片仍可点击，旧 idx 可能已指向相邻书签。
+        // 首次点击后立即禁用本按钮（并屏蔽整张卡片的交互），按 url 定位当前位置再删除。
+        if (delBtn.disabled) return;
+        delBtn.disabled = true;
+        card.style.pointerEvents = 'none';
+        let currentIndex = bookmarks.findIndex(b => b.url === bm.url && b.name === bm.name);
+        if (currentIndex < 0) currentIndex = bookmarks.findIndex(b => b.url === bm.url);
+        if (currentIndex >= 0) {
+          bookmarks.splice(currentIndex, 1);
+          chrome.storage.local.set({ bookmarks });
+        }
         card.style.opacity = '0';
         card.style.transform = 'translateX(20px)';
         setTimeout(() => renderBookmarks(), 300);
@@ -6814,15 +7675,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         if (toStore[JEV_ENABLED_KEY] !== undefined) {
           jevEnabled = toStore[JEV_ENABLED_KEY] === true;
-          if (jevEnabledToggle) jevEnabledToggle.checked = jevEnabled;
-          syncJevSettingsVisibility();
         }
+        applyInsightPipelineSettings(toStore);
         if (toStore[JEV_API_BASE_KEY] !== undefined) {
           jevApiBase = normalizeTranslationSetting(toStore[JEV_API_BASE_KEY]);
           if (jevApiBaseInput) jevApiBaseInput.value = jevApiBase;
         }
         if (toStore[JEV_API_KEY_KEY] !== undefined) {
-          jevApiKey = normalizeTranslationSetting(toStore[JEV_API_KEY_KEY]);
+          jevApiKey = normalizeJevApiKeysText(toStore[JEV_API_KEY_KEY]);
           if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
         }
         if (toStore[JEV_ENDPOINT_PATH_KEY] !== undefined) {
@@ -6845,6 +7705,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (toStore[TAB_LAYOUT_MODE_KEY] !== undefined) applyTabLayoutMode();
         if (toStore[THEME_KEY] !== undefined) {
           applyTheme(toStore[THEME_KEY]);
+        }
+        // L12：风格页的 selectedStyle / selectedTheme 作用在 body 上，导入后也要立即生效。
+        // 导入项可能只含其中一个，读 storage 最新值组合后再应用。
+        if (toStore.selectedStyle !== undefined || toStore.selectedTheme !== undefined) {
+          storageGet(['selectedStyle', 'selectedTheme']).then((latest) => {
+            applySelectedStyleTheme(latest?.selectedStyle, latest?.selectedTheme);
+          }).catch(() => {});
         }
         if (toStore.siteAccessMode !== undefined) {
           siteAccessMode = toStore.siteAccessMode || 'all';
@@ -7197,6 +8064,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     handledPanelCommandIds.add(request.requestId);
 
+    // M11：执行前先「认领」命令 —— storage 里的仍是这一条时立即移除。
+    // 去重集合只在内存里，iframe 在 10 秒有效期内重载后，新实例启动补捞会拿到同一条命令
+    // 再执行一次（run-fast-fill 会再建一个邮箱）。移除后新实例就补捞不到了。
+    // content.js 在拿到结果/超时后也会按 requestId 移除，双保险。
+    try {
+      const pending = await storageGet([PANEL_COMMAND_KEY]);
+      if (pending?.[PANEL_COMMAND_KEY]?.requestId === request.requestId) {
+        await storageRemove(PANEL_COMMAND_KEY);
+      }
+    } catch {
+      // 认领失败不影响执行，最坏情况退化为原先的行为。
+    }
+
     // 必须等本实例初始化完成：apiUrl / moeApiKey 等配置在初始化的 storageGet 里才就位，
     // 提前执行会因为没有域名而误报「无可用域名」。
     await panelInitReady;
@@ -7272,6 +8152,71 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentMoeEmails = Array.isArray(changes.moeEmailCache.newValue) ? changes.moeEmailCache.newValue : [];
       scheduleStorageRender('moe');
     }
+    // M15：别的实例（或后台过期清理）改了 tempMailMeta 时同步到内存，并刷新剩余时间提示。
+    if (changes[TEMP_MAIL_META_KEY]) {
+      const nextMeta = changes[TEMP_MAIL_META_KEY].newValue;
+      tempMailMeta = nextMeta && typeof nextMeta === 'object' ? nextMeta : {};
+      scheduleStorageRender('history');
+    }
+
+    // L4：快填配置跨实例同步并回填 UI。
+    let fastFillDomainUiChanged = false;
+    if (changes[FAST_FILL_EMAIL_SOURCE_KEY]) {
+      fastFillEmailSource = changes[FAST_FILL_EMAIL_SOURCE_KEY].newValue === 'moe' ? 'moe' : 'temp';
+      fastFillEmailSourceEl.value = fastFillEmailSource;
+      fastFillMoeExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'moe');
+      fastFillTempExpiryRow.classList.toggle('hidden', fastFillEmailSource !== 'temp');
+      fastFillDomainUiChanged = true;
+    }
+    if (changes[FAST_FILL_DOMAIN_MODE_KEY]) {
+      fastFillDomainMode = changes[FAST_FILL_DOMAIN_MODE_KEY].newValue || 'random';
+      fastFillDomainModeEl.value = fastFillDomainMode;
+      fastFillDomainUiChanged = true;
+    }
+    if (changes[FAST_FILL_DOMAIN_SPECIFIC_KEY]) {
+      fastFillDomainSpecific = changes[FAST_FILL_DOMAIN_SPECIFIC_KEY].newValue || '';
+      fastFillDomainUiChanged = true;
+    }
+    if (changes[FAST_FILL_DOMAIN_WHITELIST_KEY]) {
+      const nextWhitelist = changes[FAST_FILL_DOMAIN_WHITELIST_KEY].newValue;
+      fastFillDomainWhitelist = Array.isArray(nextWhitelist) ? nextWhitelist : [];
+      fastFillDomainUiChanged = true;
+    }
+    if (changes[FAST_FILL_DOMAIN_BLACKLIST_KEY]) {
+      const nextBlacklist = changes[FAST_FILL_DOMAIN_BLACKLIST_KEY].newValue;
+      fastFillDomainBlacklist = Array.isArray(nextBlacklist) ? nextBlacklist : [];
+      fastFillDomainUiChanged = true;
+    }
+    if (changes[FAST_FILL_NAME_REGION_KEY]) {
+      fastFillNameRegion = changes[FAST_FILL_NAME_REGION_KEY].newValue || 'en';
+      if (ffNameRegionEl) ffNameRegionEl.value = fastFillNameRegion;
+    }
+    if (changes[FAST_FILL_NAME_GENDER_KEY]) {
+      fastFillNameGender = changes[FAST_FILL_NAME_GENDER_KEY].newValue || 'random';
+      if (ffNameGenderEl) ffNameGenderEl.value = fastFillNameGender;
+    }
+    if (changes[FAST_FILL_HISTORY_KEY]) {
+      const nextHistory = changes[FAST_FILL_HISTORY_KEY].newValue;
+      fastFillHistory = Array.isArray(nextHistory) ? nextHistory.slice(0, FAST_FILL_HISTORY_MAX) : [];
+      renderFastFillHistory();
+    }
+    if (fastFillDomainUiChanged) {
+      // 来源变化时对应来源的域名可能尚未加载，按需加载（已加载过则只刷新 UI）。
+      fastFillRefreshDomainModeUI();
+      if (changes[FAST_FILL_EMAIL_SOURCE_KEY] && activeTab === 'fast-fill') {
+        fastFillLoadDomains().catch(() => {});
+      }
+    }
+
+    // L4：默认过期时间跨实例同步，并回填设置页与各创建页的下拉框。
+    const expiryChanges = {};
+    [DEFAULT_FF_TEMP_EXPIRY_KEY, DEFAULT_FF_MOE_EXPIRY_KEY, DEFAULT_TEMP_EXPIRY_KEY, DEFAULT_MOE_EXPIRY_KEY]
+      .forEach((key) => {
+        if (changes[key]) expiryChanges[key] = changes[key].newValue;
+      });
+    if (Object.keys(expiryChanges).length) {
+      applyDefaultExpirySettings(expiryChanges);
+    }
 
     // Temp Email 配置变动
     const tempConfigChanged = Boolean(changes.apiUrl || changes.adminToken);
@@ -7335,6 +8280,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (changes[THEME_KEY]) {
       applyTheme(changes[THEME_KEY].newValue);
     }
+    // L4：风格页的风格/配色作用在 body 的 data-style / data-theme 上，也要跨实例同步。
+    if (changes.selectedStyle || changes.selectedTheme) {
+      const nextStyle = changes.selectedStyle
+        ? changes.selectedStyle.newValue
+        : document.body.getAttribute('data-style');
+      const nextTheme = changes.selectedTheme
+        ? changes.selectedTheme.newValue
+        : document.body.getAttribute('data-theme');
+      applySelectedStyleTheme(nextStyle, nextTheme);
+    }
     if (changes.verifyInterval) {
       setupAutoVerify(normalizeIntervalSetting(changes.verifyInterval.newValue, DISABLED_INTERVAL_SETTING));
     }
@@ -7392,15 +8347,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     if (changes[JEV_ENABLED_KEY]) {
       jevEnabled = changes[JEV_ENABLED_KEY].newValue === true;
-      if (jevEnabledToggle) jevEnabledToggle.checked = jevEnabled;
-      syncJevSettingsVisibility();
+    }
+    const pipelineKeys = [MAIL_INSIGHT_EXTRACTION_MODE_KEY, MAIL_INSIGHT_JUDGE_BACKEND_KEY,
+      CLEF_ACCOUNTS_KEY, CLEF_ACCOUNT_ID_KEY, CLEF_API_TOKEN_KEY, CLEF_MODEL_KEY, JEV_ENABLED_KEY];
+    if (pipelineKeys.some((key) => changes[key])) {
+      const values = {};
+      pipelineKeys.forEach((key) => { if (changes[key]) values[key] = changes[key].newValue; });
+      applyInsightPipelineSettings(values);
     }
     if (changes[JEV_API_BASE_KEY]) {
       jevApiBase = normalizeTranslationSetting(changes[JEV_API_BASE_KEY].newValue);
       if (jevApiBaseInput) jevApiBaseInput.value = jevApiBase;
     }
     if (changes[JEV_API_KEY_KEY]) {
-      jevApiKey = normalizeTranslationSetting(changes[JEV_API_KEY_KEY].newValue);
+      jevApiKey = normalizeJevApiKeysText(changes[JEV_API_KEY_KEY].newValue);
       if (jevApiKeyInput) jevApiKeyInput.value = jevApiKey;
     }
     if (changes[JEV_ENDPOINT_PATH_KEY]) {
@@ -7456,7 +8416,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       || changes[MAIL_INSIGHT_API_KEY_KEY] || changes[MAIL_INSIGHT_MODEL_KEY]
       || changes[TRANSLATION_API_BASE_KEY] || changes[TRANSLATION_API_KEY_KEY] || changes[TRANSLATION_MODEL_KEY]
       || changes[JEV_ENABLED_KEY] || changes[JEV_API_BASE_KEY] || changes[JEV_API_KEY_KEY]
-      || changes[JEV_ENDPOINT_PATH_KEY] || changes[JEV_MODEL_KEY] || changes[JEV_RECALL_MODE_KEY];
+      || changes[JEV_ENDPOINT_PATH_KEY] || changes[JEV_MODEL_KEY] || changes[JEV_RECALL_MODE_KEY]
+      || pipelineKeys.some((key) => changes[key]);
     if (insightConfigChanged) {
       [tempMailReader, moeMailReader].forEach((reader) => {
         if (reader.getMail()) triggerMailAiInsights(reader, true);

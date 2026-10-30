@@ -44,6 +44,7 @@ jobs:
           zip -r "${{ steps.vars.outputs.zip_name }}" \
             manifest.json \
             background.js \
+            shared-utils.js \
             content.js content.css \
             popup.html popup.js popup.css \
             popup-modules/ \

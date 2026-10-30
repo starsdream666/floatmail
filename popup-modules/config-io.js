@@ -6,7 +6,7 @@
     moemail: ['moeApiUrl', 'moeApiKey', 'moeEmailCache', 'moeUnreadCounts', 'defaultMoeExpiry'],
     floatWindow: ['floatWindowEnabled', 'floatLayout', 'floatWindowStyle'],
     backgroundMail: ['verifyInterval', 'mailPollingInterval', 'notificationsEnabled'],
-    mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel', 'jevEnabled', 'jevApiBase', 'jevApiKey', 'jevEndpointPath', 'jevModel', 'jevRecallMode'],
+    mailDisplay: ['defaultRemoteImagesEnabled', 'translationApiBase', 'translationApiKey', 'translationModel', 'translationTargetLanguage', 'mailInsightApiMode', 'mailInsightApiBase', 'mailInsightApiKey', 'mailInsightModel', 'mailInsightExtractionMode', 'mailInsightJudgeBackend', 'clefAccounts', 'clefAccountId', 'clefApiToken', 'clefModel', 'jevEnabled', 'jevApiBase', 'jevApiKey', 'jevEndpointPath', 'jevModel', 'jevRecallMode'],
     siteControl: ['siteAccessMode', 'siteAllowlist', 'siteBlocklist'],
     pageFillRules: ['pageFillRules', 'fastFillEmailSource', 'fastFillDomainMode', 'fastFillDomainSpecific', 'fastFillDomainWhitelist', 'fastFillDomainBlacklist', 'fastFillNameRegion', 'fastFillNameGender', 'defaultFfTempExpiry', 'defaultFfMoeExpiry'],
     generatedProfile: ['generatedProfile', 'generatedToolAutoCloseSeconds', 'generatedToolHistory'],
@@ -49,7 +49,9 @@
     'moeApiKey',
     'translationApiKey',
     'mailInsightApiKey',
-    'jevApiKey'
+    'jevApiKey',
+    'clefApiToken',
+    'clefAccounts'
   ]);
 
   const REDACTED_MARK = '***';
@@ -73,7 +75,7 @@
     defaultTab: ['temp-email', 'moe-mail'],
     activeTab: [
       'fast-fill', 'temp-email', 'moe-mail', 'bookmarks', 'tools',
-      'generated-history', 'fill-rules', 'themes', 'settings', 'config-io'
+      'generated-history', 'fill-rules', 'themes', 'ai-settings', 'settings', 'config-io'
     ],
     theme: VALID_THEMES,
     selectedTheme: VALID_THEMES,
@@ -83,6 +85,9 @@
     fastFillNameRegion: ['zh', 'en'],
     fastFillNameGender: ['random', 'male', 'female'],
     mailInsightApiMode: ['translation', 'custom', 'none'],
+    mailInsightExtractionMode: ['hybrid', 'ai-only', 'ai-judge'],
+    mailInsightJudgeBackend: ['none', 'jev', 'clef'],
+    clefModel: ['clef', 'clef-flash'],
     bookmarkSort: ['custom', 'time-desc', 'time-asc', 'name-asc']
   };
 
@@ -194,6 +199,20 @@
     return false;
   }
 
+  function maskConfigSecret(key, value) {
+    if (key !== 'clefAccounts' || !Array.isArray(value)) return maskSecretValue(value);
+    return value.map((account) => ({ id: account.id, name: account.name, accountId: account.accountId,
+      apiToken: maskSecretValue(account.apiToken) }));
+  }
+
+  function isRedactedConfigSecret(key, value) {
+    if (key === 'clefAccounts' && Array.isArray(value)) {
+      // 账号与 Key 是不可拆分的绑定；脱敏导入跳过整个池，保护当前真实 Key。
+      return value.some((account) => isRedactedSecretValue(account?.apiToken));
+    }
+    return isRedactedSecretValue(value);
+  }
+
   function isIntegerLike(value) {
     if (typeof value === 'number') {
       return Number.isInteger(value);
@@ -232,6 +251,13 @@
    * SEC-6：值级校验。返回 false 的键会被跳过并汇总提示，不再整体中断导入。
    */
   function validateImportValue(key, value) {
+    if (key === 'clefAccounts') {
+      return Array.isArray(value) && value.length <= MAX_ARRAY_LENGTH && value.every((account) =>
+        isPlainObject(account) && typeof account.accountId === 'string' && /^[a-f0-9]{32}$/i.test(account.accountId.trim())
+        && typeof account.apiToken === 'string' && account.apiToken.trim() && !/[\r\n]/.test(account.apiToken.trim())
+        && (account.id === undefined || (typeof account.id === 'string' && /^[\w-]{1,80}$/.test(account.id)))
+        && (account.name === undefined || (typeof account.name === 'string' && account.name.length <= 60)));
+    }
     if (ARRAY_KEYS.has(key)) {
       return Array.isArray(value) && value.length <= MAX_ARRAY_LENGTH;
     }
@@ -266,14 +292,26 @@
     if (SECRET_KEYS.has(key)) {
       return typeof value === 'string';
     }
+    if (key === 'clefAccountId') {
+      return typeof value === 'string' && (!value.trim() || /^[a-f0-9]{32}$/i.test(value.trim()));
+    }
     return typeof value === 'string';
   }
 
+  // url 字段必须是 http/https、否则整条丢弃的数组（书签的 url 会被直接打开）。
+  const URL_REQUIRED_ARRAY_KEYS = new Set(['bookmarks']);
+
   /**
-   * 数组项级清洗：书签等条目自带 url 时必须是 http/https，非法条目直接丢弃。
+   * 数组项级清洗：书签条目的 url 必须是 http/https，非法条目直接丢弃；
+   * 其他数组（如 generatedToolHistory，url 只作展示、可能是 chrome:// 或空）
+   * 遇到非法 url 时把 url 置为空字符串并保留条目。
    * 返回 { value, dropped }，dropped 用于导入结果汇总。
    */
   function sanitizeImportValue(key, value) {
+    if (key === 'clefAccounts' && Array.isArray(value)) {
+      return { value: value.map((account) => ({ id: account.id, name: account.name || '',
+        accountId: account.accountId.trim().toLowerCase(), apiToken: account.apiToken.trim() })), dropped: 0 };
+    }
     if (!Array.isArray(value)) {
       return { value, dropped: 0 };
     }
@@ -283,9 +321,13 @@
 
     value.forEach((item) => {
       if (isPlainObject(item)) {
-        // 含 url 字段的条目（bookmarks、以及其他历史类数组）统一校验协议
         if (Object.prototype.hasOwnProperty.call(item, 'url') && !isValidHttpUrl(item.url)) {
-          dropped += 1;
+          if (URL_REQUIRED_ARRAY_KEYS.has(key)) {
+            dropped += 1;
+            return;
+          }
+          // 非书签数组：清空非法 url，保留条目本身
+          kept.push({ ...item, url: '' });
           return;
         }
         kept.push(item);
@@ -412,7 +454,7 @@
               return;
             }
             if (SECRET_KEYS.has(key) && !includeSecrets) {
-              exportData[category][key] = maskSecretValue(result[key]);
+              exportData[category][key] = maskConfigSecret(key, result[key]);
               redactedCount += 1;
               return;
             }
@@ -514,7 +556,7 @@
               }
 
               // SEC-5：脱敏占位符绝不能写回 storage，否则会毁掉用户的真实密钥。
-              if (SECRET_KEYS.has(key) && isRedactedSecretValue(rawValue)) {
+              if (SECRET_KEYS.has(key) && isRedactedConfigSecret(key, rawValue)) {
                 skippedSecretCount += 1;
                 return;
               }
@@ -549,6 +591,15 @@
           // 已下线的旧布局只做兼容读取，落库时统一迁移到当前模式。
           if (toStore.tabLayoutMode !== undefined) toStore.tabLayoutMode = 'sidebar';
           if (toStore.floatWindowStyle !== undefined) toStore.floatWindowStyle = 'modern';
+          if (toStore.mailInsightJudgeBackend === undefined && typeof toStore.jevEnabled === 'boolean') {
+            toStore.mailInsightJudgeBackend = toStore.jevEnabled ? 'jev' : 'none';
+          }
+          if (data.mailDisplay?.clefAccounts === undefined && toStore.clefAccounts === undefined
+            && typeof toStore.clefAccountId === 'string' && typeof toStore.clefApiToken === 'string') {
+            const tokens = Array.from(new Set(toStore.clefApiToken.split(/\r?\n/).map((token) => token.trim()).filter(Boolean)));
+            toStore.clefAccounts = tokens.map((apiToken, index) => ({ id: `clef-legacy-${index + 1}`, name: '',
+              accountId: toStore.clefAccountId.trim().toLowerCase(), apiToken }));
+          }
 
           chrome.storage.local.set(toStore, () => {
             let tip = `已导入 ${importedCount} 个分类`;
@@ -592,6 +643,8 @@
   window.PopupConfigIO = {
     CATEGORY_KEYS,
     SECRET_KEYS,
+    // 纯函数，供测试直接校验导入清洗规则
+    sanitizeImportValue,
     initConfigIO
   };
 })();

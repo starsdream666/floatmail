@@ -220,7 +220,7 @@ test('extension entrypoints and UI reference the same migrated rule feature', ()
   const html = readFileSync(join(__dirname, '../popup.html'), 'utf8');
   const css = readFileSync(join(__dirname, '../popup.css'), 'utf8');
   const version = text => text.match(/const PAGE_TOOLS_VERSION = '([^']+)'/)[1];
-  assert.equal(version(content), '2026.09.14-login-rules-main-v3');
+  assert.equal(version(content), '2026.09.27-bugfix-v1');
   assert.equal(version(background), version(content));
   assert.equal((html.match(/id="fill-rule-mode"/g) || []).length, 1);
   assert.match(html, /<option value="login">登录规则（全部字段）<\/option>/);

@@ -53,7 +53,11 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.69l5.66 5.66a8 8 0 1 1-11.31 0z"/></svg>
         风格
       </button>
-      <button class="tab-btn" data-tab="settings" data-title="设置" data-subtitle="统一管理接口、通知、悬浮窗和站点注入策略。">
+      <button class="tab-btn" data-tab="ai-settings" data-title="AI 配置" data-subtitle="配置邮件翻译、验证码提取和 JEV / Clef 判定。">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6Z"/></svg>
+        AI 配置
+      </button>
+      <button class="tab-btn" data-tab="settings" data-title="设置" data-subtitle="管理邮箱接口、通知、悬浮窗和站点注入策略。">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         设置
       </button>
@@ -616,6 +620,7 @@
       <div class="page-card">
         <h4 class="settings-section-title">选择主题风格</h4>
         <div class="tool-note">选择您喜欢的视觉风格和颜色主题，点击即可应用。当前主题会自动保存。</div>
+        <div id="themes-message" class="message"></div>
       </div>
 
       <!-- 风格网格 -->
@@ -782,6 +787,98 @@
       </div>
     </div>
 
+    <!-- ===================== AI 配置页面 ===================== -->
+    <div id="ai-settings-page" class="hidden">
+      <div class="settings-section page-card">
+        <div class="form-group">
+          <label>AI 邮件翻译（OpenAI 兼容）</label>
+          <input type="url" id="translation-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
+          <input type="password" id="translation-api-key" class="wide-select" placeholder="sk-..." />
+          <div class="model-fetch-row">
+            <input type="text" id="translation-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+            <button id="fetch-translation-models-btn" class="btn text-btn" type="button">获取模型</button>
+          </div>
+          <select id="translation-model-select" class="wide-select hidden" data-no-scroll-lock></select>
+          <input type="text" id="translation-target-language" class="wide-select" placeholder="简体中文" />
+          <button id="test-translation-api-btn" class="btn text-btn" type="button">测试翻译 API 连接</button>
+          <div id="translation-api-test-message" class="message ai-connection-result" role="status" aria-live="polite"></div>
+          <div class="tool-note">使用 OpenAI 兼容 Chat Completions 接口，点击翻译或连接测试时调用外部 API。测试直接使用当前填写的地址、Key 和模型，无需先保存；固定短样例会产生少量 API 用量，不会发送真实邮件。API Key 只保存在本地扩展配置中。</div>
+        </div>
+      </div>
+
+      <div class="settings-section page-card">
+        <div class="form-group">
+          <label>AI 验证码/验证链接提取（OpenAI 兼容）</label>
+          <select id="mail-insight-api-mode" class="wide-select">
+            <option value="translation">直接复用翻译 API</option>
+            <option value="custom">使用独立提取 API</option>
+            <option value="none">不使用 AI 提取（本地规则，可搭配判定模型）</option>
+          </select>
+          <label for="mail-insight-extraction-mode">提取方式</label>
+          <select id="mail-insight-extraction-mode" class="wide-select">
+            <option value="hybrid">本地规则 + AI 补充提取</option>
+            <option value="ai-only">仅 AI 提取</option>
+            <option value="ai-judge">AI 提取 + JEV / Clef 判定</option>
+          </select>
+          <div class="tool-note">仅 AI 提取时不使用本地规则和判定模型；AI + 判定时，仅将 AI 找到的候选交给所选模型。两种 AI 模式都保留原文校验，失败时不回落本地规则。</div>
+          <div id="mail-insight-custom-api-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+            <input type="url" id="mail-insight-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
+            <input type="password" id="mail-insight-api-key" class="wide-select" placeholder="sk-..." />
+            <div class="model-fetch-row">
+              <input type="text" id="mail-insight-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
+              <button id="fetch-insight-models-btn" class="btn text-btn" type="button">获取模型</button>
+            </div>
+            <select id="mail-insight-model-select" class="wide-select hidden" data-no-scroll-lock></select>
+          </div>
+          <button id="test-insight-api-btn" class="btn text-btn" type="button">测试提取 API 连接</button>
+          <div id="insight-api-test-message" class="message ai-connection-result" role="status" aria-live="polite"></div>
+          <div class="tool-note">打开邮件时会自动调用所选 API。复用翻译 API 时独立配置可留空。本地规则 + AI 模式下，AI 失败会保留本地结果；仅 AI 模式下显示失败原因，可在邮件洞察区重试。</div>
+        </div>
+      </div>
+
+      <div class="settings-section page-card">
+        <div class="form-group" id="mail-insight-judge-settings">
+          <label for="mail-insight-judge-backend">验证码 / 验证链接判定增强</label>
+          <select id="mail-insight-judge-backend" class="wide-select">
+            <option value="none">关闭</option>
+            <option value="jev">JEV（TypeSafe System One）</option>
+            <option value="clef">Clef（Cloudflare Workers AI）</option>
+          </select>
+          <div id="jev-settings-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;">
+            <input type="url" id="jev-api-base" class="wide-select" placeholder="https://newapi.cfwork.cc.cd" />
+            <textarea id="jev-api-key" class="wide-select jev-api-keys-input" rows="4" autocomplete="off" spellcheck="false" aria-label="Jev API 密钥，每行一个" placeholder="每行输入一个密钥&#10;sk-key-1&#10;sk-key-2"></textarea>
+            <div class="tool-note" style="margin:0;">支持一次保存多个密钥，每行一个（重复项会自动去除，内容会隐藏显示）。每次判定会随机选择密钥；请求报错后自动更换未尝试过的密钥，最多重试 3 次。</div>
+            <input type="text" id="jev-endpoint-path" class="wide-select" placeholder="/typesafe/v1/systemone" />
+            <input type="text" id="jev-model" class="wide-select" placeholder="jev-latest" />
+            <button id="test-jev-api-btn" class="btn text-btn" type="button">测试 JEV 连接（全部 Key）</button>
+            <div id="jev-api-test-message" class="message ai-connection-result" role="status" aria-live="polite"></div>
+            <div class="tool-note" style="margin:0;">端点路径因网关而异：官方 <code>/v1/systemone</code>，new-api 网关 <code>/typesafe/v1/systemone</code>。</div>
+          </div>
+          <div id="clef-settings-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+            <div id="clef-accounts-list" class="settings-stack-block"></div>
+            <button type="button" id="clef-add-account" class="btn text-btn">添加账号</button>
+            <button type="button" id="test-clef-accounts-btn" class="btn text-btn">测试全部账号连接</button>
+            <div id="clef-api-test-message" class="message ai-connection-result" role="status" aria-live="polite"></div>
+            <div class="tool-note" style="margin:0;">每个账号绑定 Account ID 和一个 API Token，可填写备注区分。每次判定随机选择一组，失败后换用尚未尝试的组，最多请求 4 次。失败记录会显示在对应账号下；修改后请点击「保存 AI 配置」。</div>
+            <select id="clef-model" class="wide-select" aria-label="Clef 模型">
+              <option value="clef">Clef（默认）</option>
+              <option value="clef-flash">Clef Flash</option>
+            </select>
+            <div class="tool-note" style="margin:0;">直连 Cloudflare Workers AI，使用每日免费神经元额度，无需 AI Gateway。免费账户额度耗尽后请求会失败；付费账户超额可能计费。密钥仅保存在本地，默认导出时脱敏。</div>
+          </div>
+          <label class="config-check" style="display:block;margin-top:8px;">
+            <input type="checkbox" id="jev-recall-mode-toggle" /> 本地规则召回优先
+          </label>
+          <div class="tool-note">召回优先仅在本地规则参与提取且所选判定模型配置完整时生效。JEV/Clef 只筛选已有候选；漏提的验证码仍由上方 AI 补充。Clef 低置信度结果会标注未确认，不会自动调用 JEV；检测到索码风险时隐藏本次提取结果。连接测试使用当前填写的配置发送固定短样例，逐项显示结果，不会保存配置或发送真实邮件。</div>
+        </div>
+      </div>
+
+      <div class="settings-save-bar">
+        <button id="save-ai-settings" class="btn primary-btn">保存 AI 配置</button>
+        <div id="ai-settings-message" class="message" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+
     <!-- ===================== 设置页面 ===================== -->
     <div id="settings-page" class="hidden">
       <!-- Temp Email 配置 -->
@@ -889,53 +986,6 @@
           <input type="checkbox" id="default-remote-images-toggle" class="toggle-checkbox" />
         </div>
         <div class="form-group">
-          <label>AI 邮件翻译（OpenAI 兼容）</label>
-          <input type="url" id="translation-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
-          <input type="password" id="translation-api-key" class="wide-select" placeholder="sk-..." />
-          <div class="model-fetch-row">
-            <input type="text" id="translation-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
-            <button id="fetch-translation-models-btn" class="btn text-btn" type="button">获取模型</button>
-          </div>
-          <select id="translation-model-select" class="wide-select hidden" data-no-scroll-lock></select>
-          <input type="text" id="translation-target-language" class="wide-select" placeholder="简体中文" />
-          <div class="tool-note">使用 OpenAI 兼容 Chat Completions 接口。仅在你点击“翻译邮件”时调用外部 API。API Key 只保存在本地扩展配置中，可随配置导入导出。</div>
-        </div>
-        <div class="form-group">
-          <label>AI 验证码/验证链接提取（OpenAI 兼容）</label>
-          <select id="mail-insight-api-mode" class="wide-select">
-            <option value="translation">直接复用翻译 API</option>
-            <option value="custom">使用独立提取 API</option>
-            <option value="none">不使用 AI 提取（仅本地规则 / + Jev）</option>
-          </select>
-          <div id="mail-insight-custom-api-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
-            <input type="url" id="mail-insight-api-base" class="wide-select" placeholder="https://api.openai.com/v1" />
-            <input type="password" id="mail-insight-api-key" class="wide-select" placeholder="sk-..." />
-            <div class="model-fetch-row">
-              <input type="text" id="mail-insight-model" class="wide-select" placeholder="gpt-4.1-mini / deepseek-chat / qwen-plus" />
-              <button id="fetch-insight-models-btn" class="btn text-btn" type="button">获取模型</button>
-            </div>
-            <select id="mail-insight-model-select" class="wide-select hidden" data-no-scroll-lock></select>
-          </div>
-          <div class="tool-note">打开邮件时会自动调用外部 API 提取更高置信度的验证码与验证链接。若选择复用翻译 API，下方独立提取 API 配置可留空；若 AI 提取失败，会保留本地规则结果，并可在邮件洞察区点击重试。</div>
-        </div>
-        <div class="form-group">
-          <label>Jev 判定增强（可选 · TypeSafe System One）</label>
-          <label class="config-check" style="display:block;margin-bottom:8px;">
-            <input type="checkbox" id="jev-enabled-toggle" /> 启用 Jev 判定
-          </label>
-          <div id="jev-settings-fields" class="settings-stack-block hidden" style="display:flex;flex-direction:column;gap:8px;">
-            <input type="url" id="jev-api-base" class="wide-select" placeholder="https://newapi.cfwork.cc.cd" />
-            <input type="password" id="jev-api-key" class="wide-select" placeholder="sk-... 或网关访问密钥" />
-            <input type="text" id="jev-endpoint-path" class="wide-select" placeholder="/typesafe/v1/systemone" />
-            <input type="text" id="jev-model" class="wide-select" placeholder="jev-latest" />
-            <label class="config-check" style="display:block;margin-top:4px;">
-              <input type="checkbox" id="jev-recall-mode-toggle" /> 召回优先（能识别无提示词的裸验证码）
-            </label>
-            <div class="tool-note" style="margin:0;">关闭时为精确优先：只保留提示词紧邻或上下文明确的候选，误报更低。开启后会放宽本地筛选门槛，把「邮件里只写 请拨打 5521 这类没有提示词的短码」也纳入判定，由 Jev 负责剔除噪声 —— 因此仅在 Jev 可用时生效，Jev 未配置或请求失败时自动按精确优先处理。</div>
-          </div>
-          <div class="tool-note">完全可选。不启用时验证码提取照常工作（本地规则 + 上面的 AI 提取）。启用后，会用 Jev 对本地候选做一次结构化裁决，能显著减少误报，并支持一封邮件里有多个验证链接的情况。端点路径因网关而异：官方 <code>/v1/systemone</code>，new-api 网关 <code>/typesafe/v1/systemone</code>。</div>
-        </div>
-        <div class="form-group">
           <label for="generated-result-auto-close-seconds">生成结果自动关闭时间</label>
           <div class="settings-inline-input-row">
             <input type="number" id="generated-result-auto-close-seconds" class="settings-custom-input" min="1" max="3600" step="1" placeholder="30" />
@@ -1013,7 +1063,7 @@
       </div>
 
       <div class="settings-save-bar">
-        <button id="save-settings" class="btn primary-btn">保存全部配置</button>
+        <button id="save-settings" class="btn primary-btn">保存设置</button>
         <div id="settings-message" class="message"></div>
       </div>
 
@@ -1026,7 +1076,7 @@
             <label class="config-check"><input type="checkbox" value="moemail" checked /> Moe Mail 配置</label>
             <label class="config-check"><input type="checkbox" value="floatWindow" checked /> 悬浮窗设置</label>
             <label class="config-check"><input type="checkbox" value="backgroundMail" checked /> 后台轮询与通知</label>
-            <label class="config-check"><input type="checkbox" value="mailDisplay" checked /> 邮件显示偏好</label>
+            <label class="config-check"><input type="checkbox" value="mailDisplay" checked /> 邮件显示与 AI 配置</label>
             <label class="config-check"><input type="checkbox" value="siteControl" checked /> 站点注入控制</label>
             <label class="config-check"><input type="checkbox" value="pageFillRules" checked /> 页面填写规则与快填配置</label>
             <label class="config-check"><input type="checkbox" value="generatedProfile" checked /> 最近生成资料与历史</label>
@@ -1070,10 +1120,14 @@
     </div>
 
   </div>
+  <div id="popup-toast" class="popup-toast" role="status" aria-live="polite"></div>
   <script src="shared-utils.js"></script>
   <script src="popup-modules/mail-render.js"></script>
   <script src="popup-modules/mail-inbox-controller.js"></script>
   <script src="popup-modules/config-io.js"></script>
+  <script src="popup-modules/clef-insight.js"></script>
+  <script src="popup-modules/ai-connection-test.js"></script>
+  <script src="popup-modules/clef-accounts.js"></script>
   <script src="popup-modules/tool-generators.js"></script>
   <script src="popup.js"></script>
 </body>

@@ -134,7 +134,8 @@ function configEngine(overrides = {}) {
   };
   runInNewContext(
     [extractConst('DEFAULT_JEV_ENDPOINT_PATH'), extractConst('DEFAULT_JEV_MODEL'),
-      extractFunction('getJevConfig'), extractFunction('hasJevConfig')].join('\n'),
+      extractFunction('normalizeJevApiKeysText'), extractFunction('getJevConfig'),
+      extractFunction('hasJevConfig')].join('\n'),
     scope
   );
   return scope;
@@ -205,6 +206,83 @@ test('apiBase 结尾的斜杠会被归一，避免拼出双斜杠', () => {
   assert.equal(scope.getJevConfig().apiBase, 'https://gw.example.com');
 });
 
+test('Jev 支持按行保存多个密钥并自动去空、去重', () => {
+  const scope = configEngine();
+  scope.jevEnabled = true;
+  scope.jevApiBase = 'https://gw.example.com';
+  scope.jevApiKey = ' sk-a \r\n\nsk-b\nsk-a ';
+  scope.jevEndpointPath = '/typesafe/v1/systemone';
+  scope.jevModel = 'jev-latest';
+  const config = scope.getJevConfig();
+  assert.deepEqual(plain(config.apiKeys), ['sk-a', 'sk-b']);
+  assert.equal(config.apiKey, 'sk-a', '旧的单密钥字段仍应保留首项以兼容');
+  assert.equal(scope.hasJevConfig(), true);
+});
+
+function callJevEngine(apiKeys, fetchWithTimeout, random = () => 0) {
+  const scope = {
+    normalizeTranslationSetting: (value, fallback = '') => {
+      const text = typeof value === 'string' ? value.trim() : '';
+      return text || fallback;
+    },
+    DEFAULT_JEV_ENDPOINT_PATH: '/typesafe/v1/systemone',
+    DEFAULT_JEV_MODEL: 'jev-latest',
+    JEV_MAX_KEY_RETRIES: 3,
+    AI_REQUEST_TIMEOUT_MS: 45000,
+    Math: { floor: Math.floor, min: Math.min, random },
+    fetchWithTimeout,
+    jevEnabled: true,
+    jevApiBase: 'https://gw.example.com',
+    jevApiKey: apiKeys.join('\n'),
+    jevEndpointPath: '/typesafe/v1/systemone',
+    jevModel: 'jev-latest'
+  };
+  runInNewContext([
+    extractFunction('normalizeJevApiKeysText'),
+    extractFunction('getJevConfig'),
+    extractFunction('hasJevConfig'),
+    extractFunction('callJev')
+  ].join('\n'), scope);
+  return scope;
+}
+
+test('Jev 报错后更换未尝试过的密钥，最多重试 3 次', async () => {
+  const authorizations = [];
+  const scope = callJevEngine(['sk-a', 'sk-b', 'sk-c', 'sk-d'], async (_url, init) => {
+    authorizations.push(init.headers.Authorization);
+    if (authorizations.length < 4) {
+      throw new Error('临时错误');
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ answers: {} })
+    };
+  });
+
+  const result = await scope.callJev({ code: {} }, 'mail');
+  assert.deepEqual(plain(result), { answers: {} });
+  assert.equal(authorizations.length, 4, '首次请求加 3 次重试应共尝试 4 次');
+  assert.equal(new Set(authorizations).size, 4, '每次重试必须更换密钥');
+});
+
+test('Jev 密钥多于 4 个时仍只进行首次请求加 3 次重试', async () => {
+  let callCount = 0;
+  const scope = callJevEngine(
+    ['sk-a', 'sk-b', 'sk-c', 'sk-d', 'sk-e', 'sk-f'],
+    async () => {
+      callCount += 1;
+      throw new Error('网关不可用');
+    }
+  );
+
+  await assert.rejects(
+    scope.callJev({ code: {} }, 'mail'),
+    /已尝试 4 个不同密钥/
+  );
+  assert.equal(callCount, 4);
+});
+
 // ── 静态守卫：这些约束一旦被改坏，测试要立刻报警 ────────────────────
 test('Jev 配置键已注册进 storage 读取列表', () => {
   ['jevEnabled', 'jevApiBase', 'jevApiKey', 'jevEndpointPath', 'jevModel'].forEach((key) => {
@@ -234,7 +312,7 @@ test('链接判定用多个 noul（而非单个 choice），否则会丢链接',
 test('Jev 失败必须回落，不能把异常抛给调用方', () => {
   const fn = extractFunction('extractMailInsightsWithApi');
   // 两处 Jev 调用点都必须被 try/catch 包住
-  const tryCount = (fn.match(/hasJevConfig\(\)/g) || []).length;
+  const tryCount = (fn.match(/hasInsightJudgeConfig\(\)/g) || []).length;
   const catchCount = (fn.match(/jevError = /g) || []).length;
   assert.ok(tryCount >= 2, `应有至少两处 Jev 接入点，实际 ${tryCount}`);
   assert.ok(catchCount >= 1, 'Jev 失败必须被捕获并记录');
@@ -268,7 +346,8 @@ function triggerEngine(extractedResult, options = {}) {
     buildLocalInsightResult: () => ({ codes: ['LOCALONLY'], links: [] }),
     renderMailInsightPanel: () => {},
     renderCurrentMail: () => {},
-    hasJevConfig: () => options.hasJev !== false
+    hasJevConfig: () => options.hasJev !== false,
+    usesLocalInsightExtraction: () => options.local !== false
   };
   runInNewContext(extractFunction('triggerMailAiInsights'), scope);
   return scope;
@@ -318,6 +397,9 @@ function renderEngine(readerState) {
     triggerMailAiInsights: () => {},
     hasJevConfig: () => true,
     hasMailInsightConfig: () => true,
+    hasInsightJudgeConfig: () => true,
+    usesLocalInsightExtraction: () => true,
+    getInsightJudgeLabel: () => 'Jev',
     reader: {
       getInsightStatus: () => readerState.status,
       getInsights: () => readerState.insights,
@@ -384,6 +466,7 @@ function samplingEngine(recall, jevOk) {
   const scope = {
     jevRecallMode: recall,
     hasJevConfig: () => jevOk,
+    hasInsightJudgeConfig: () => jevOk,
     INSIGHT_CODE_MIN_SCORE: 3,
     INSIGHT_CODE_MIN_SCORE_RECALL: -3,
     JEV_MAX_CANDIDATES: 8,
@@ -489,6 +572,7 @@ test('房号在上一行时，真码分数必须高于房号且进得了候选�
   const code = [
     ...names.map((n) => extractConst(n).replace(/^(\s*)const /m, '$1')),
     extractFunction('getCodePrecedingContext'),
+    extractFunction('stripInsightCodeSpaces'),
     extractFunction('hasVerifyKeywordNearby'),
     extractFunction('collectCodeCandidates')
   ].join('\n');
@@ -538,22 +622,25 @@ const COMBO_CONSTS = [
   'INSIGHT_ANCHOR_VERIFY_PATTERN', 'INSIGHT_ANCHOR_DEMOTE_PATTERN', 'INSIGHT_URL_DEMOTE_PATTERN',
   'INSIGHT_URL_SIGNAL_PATTERN', 'INSIGHT_URL_TOKEN_PATTERN', 'INSIGHT_DATE_LIKE_PATTERN',
   'INSIGHT_YEAR_LIKE_PATTERN', 'INSIGHT_PHONE_LIKE_PATTERN', 'INSIGHT_NOISE_CONTEXT_PATTERN',
-  'JEV_MAX_CANDIDATES', 'JEV_MAX_CANDIDATES_RECALL', 'JEV_LINK_THRESHOLD',
+  'JEV_MAX_CANDIDATES', 'JEV_MAX_CANDIDATES_RECALL', 'JEV_LINK_THRESHOLD', 'JEV_MAX_KEY_RETRIES',
   'DEFAULT_JEV_ENDPOINT_PATH', 'DEFAULT_JEV_MODEL', 'DEFAULT_TRANSLATION_API_BASE',
-  'DEFAULT_MAIL_INSIGHT_API_MODE', 'MAX_TRANSLATION_SOURCE_CHARS', 'AI_REQUEST_TIMEOUT_MS'
+  'DEFAULT_MAIL_INSIGHT_API_MODE', 'MAX_TRANSLATION_SOURCE_CHARS', 'TRANSLATION_CHUNK_MAX_CHARS', 'AI_REQUEST_TIMEOUT_MS'
 ];
 
 const COMBO_FNS = [
-  'normalizeTranslationSetting', 'getCodePrecedingContext', 'normalizeAnchorText',
+  'normalizeTranslationSetting', 'getCodePrecedingContext', 'normalizeAnchorText', 'stripInsightCodeSpaces',
   'hasVerifyKeywordNearby', 'collectCodeCandidates', 'collectLinkCandidates',
   'rankInsightCandidates', 'trimUrlPunctuation', 'formatInsightLinkLabel', 'normalizeUrlKey',
-  'dedupeLinksByNormalizedKey', 'getJevConfig', 'hasJevConfig', 'getInsightSamplingParams',
+  'dedupeLinksByNormalizedKey', 'normalizeJevApiKeysText', 'getJevConfig', 'hasJevConfig', 'getInsightSamplingParams',
   'getInsightLinkLimit', 'getFallbackSamplingParams', 'callJev', 'adjudicateInsightsWithJev',
   'normalizeMailInsightApiMode',
   'getMailInsightApiConfig', 'hasMailInsightConfig', 'normalizeTranslationSource',
+  'splitTranslationChunks', 'requestChatCompletion',
   'buildLocalInsightResult', 'mergeInsightValues', 'parseMailInsightJson', 'normalizeAiInsightResult',
   'normalizeAiInsightCode', 'verifyCodesAgainstSource', 'verifyLinksAgainstSource',
-  'extractHttpUrlsFromText', 'fallbackToJevOrLocal', 'extractMailInsightsWithApi'
+  'extractHttpUrlsFromText', 'fallbackToJevOrLocal', 'extractMailInsightsWithApi',
+  'usesLocalInsightExtraction', 'hasInsightJudgeConfig', 'getInsightJudgeLabel', 'getClefConfig',
+  'adjudicateInsights', 'buildInsightJudgeResult', 'getMailInsightConfigErrorMessage'
 ];
 
 const COMBO_MAIL = [
@@ -564,22 +651,44 @@ const COMBO_MAIL = [
 
 function comboEngine(options) {
   const calls = [];
+  // AI 段落走 requestChatCompletion：请求经 fetch，响应需带 headers/content-type。
+  // 这里返回 JSON 形态（非 SSE），覆盖「服务端不支持流式时的回退解析」。
+  const jsonHeaders = { get: () => 'application/json' };
   const scope = {
     URL,
     AbortController,
+    setTimeout,
+    clearTimeout,
+    TextDecoder,
     MAX_TRANSLATION_SOURCE_CHARS: 12000,
     AI_REQUEST_TIMEOUT_MS: 30000,
-    fetchWithTimeout: async (url) => {
+    fetch: async (url) => {
       calls.push(url);
       if (url.includes('/chat/completions')) {
-        if (options.ai === 'fail500') return { ok: false, status: 500, json: async () => ({ error: { message: 'boom' } }) };
+        if (options.ai === 'fail500') return { ok: false, status: 500, headers: jsonHeaders, json: async () => ({ error: { message: 'boom' } }) };
         if (options.ai === 'throw') throw new Error('连接被拒绝');
-        if (options.ai === 'badjson') return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '不是 JSON' } }] }) };
-        return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"codes":["483920"],"links":[]}' } }] }) };
+        if (options.ai === 'badjson') return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ choices: [{ message: { content: '不是 JSON' } }] }) };
+        return { ok: true, status: 200, headers: jsonHeaders, json: async () => ({ choices: [{ message: { content: '{"codes":["483920"],"links":[]}' } }] }) };
       }
       return {
         ok: true,
         status: 200,
+        headers: jsonHeaders,
+        json: async () => ({
+          model: 'jev-1.13.0',
+          answers: {
+            real_code: { type: 'choice', choice: '483920', confidence: 0.99 },
+            link_0: { type: 'noul', noul: 0.78 }
+          }
+        })
+      };
+    },
+    fetchWithTimeout: async (url) => {
+      calls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        headers: jsonHeaders,
         json: async () => ({
           model: 'jev-1.13.0',
           answers: {
@@ -595,6 +704,9 @@ function comboEngine(options) {
     ...COMBO_CONSTS.map((n) => extractComboUnit('const ' + n + ' = ').replace(/^(\s*)const /m, '$1')),
     ...COMBO_FNS.map((n) => extractComboUnit('function ' + n + '(') || extractComboUnit('async function ' + n + '(')),
     'var mailInsightApiMode = ' + JSON.stringify(options.mode) + ';',
+    'var mailInsightExtractionMode = ' + JSON.stringify(options.extractionMode || 'hybrid') + ';',
+    'var clefAccounts = []; var clefAccountsEditor = null;',
+    'var mailInsightJudgeBackend = ' + JSON.stringify(options.judgeBackend || (options.jev ? 'jev' : 'none')) + ';',
     'var mailInsightApiBase = "https://ai.example.com/v1";',
     'var mailInsightApiKey = "sk-ai";',
     'var mailInsightModel = "gpt-4.1-mini";',
@@ -696,7 +808,10 @@ test('静态守卫：AI 段落里的失败路径必须先经过 Jev 兜底', () 
   assert.equal(directReturns, 0,
     'AI 失败时必须走 fallbackToJevOrLocal，不能直接返回本地结果');
   const fallbackCalls = (aiSection.match(/fallbackToJevOrLocal\(/g) || []).length;
-  assert.ok(fallbackCalls >= 3, `三处 AI 失败出口都应走统一兜底，实际 ${fallbackCalls} 处`);
+  // AI 请求统一走 requestChatCompletion：HTTP 非 2xx、网络异常、超时都在那里抛出，
+  // 所以 AI 段落现在只剩两个失败出口 —— 「请求失败」与「返回内容不可解析」，
+  // 两个都必须走 fallbackToJevOrLocal。
+  assert.ok(fallbackCalls >= 2, `AI 失败出口都应走统一兜底，实际 ${fallbackCalls} 处`);
 });
 
 // ── 回归：AI 失败兜底时，弱候选也必须能触发 Jev ──────────────────────
@@ -716,7 +831,8 @@ test('兜底取样必须放宽门槛（否则弱候选被滤掉，Jev 静默不�
     JEV_MAX_CANDIDATES: 8,
     JEV_MAX_CANDIDATES_RECALL: 16,
     jevRecallMode: false,          // 关键：精确优先（默认）
-    hasJevConfig: () => true
+    hasJevConfig: () => true,
+    hasInsightJudgeConfig: () => true
   };
   runInNewContext([
     extractFunction('getFallbackSamplingParams')
@@ -743,7 +859,8 @@ test('兜底路径的阈值必须与召回优先一致（两者都放宽）', ()
     JEV_MAX_CANDIDATES: 8,
     JEV_MAX_CANDIDATES_RECALL: 16,
     jevRecallMode: true,
-    hasJevConfig: () => true
+    hasJevConfig: () => true,
+    hasInsightJudgeConfig: () => true
   };
   runInNewContext([
     extractFunction('getInsightSamplingParams'),
@@ -758,9 +875,9 @@ test('兜底路径的阈值必须与召回优先一致（两者都放宽）', ()
 
 test('fallbackToJevOrLocal 在 Jev 不可用时退回本地、可用时必须调用 Jev', () => {
   const fn = extractFunction('fallbackToJevOrLocal');
-  assert.match(fn, /hasJevConfig\(\)/, '必须先判断 Jev 是否可用');
-  assert.match(fn, /adjudicateInsightsWithJev\(/, 'Jev 可用时必须裁决');
-  assert.match(fn, /jevOnly: true/, '应标记为 Jev 独立工作');
+  assert.match(fn, /hasInsightJudgeConfig\(\)/, '必须先判断所选判定模型是否可用');
+  assert.match(fn, /adjudicateInsights\(/, '模型可用时必须裁决');
+  assert.match(fn, /judgeOnly: true/, '应标记为判定模型独立工作');
 });
 
 test('新增的 none 模式：normalize 与配置读取都要正确处理', () => {
@@ -824,4 +941,131 @@ test('生成的自动关闭计时器分支必须带 if 守卫（历史 bug 的�
   assert.ok(idx > 0, '未找到该分支');
   assert.match(lines[idx - 1], /^\s+if \(changes\[GENERATED_RESULT_AUTO_CLOSE_KEY\]\) \{/,
     '该分支必须紧跟在自己的 if 之后，否则会无条件执行');
+});
+
+// ── M8：AI 明确返回「无链接」时尊重它 ───────────────────────────────
+// 以前 verifiedLinks 为空时会把未过阈值的本地链接当作 AI 结果（source:'ai'）展示。
+test('M8 AI 返回 links:[] 且 Jev 未配置时，结果链接为空数组', async () => {
+  const { result, aiCalled, jevCalled } = await runCombo({ mode: 'custom', jev: false, ai: 'ok' });
+  assert.equal(aiCalled, true);
+  assert.equal(jevCalled, false);
+  assert.equal(result.source, 'ai');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.links)), [],
+    'AI 明确说没有验证链接时不能再把本地候选当 AI 结果展示');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.codes)), ['483920']);
+});
+
+// 新提取方式必须分别隔离本地候选和判定模型。
+function aiModeEngine(extractionMode, judgeBackend = 'jev') {
+  const env = comboEngine({ mode: 'custom', extractionMode, judgeBackend, jev: judgeBackend === 'jev' });
+  for (const name of ['buildLocalInsightResult', 'collectCodeCandidates', 'collectLinkCandidates']) {
+    env.scope[name] = () => { throw new Error(`不应调用本地规则：${name}`); };
+  }
+  return env;
+}
+
+test('仅 AI 即使保存着 JEV 配置也不调用正则或判定模型', async () => {
+  const { scope } = aiModeEngine('ai-only');
+  scope.adjudicateInsights = () => { throw new Error('不应调用判定模型'); };
+  scope.requestChatCompletion = async () => '{"codes":["Z9Q7M2"],"links":[]}';
+  const result = await scope.extractMailInsightsWithApi('Sign in\nZ9Q7M2');
+  assert.deepEqual(plain(result.codes), ['Z9Q7M2']);
+  assert.equal(result.source, 'ai');
+});
+
+test('仅 AI 空结果不补正则，AI 失败明确报错且不调用判定模型', async () => {
+  for (const mode of ['ai-only', 'ai-judge']) {
+    const { scope } = aiModeEngine(mode);
+    scope.adjudicateInsights = () => { throw new Error('没有 AI 候选时不应调用'); };
+    scope.requestChatCompletion = async () => { throw new Error('AI 连接失败'); };
+    await assert.rejects(scope.extractMailInsightsWithApi(COMBO_MAIL), /AI 连接失败/);
+  }
+  const { scope } = aiModeEngine('ai-only');
+  scope.requestChatCompletion = async () => '{"codes":[],"links":[]}';
+  const result = await scope.extractMailInsightsWithApi(COMBO_MAIL);
+  assert.deepEqual(plain(result.codes), []);
+  const triggered = triggerEngine(result, { local: false });
+  triggered.buildLocalInsightResult = () => { throw new Error('不得回落正则'); };
+  await triggered.triggerMailAiInsights(triggered.reader, true);
+  assert.equal(triggered.reader.getInsightStatus(), 'success');
+  assert.deepEqual(plain(triggered.reader.getInsights().codes), []);
+});
+
+test('仅 AI 失败时 UI 显示错误，不能偷偷回落本地', async () => {
+  const scope = triggerEngine(null, { local: false });
+  scope.extractMailInsightsWithApi = async () => { throw new Error('AI 故障'); };
+  scope.buildLocalInsightResult = () => { throw new Error('不得回落正则'); };
+  await scope.triggerMailAiInsights(scope.reader, true);
+  assert.equal(scope.reader.getInsightStatus(), 'error');
+  assert.match(scope.reader.getInsightError(), /AI 故障/);
+});
+
+test('AI + JEV 仅判 AI 候选，并保留模型拒绝的空结论', async () => {
+  const { scope } = aiModeEngine('ai-judge');
+  scope.requestChatCompletion = async () => '{"codes":["Z9Q7M2"],"links":[]}';
+  scope.callJev = async (questions) => {
+    assert.deepEqual(Object.keys(questions.real_code.criteria).sort(), ['Z9Q7M2', 'none']);
+    return { model: 'mock', answers: { real_code: { choice: 'none' } } };
+  };
+  const result = await scope.extractMailInsightsWithApi('Sign in\nZ9Q7M2');
+  assert.equal(result.source, 'jev');
+  assert.deepEqual(plain(result.codes), []);
+});
+
+test('本地漏提时 AI 仍能补进判定候选池', async () => {
+  const { scope } = comboEngine({ mode: 'custom', jev: true });
+  const text = 'Sign in\nZ9Q7M2\nEnter the token shown above.';
+  assert.equal(scope.collectCodeCandidates(text).length, 0);
+  scope.requestChatCompletion = async () => '{"codes":["Z9Q7M2"],"links":[]}';
+  scope.callJev = async (questions) => {
+    assert.ok(Object.hasOwn(questions.real_code.criteria, 'Z9Q7M2'));
+    return { model: 'mock', answers: { real_code: { choice: 'Z9Q7M2' } } };
+  };
+  assert.deepEqual(plain((await scope.extractMailInsightsWithApi(text)).codes), ['Z9Q7M2']);
+});
+
+test('Clef 可独立判定本地候选，失败回落且不改调 JEV', async () => {
+  const { scope } = comboEngine({ mode: 'none', judgeBackend: 'clef' });
+  Object.assign(scope, { clefAccountId: 'a'.repeat(32), clefApiToken: 'test', clefModel: 'clef' });
+  scope.callJev = () => { throw new Error('不应调用 JEV'); };
+  scope.window = { PopupClefInsight: {
+    hasConfig: () => true,
+    adjudicate: async (_links, candidates) => {
+      assert.ok(candidates.some((c) => c.value === '483920'));
+      return { source: 'clef', codes: ['483920'], links: [], judgeVerdict: 'verification' };
+    }
+  } };
+  let result = await scope.extractMailInsightsWithApi(COMBO_MAIL);
+  assert.equal(result.source, 'clef');
+  assert.equal(result.judgeOnly, true);
+  scope.window.PopupClefInsight.adjudicate = async () => { throw new Error('Clef 故障'); };
+  result = await scope.extractMailInsightsWithApi(COMBO_MAIL);
+  assert.equal(result.source, 'local');
+  assert.match(result.judgeError, /Clef 故障/);
+});
+
+test('AI + Clef 灰区保留 AI 参考值，UI 不标成确认成功', async () => {
+  const { scope } = aiModeEngine('ai-judge', 'clef');
+  Object.assign(scope, { clefAccountId: 'a'.repeat(32), clefApiToken: 'test', clefModel: 'clef' });
+  scope.window = { PopupClefInsight: { hasConfig: () => true, adjudicate: async () => ({
+    source: 'clef', codes: [], links: [], judgeVerdict: 'unknown'
+  }) } };
+  scope.requestChatCompletion = async () => '{"codes":["Z9Q7M2"],"links":[]}';
+  const result = await scope.extractMailInsightsWithApi('Sign in\nZ9Q7M2');
+  assert.deepEqual(plain(result.codes), ['Z9Q7M2']);
+  assert.equal(result.judgeVerdict, 'unknown');
+  const render = renderEngine({ status: 'success', insights: result });
+  assert.match(render.buildMailInsightRenderOptions(render.reader).statusText, /未确认/);
+  const triggered = triggerEngine({ ...result, codes: [] }, { local: false });
+  await triggered.triggerMailAiInsights(triggered.reader, true);
+  assert.equal(triggered.reader.getInsights().judgeVerdict, 'unknown');
+});
+
+test('Clef 风险隔离保持空结果并显示风险提示', async () => {
+  const value = { source: 'clef', codes: [], links: [], judgeVerdict: 'quarantine' };
+  const scope = triggerEngine(value);
+  await scope.triggerMailAiInsights(scope.reader, true);
+  assert.deepEqual(plain(scope.reader.getInsights().codes), []);
+  const render = renderEngine({ status: 'success', insights: value });
+  assert.match(render.buildMailInsightRenderOptions(render.reader).statusText, /风险/);
 });

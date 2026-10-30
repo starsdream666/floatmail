@@ -70,16 +70,49 @@
           rawTooLarge: true
         };
       }
+      // 内部同时取 html 与发件人自带的 text/plain，纯文本视图优先用后者
       return {
-        ...parseEmailBody(rawSource),
+        ...parseEmailBody(rawSource, { includeText: true }),
         rawTooLarge: false
       };
     }
 
+    // 块级元素前后补换行；td/th 之间补空格（邮件表格多为排版用，制表符意义不大）
+    const HTML_TO_TEXT_BLOCK_SELECTOR = [
+      'p', 'div', 'tr', 'li', 'ul', 'ol', 'dl', 'dt', 'dd', 'table', 'thead', 'tbody', 'tfoot', 'caption',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'address', 'center', 'section', 'article',
+      'header', 'footer', 'nav', 'aside', 'main', 'figure', 'figcaption', 'form', 'fieldset', 'hr'
+    ].join(',');
+
     function htmlToText(html) {
       if (!html) return '';
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      return doc.body?.textContent?.replace(/\u00a0/g, ' ').trim() || '';
+      const body = doc.body;
+      if (!body) return '';
+      // 不可见 / 非正文内容整块移除，避免 CSS、脚本文本混入
+      doc.querySelectorAll('style, script, head, title, noscript, template, object, iframe, svg, math')
+        .forEach((node) => node.remove());
+      // 源码里的换行与缩进在浏览器中只渲染为空格：先把文本节点空白折叠（pre 内保留）
+      const walker = doc.createTreeWalker(body, 4 /* NodeFilter.SHOW_TEXT */);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        if (!node.parentElement?.closest('pre, textarea')) {
+          node.data = node.data.replace(/[ \t\n\r\f]+/g, ' ');
+        }
+      }
+      body.querySelectorAll('br').forEach((node) => node.replaceWith('\n'));
+      body.querySelectorAll('td, th').forEach((node) => node.after(' '));
+      body.querySelectorAll(HTML_TO_TEXT_BLOCK_SELECTOR).forEach((node) => {
+        node.before('\n');
+        node.after('\n');
+      });
+      return String(body.textContent || '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\r\n?/g, '\n')
+        .split('\n')
+        .map((line) => line.replace(/[ \t\f\v]+/g, ' ').trim())
+        .join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
     }
 
     function isStubPlainText(text, html) {
@@ -203,9 +236,9 @@
         'embed',
         'applet',
         'portal',
-        'form',
+        // form / button 不在此整块删除，而是在下方"去壳"只保留子节点，
+        // 否则包在 <form> 里的整封正文会显示为空白。
         'input',
-        'button',
         'textarea',
         'select',
         'option',
@@ -229,6 +262,12 @@
           doc.querySelectorAll(selector).forEach((node) => node.remove());
         } catch (error) {
           /* 选择器在个别环境下不被支持时跳过，后续属性清洗仍会兜底 */
+        }
+      });
+      // 去壳：元素本身（连同 action/method/formaction 等属性）被移除，子节点原位保留
+      doc.querySelectorAll('form, button').forEach((node) => {
+        if (node.parentNode) {
+          node.replaceWith(...Array.from(node.childNodes));
         }
       });
       doc.querySelectorAll('style').forEach((node) => {
@@ -419,7 +458,9 @@
 
       // If DOM was too complex or srcdoc too large, fall back to plain text
       if (sanitized.domTooComplex || sanitized.html.length > MAX_IFRAME_SRCDOC_CHARS) {
-        const fallbackText = htmlToText(html) || '(邮件内容过于复杂，无法渲染 HTML 视图)';
+        const fallbackText = String(options.fallbackText || '').trim()
+          || htmlToText(html)
+          || '(邮件内容过于复杂，无法渲染 HTML 视图)';
         renderPlainText(container, fallbackText);
         return {
           hasRemoteImages: false,
@@ -462,10 +503,15 @@
           return;
         }
         heightReported = true;
-        iframe.style.height = `${Math.min(
+        const nextHeight = Math.min(
           Math.max(Math.ceil(measured), minimumIframeHeight),
           MAX_MAIL_IFRAME_HEIGHT
-        )}px`;
+        );
+        const currentHeight = parseFloat(iframe.style.height) || 0;
+        // 变化不超过 2px 不更新，避免测量抖动与"设高 → 再测量 → 再设高"的累积
+        if (Math.abs(nextHeight - currentHeight) > 2) {
+          iframe.style.height = `${nextHeight}px`;
+        }
       };
       window.addEventListener('message', onFrameMessage);
 
@@ -554,11 +600,22 @@
       return button;
     }
 
+    // 验证码只去掉半角空格（U+0020）：「5 5 7 4 1 1」→「557411」。
+    // 连字符、大小写、以及任何其它字符一律保留，绝不参与剥离。
+    function stripInsightCodeSpaces(value) {
+      return String(value ?? '').replace(/ /g, '');
+    }
+
     function renderMailInsights(container, insights, options = {}) {
       if (!container) return;
       container.innerHTML = '';
+      // 展示前的最后一道兜底：提取链路已去空格，这里防止外部传入的旧数据带空格。
       const normalizedInsights = {
-        codes: Array.isArray(insights?.codes) ? insights.codes : [],
+        codes: Array.isArray(insights?.codes)
+          ? insights.codes
+            .map((code) => stripInsightCodeSpaces(code))
+            .filter((code) => code !== '')
+          : [],
         links: Array.isArray(insights?.links)
           ? insights.links
             .map((link) => {
@@ -739,7 +796,9 @@
       }
 
       const renderResult = renderSafeHtml(container, html, '', {
-        allowRemoteImages: options.allowRemoteImages === true
+        allowRemoteImages: options.allowRemoteImages === true,
+        // DOM 过于复杂回退纯文本时，优先用发件人自带的 text/plain
+        fallbackText: plainText
       });
 
       // If renderSafeHtml fell back to plain text due to DOM complexity
@@ -790,81 +849,274 @@
       };
     }
 
-    function parseEmailBody(raw) {
-      if (!raw) return { text: '' };
+    // ---------------- MIME 解析 ----------------
+    // 递归深度上限：正常邮件嵌套一般不超过 3~4 层，超过即视为畸形结构，放弃该分支。
+    const MAX_MIME_DEPTH = 8;
+    // 头部行：字段名为可打印 ASCII（不含冒号与空白），冒号后可以没有空格。
+    const MIME_HEADER_LINE_RE = /^[!-9;-~]+[ \t]*:/;
 
-      function parsePart(content) {
-        let bestHtml = null;
-        let bestText = null;
-
-        const boundaryMatch = content.match(/boundary="?([^"\r\n;]+)"?/i);
-        let boundary = boundaryMatch ? boundaryMatch[1].trim() : null;
-        if (!boundary) {
-          const partsMatch = content.match(/^--([a-zA-Z0-9_=\-\.]+)[\r\n]/m);
-          if (partsMatch) boundary = partsMatch[1];
-        }
-
-        if (boundary) {
-          const parts = content.split('--' + boundary);
-          for (let part of parts) {
-            part = part.trim();
-            if (!part || part === '--') continue;
-
-            let splitIdx = part.indexOf('\r\n\r\n');
-            if (splitIdx === -1) splitIdx = part.indexOf('\n\n');
-            if (splitIdx === -1) continue;
-
-            const headersRaw = part.substring(0, splitIdx);
-            const headers = headersRaw.toLowerCase();
-            let body = part.substring(splitIdx).trim();
-
-            if (headers.includes('content-type: multipart/')) {
-              const nested = parsePart(part);
-              if (nested.html && !bestHtml) bestHtml = nested.html;
-              if (nested.text && !bestText) bestText = nested.text;
-              continue;
-            }
-
-            if (headers.includes('content-transfer-encoding: base64')) {
-              body = decodeBase64UTF8(body);
-            } else if (headers.includes('content-transfer-encoding: quoted-printable')) {
-              body = decodeQuotedPrintable(body);
-            }
-
-            if (headers.includes('content-type: text/html')) bestHtml = body;
-            else if (headers.includes('content-type: text/plain')) bestText = body;
-          }
-        }
-
-        if (bestHtml) return { html: bestHtml };
-        if (bestText) return { text: bestText };
-        return null;
-      }
-
-      const parsed = parsePart(raw);
-      if (parsed) return parsed;
-
-      let splitIdx = raw.indexOf('\r\n\r\n');
-      if (splitIdx === -1) splitIdx = raw.indexOf('\n\n');
-      let headers = '';
-      let body = raw;
-      if (splitIdx !== -1) {
-        headers = raw.substring(0, splitIdx).toLowerCase();
-        body = raw.substring(splitIdx).trim();
-      }
-      if (headers.includes('content-transfer-encoding: base64')) body = decodeBase64UTF8(body);
-      else if (headers.includes('content-transfer-encoding: quoted-printable')) body = decodeQuotedPrintable(body);
-      if (headers.includes('content-type: text/html')) return { html: body };
-      return { text: body };
+    // 展开折行头：CRLF/LF 后紧跟空白的续行合并为单个空格。
+    function unfoldMimeHeaders(headerText) {
+      return String(headerText || '').replace(/\r?\n[ \t]+/g, ' ');
     }
 
-    function decodeQuotedPrintable(str) {
+    // 拆分头部与正文（以第一个空行为界）。
+    // headerOnly：整段都是头部、没有空行分隔的正文（顶层按旧行为把整段当正文，子部分直接跳过）。
+    function splitMimeEntity(content) {
+      const source = String(content || '');
+      const leading = source.match(/^\r?\n/);
+      if (leading) {
+        // 以空行开头：没有头部，全部是正文（默认 text/plain）
+        return { headerText: '', body: source.slice(leading[0].length), headerOnly: false };
+      }
+      const separator = /\r?\n\r?\n/.exec(source);
+      const headerBlock = separator ? source.slice(0, separator.index) : source;
+      // 末尾单个换行（只有头部、没有空行分隔）不算非头部行
+      const looksLikeHeaders = unfoldMimeHeaders(headerBlock.replace(/\r?\n$/, ''))
+        .split(/\r?\n/)
+        .every((line) => MIME_HEADER_LINE_RE.test(line));
+      if (!looksLikeHeaders) {
+        return { headerText: '', body: source, headerOnly: false };
+      }
+      if (!separator) {
+        return { headerText: source, body: '', headerOnly: true };
+      }
+      return {
+        headerText: headerBlock,
+        body: source.slice(separator.index + separator[0].length),
+        headerOnly: false
+      };
+    }
+
+    // 解析头部为 { 小写字段名: 值 }；同名字段取第一次出现的值。
+    function parseMimeHeaders(headerText) {
+      const headers = Object.create(null);
+      unfoldMimeHeaders(headerText).split(/\r?\n/).forEach((line) => {
+        const match = line.match(/^([!-9;-~]+)[ \t]*:[ \t]*(.*)$/);
+        if (!match) return;
+        const name = match[1].toLowerCase();
+        if (!(name in headers)) {
+          headers[name] = match[2].trim();
+        }
+      });
+      return headers;
+    }
+
+    // 解析 "main/value; key=value; key2="quoted"" 形式的头部值；参数名小写、去引号。
+    function parseMimeHeaderValue(value) {
+      const source = String(value || '');
+      const semicolon = source.indexOf(';');
+      const main = (semicolon === -1 ? source : source.slice(0, semicolon)).trim().toLowerCase();
+      const params = Object.create(null);
+      const paramRe = /;\s*([^\s=;]+)\s*=\s*("(?:[^"\\]|\\.)*"|[^;]*)/g;
+      let match;
+      while ((match = paramRe.exec(source))) {
+        let paramValue = match[2].trim();
+        if (paramValue.length >= 2 && paramValue.startsWith('"') && paramValue.endsWith('"')) {
+          paramValue = paramValue.slice(1, -1).replace(/\\(.)/g, '$1');
+        }
+        const name = match[1].toLowerCase();
+        if (!(name in params)) {
+          params[name] = paramValue;
+        }
+      }
+      return { value: main, params };
+    }
+
+    function getMimeEntityInfo(headers) {
+      const contentType = parseMimeHeaderValue(headers['content-type'] || '');
+      const disposition = parseMimeHeaderValue(headers['content-disposition'] || '');
+      // filename / name 参数（含 RFC 2231 的 filename*、filename*0 等）视为附件
+      const hasFileName = [contentType.params, disposition.params]
+        .some((params) => Object.keys(params).some((name) => /^(?:file)?name(?:\*|$)/.test(name)));
+      return {
+        hasContentType: Boolean(headers['content-type']),
+        // RFC 2045：未声明 Content-Type 时默认 text/plain
+        type: contentType.value || 'text/plain',
+        charset: contentType.params.charset || '',
+        boundary: contentType.params.boundary || '',
+        encoding: String(headers['content-transfer-encoding'] || '').trim().toLowerCase(),
+        // 显式 attachment 一定是附件；仅带 filename/name 参数且未声明 inline 的也视为附件。
+        // 有些邮件系统会给 inline 正文加 name 参数，不能因此把唯一正文跳过。
+        isAttachment: disposition.value === 'attachment' || (hasFileName && disposition.value !== 'inline'),
+        isExplicitAttachment: disposition.value === 'attachment'
+      };
+    }
+
+    function escapeRegExp(value) {
+      return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // 未声明 multipart 时的兜底猜测：必须同时存在 `--X` 开始行与 `--X--` 结束行，
+    // 且 X 不能全是连字符，避免把正文里的 `-----` 分隔线当成 boundary 截断正文。
+    function guessMultipartBoundary(body) {
+      const source = String(body || '');
+      const lineRe = /^--([A-Za-z0-9'()+_,\-./:=?]{1,200})[ \t]*\r?$/gm;
+      const checked = new Set();
+      let match;
+      while ((match = lineRe.exec(source)) && checked.size < 20) {
+        const candidate = match[1];
+        if (checked.has(candidate) || !/[^-]/.test(candidate)) continue;
+        checked.add(candidate);
+        const closeRe = new RegExp(`^--${escapeRegExp(candidate)}--[ \\t]*\\r?$`, 'm');
+        if (closeRe.test(source)) {
+          return candidate;
+        }
+      }
+      return '';
+    }
+
+    // 按 boundary 分段：跳过第一个分隔符之前的 preamble 与结束符 `--X--` 之后的 epilogue。
+    // 分隔符必须独占一行（前导换行属于分隔符本身），更长的同前缀 boundary 不会误命中。
+    function splitMultipartBody(body, boundary) {
+      const source = String(body || '');
+      const delimiterRe = new RegExp(`(?:^|\\r?\\n)--${escapeRegExp(boundary)}(--)?[ \\t]*(?=\\r?\\n|$)`, 'g');
+      const parts = [];
+      let partStart = -1; // -1 表示仍在 preamble 中
+      let match;
+      while ((match = delimiterRe.exec(source))) {
+        if (partStart !== -1) {
+          parts.push(source.slice(partStart, Math.max(partStart, match.index)));
+        }
+        if (match[1]) {
+          // 结束分隔符：其后的 epilogue 一律忽略
+          partStart = -1;
+          break;
+        }
+        let next = match.index + match[0].length;
+        if (source.startsWith('\r\n', next)) next += 2;
+        else if (source[next] === '\n') next += 1;
+        partStart = next;
+      }
+      if (partStart !== -1) {
+        // 缺少结束分隔符：最后一段读到末尾
+        parts.push(source.slice(partStart));
+      }
+      return parts;
+    }
+
+    function decodeMimeBody(body, info) {
+      if (info.encoding === 'base64') return decodeBase64UTF8(body, info.charset);
+      if (info.encoding === 'quoted-printable') return decodeQuotedPrintable(body, info.charset);
+      // 7bit / 8bit / binary / 未声明：正文保持原样
+      return body;
+    }
+
+    // 解析一个 MIME 实体，返回 { html, text }（未找到的为 null）。
+    // 规则：只对声明为 multipart 的实体用其自身 boundary 分段；子部分中的附件
+    // （Content-Disposition: attachment 或带 filename/name 参数）跳过；同类型先到先得。
+    // relaxed：首轮一无所获时的放宽重试，只跳过显式 attachment，允许带 name 参数的正文部分。
+    function parseMimeEntity(content, depth, relaxed = false) {
+      const result = { html: null, text: null };
+      if (depth > MAX_MIME_DEPTH) return result;
+      const isTopLevel = depth === 0;
+      const entity = splitMimeEntity(content);
+      if (entity.headerOnly) {
+        // 顶层没有空行分隔时沿用旧行为：整段当纯文本；子部分只有头部没有正文则跳过
+        if (isTopLevel) result.text = String(content || '').trim();
+        return result;
+      }
+      const info = getMimeEntityInfo(parseMimeHeaders(entity.headerText));
+      const isMultipart = info.type.startsWith('multipart/');
+
+      let boundary = '';
+      let boundaryGuessed = false;
+      if (isMultipart) {
+        boundary = info.boundary || guessMultipartBoundary(entity.body);
+      } else if (isTopLevel && !info.hasContentType) {
+        boundary = guessMultipartBoundary(entity.body);
+        boundaryGuessed = Boolean(boundary);
+      }
+
+      if (boundary) {
+        const parts = splitMultipartBody(entity.body, boundary);
+        for (const part of parts) {
+          const nested = parseMimeEntity(part, depth + 1, relaxed);
+          if (!result.html && nested.html) result.html = nested.html;
+          if (!result.text && nested.text) result.text = nested.text;
+          if (result.html && result.text) break;
+        }
+        // 猜出来的 boundary 若一无所获，说明是误判，回退为单段纯文本
+        if (!boundaryGuessed || result.html || result.text) {
+          return result;
+        }
+      } else if (isMultipart) {
+        // 声明了 multipart 却找不到可用 boundary：无法分段
+        return result;
+      }
+
+      const skipAsAttachment = relaxed ? info.isExplicitAttachment : info.isAttachment;
+      if (!isTopLevel && (skipAsAttachment || (info.type !== 'text/html' && info.type !== 'text/plain'))) {
+        return result;
+      }
+      const decoded = String(decodeMimeBody(entity.body, info) || '').trim();
+      // 顶层单段沿用旧行为：非 text/html 一律按纯文本处理
+      if (info.type === 'text/html') result.html = decoded;
+      else result.text = decoded;
+      return result;
+    }
+
+    // 解析原始邮件，同时返回 html 与 text（缺失的为空字符串）。
+    // 任何异常（畸形结构等）都回退为纯文本，保证邮件至少能打开。
+    function parseEmailParts(raw) {
+      const source = String(raw || '');
+      if (!source) return { html: '', text: '' };
+      try {
+        let parsed = parseMimeEntity(source, 0);
+        if (!parsed.html && !parsed.text) {
+          parsed = parseMimeEntity(source, 0, true);
+        }
+        return { html: parsed.html || '', text: parsed.text || '' };
+      } catch (error) {
+        console.warn('邮件 MIME 解析失败，回退为纯文本:', error);
+        return { html: '', text: getLargeMailRawFallbackText(source) };
+      }
+    }
+
+    // 向后兼容：默认返回值形状与旧版一致（有 HTML 时只返回 { html }，否则 { text }），
+    // 以免 popup.js 的翻译/洞察取材把 text 与 htmlToText(html) 重复拼接。
+    // 传 { includeText: true } 时同时返回 { html, text }（发件人自带的 text/plain）。
+    function parseEmailBody(raw, options = {}) {
+      if (!raw) return { text: '' };
+      const parts = parseEmailParts(raw);
+      if (options && options.includeText === true) {
+        return parts.html ? { html: parts.html, text: parts.text } : { text: parts.text };
+      }
+      return parts.html ? { html: parts.html } : { text: parts.text };
+    }
+
+    // 解析 charset 对应的解码器；空值或不支持的 charset（构造抛 RangeError）回退 UTF-8。
+    function resolveTextDecoder(charset) {
+      const label = String(charset || '').trim().replace(/^["']+|["']+$/g, '').trim().toLowerCase();
+      if (label && label !== 'utf-8' && label !== 'utf8') {
+        try {
+          return new TextDecoder(label, { fatal: false });
+        } catch (error) {
+          /* 不支持的 charset，回退 UTF-8 */
+        }
+      }
+      return new TextDecoder('utf-8', { fatal: false });
+    }
+
+    function decodeQuotedPrintable(str, charset) {
       // quoted-printable 只把 `=XX` 解释为字节，普通 `%` 不是转义起点。
       // 之前先转成 `%XX` 再调用 decodeURIComponent，会误解 HTML 的 `100%`
       // 和 URL 中的 `%20`，异常分支还会把非十六进制 `%` 变成 NUL。
+      // charset 可选：按其解码 `=XX` 字节；缺省 / 不支持时按 UTF-8。
       const joined = String(str || '').replace(/=\r?\n/g, '');
-      const bytes = [];
+      const decoder = resolveTextDecoder(charset);
       const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+      // UTF-8 时字面非 ASCII 字符按 UTF-8 字节并入（与旧行为一致）；
+      // 其他 charset 下字面字符已是 Unicode，不能再按该 charset 解码，直接原样输出。
+      const mergeLiteralAsUtf8 = Boolean(encoder) && decoder.encoding === 'utf-8';
+      let output = '';
+      let bytes = [];
+      const flush = () => {
+        if (bytes.length) {
+          output += decoder.decode(new Uint8Array(bytes));
+          bytes = [];
+        }
+      };
 
       for (let i = 0; i < joined.length; i += 1) {
         const character = joined[i];
@@ -876,23 +1128,34 @@
             continue;
           }
         }
-        if (encoder && character.charCodeAt(0) > 0x7f) {
-          bytes.push(...encoder.encode(character));
+        const codePoint = joined.codePointAt(i);
+        if (codePoint > 0x7f) {
+          // 按码点处理，避免把代理对拆成两个孤立代理
+          const literal = String.fromCodePoint(codePoint);
+          if (codePoint > 0xffff) i += 1;
+          if (mergeLiteralAsUtf8) {
+            bytes.push(...encoder.encode(literal));
+          } else {
+            flush();
+            output += literal;
+          }
         } else {
-          bytes.push(character.charCodeAt(0) & 0xff);
+          bytes.push(codePoint & 0xff);
         }
       }
-      return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bytes));
+      flush();
+      return output;
     }
 
-    function decodeBase64UTF8(str) {
+    function decodeBase64UTF8(str, charset) {
+      // 名称保留以兼容旧调用；charset 可选，缺省 / 不支持时按 UTF-8 解码。
       try {
-        const binString = atob(str.replace(/\s/g, ''));
+        const binString = atob(String(str || '').replace(/\s/g, ''));
         const bytes = new Uint8Array(binString.length);
         for (let i = 0; i < binString.length; i += 1) {
           bytes[i] = binString.charCodeAt(i);
         }
-        return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        return resolveTextDecoder(charset).decode(bytes);
       } catch (error) {
         return str;
       }
@@ -908,6 +1171,7 @@
       renderEmailBody,
       renderMoeEmailBody,
       parseEmailBody,
+      parseEmailParts,
       decodeQuotedPrintable,
       decodeBase64UTF8,
       escapeHtml

@@ -1142,6 +1142,7 @@ body.js-loading {
 #generated-history-page,
 #fill-rules-page,
 #themes-page,
+#ai-settings-page,
 #settings-page,
 #config-io-page {
   display: flex;
@@ -2258,6 +2259,41 @@ input:focus, select:focus {
   box-shadow: var(--neumorphic-shadow-inset);
 }
 
+/* 轻量全局提示：用于当前页没有合适消息元素时（生成历史页、收件箱详情等） */
+.popup-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  z-index: 2147483000;
+  max-width: calc(100% - 32px);
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  word-break: break-all;
+  color: #fff;
+  background: rgba(40, 44, 52, 0.92);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.popup-toast.visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.popup-toast.error {
+  background: rgba(192, 57, 43, 0.95);
+}
+
+.popup-toast.success {
+  background: rgba(39, 150, 128, 0.95);
+}
+
 .result-box {
   background-color: var(--box-bg);
   border: none;
@@ -2785,6 +2821,63 @@ ul#history-list li span {
   width: 100%;
 }
 
+.jev-api-keys-input {
+  min-height: 96px;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 12px;
+  background-color: var(--input-bg);
+  color: var(--text-main);
+  box-sizing: border-box;
+  box-shadow: var(--neumorphic-shadow-inset);
+  font-family: "SF Mono", "Consolas", "Monaco", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  outline: none;
+  resize: vertical;
+  transition: all 0.3s ease;
+  -webkit-text-security: disc;
+}
+
+.jev-api-keys-input:focus {
+  box-shadow: inset 4px 4px 8px var(--shadow-dark), inset -4px -4px 8px var(--shadow-light), 0 0 0 3px rgba(93, 156, 236, 0.2);
+}
+
+.clef-account-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.25));
+  border-radius: 12px;
+}
+
+.clef-account-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.clef-account-status {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.clef-account-error {
+  color: var(--error-color, #dc3545);
+}
+
+.clef-account-test-button {
+  align-self: flex-start;
+}
+
+.ai-connection-result {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
 .model-fetch-row {
   display: flex;
   gap: 8px;
@@ -2837,6 +2930,7 @@ ul#history-list li span {
 #generated-history-page,
 #fill-rules-page,
 #themes-page,
+#ai-settings-page,
 #settings-page,
 #config-io-page {
   gap: 12px;
@@ -2875,6 +2969,7 @@ ul#history-list li span {
 #generated-history-page .page-card,
 #fill-rules-page .page-card,
 #themes-page .page-card,
+#ai-settings-page .page-card,
 #settings-page .page-card,
 #config-io-page .page-card,
 #tools-page .page-card {
@@ -3057,7 +3152,8 @@ ul#history-list li {
   min-height: 18px;
 }
 
-#save-settings {
+#save-settings,
+#save-ai-settings {
   margin: 0;
 }
 
@@ -3365,6 +3461,7 @@ body.tab-layout-sidebar #tools-page,
 body.tab-layout-sidebar #generated-history-page,
 body.tab-layout-sidebar #fill-rules-page,
 body.tab-layout-sidebar #themes-page,
+body.tab-layout-sidebar #ai-settings-page,
 body.tab-layout-sidebar #settings-page,
 body.tab-layout-sidebar #config-io-page {
   grid-column: 2;
@@ -3385,6 +3482,7 @@ body.tab-layout-sidebar .container:has(#tab-bar.hidden) #bookmarks-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #tools-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #generated-history-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #fill-rules-page,
+body.tab-layout-sidebar .container:has(#tab-bar.hidden) #ai-settings-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #settings-page,
 body.tab-layout-sidebar .container:has(#tab-bar.hidden) #config-io-page {
   grid-column: 1;
@@ -3927,6 +4025,7 @@ body.floating-hosted ::-webkit-scrollbar-thumb {
   #generated-history-page,
   #fill-rules-page,
   #themes-page,
+  #ai-settings-page,
   #settings-page,
   #config-io-page,
   #tools-page {
@@ -3939,6 +4038,7 @@ body.floating-hosted ::-webkit-scrollbar-thumb {
   #generated-history-page .page-card,
   #fill-rules-page .page-card,
   #themes-page .page-card,
+  #ai-settings-page .page-card,
   #settings-page .page-card,
   #config-io-page .page-card,
   #tools-page .page-card {

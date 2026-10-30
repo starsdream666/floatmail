@@ -71,8 +71,11 @@
 - 与主功能面板无缝切换
 
 ### 🤖 AI 邮件洞察 | AI Insights
-- 对接 OpenAI 兼容 API，提供邮件摘要、关键词提取
-- 支持邮件内容翻译
+- 独立「AI 配置」标签页，集中配置邮件翻译、验证码与验证链接提取
+- 支持本地规则 + AI 补充、仅 AI、AI + JEV/Clef 判定三种提取方式
+- 判定模型可选择关闭、JEV 或 Cloudflare Clef / Clef Flash
+- Clef 账号池绑定各自 Account ID 与 Key，支持轮换及失败账号定位
+- 翻译、提取、JEV 和 Clef 提供独立连接测试，无需先保存或打开邮件
 
 ### 🎨 双层主题 | Dual-Layer Themes
 - **风格层** `data-style`：新拟物 / 毛玻璃 / 经典扁平
@@ -139,13 +142,14 @@ git clone https://github.com/starsdream666/floatmail.git
 
 ### 后端 API
 
-FloatMail 依赖以下 API 服务（在扩展「设置」页面配置）：
+邮箱接口在扩展「设置」页配置；AI 翻译、提取与判定接口在「AI 配置」页配置：
 
 | 服务 | 用途 | 必须 |
 | :-- | :-- | :-- |
 | **Temp Email Admin API** | 创建邮箱、获取邮件列表和内容 | ✅ 是 |
 | **MoeMail API** | 第二路临时邮件服务 | ❌ 否 |
 | **OpenAI 兼容 API** | AI 邮件洞察 / 翻译 | ❌ 否 |
+| **JEV / Cloudflare Clef** | 对验证码与验证链接候选进行结构化判定 | ❌ 否 |
 
 ### API 端点
 
@@ -191,6 +195,7 @@ node --check background.js
 node --check popup-modules/config-io.js
 node --check popup-modules/mail-render.js
 node --check popup-modules/tool-generators.js
+node --test tests/*.test.cjs
 git diff --check
 ```
 
@@ -248,6 +253,15 @@ content.js  ←→  background.js  (tabs.sendMessage)
 ---
 
 ## 📝 更新日志 | Changelog
+
+### v4.1.0 (2026-10-30)
+- **新增** Cloudflare Clef / Clef Flash 判定模型，可与 JEV 自由切换
+- **新增** Clef 账号池，每条记录绑定 Account ID 与 Key，支持轮换、迁移及失败定位
+- **新增** 独立 AI 配置标签页，分别保存 AI 配置与通用设置
+- **新增** 翻译、提取、JEV 各 Key 及 Clef 各账号的连接测试，支持未保存配置
+- **增强** 仅 AI 提取及 AI + 判定模式，保留原文校验和 AI 补漏能力
+- **修复** 邮件状态、MIME 解码与正文取材、翻译流式响应、填充规则及配置同步等边界问题
+- **修复** 发布包漏打包 shared-utils.js 导致界面或后台无法初始化的问题
 
 ### v3.0.4 (2026-07)
 - **优化** Temp/Moe 远程数据按标签页懒加载，避免打开设置、工具等页面时请求邮箱服务
