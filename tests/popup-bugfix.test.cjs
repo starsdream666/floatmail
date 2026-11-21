@@ -35,6 +35,98 @@ function extractFunction(name) {
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+function mailDeleteHarness(network) {
+  const calls = [];
+  const store = {};
+  const notices = [];
+  const scope = {
+    apiUrl: 'https://old.example.test', adminToken: 'old-key', moeApiUrl: '', moeApiKey: '',
+    mailServiceRevisions: { temp: 0, moe: 0 },
+    history: ['box@example.test'], verifyStatus: { 'box@example.test': 'valid' }, tempUnreadCounts: { 'box@example.test': 1 },
+    console: { warn() {} }, confirm: () => true, setTimeout: () => {}, createMessage: {},
+    showMessage: (_el, message) => notices.push(message),
+    chrome: { storage: { local: { set: data => Object.assign(store, plain(data)) } } },
+    updateTempMailMeta: () => {}, requestRemoveMailState: () => {}, renderHistory: () => {},
+    buildAddressString: record => record.address,
+    fetchWithTimeout: async (url, init) => { calls.push({ url, init: plain(init) }); return network(url, init); },
+  };
+  runInNewContext(['getMailServiceConfig', 'isMailServiceConfigCurrent', 'assertMailServiceConfigCurrent',
+    'matchesAddressRecord', 'deleteTempAddressOnServer', 'deleteAddress'].map(extractFunction).join('\n'), scope);
+  return { scope, store, calls, notices };
+}
+
+test('邮箱删除在查询期间换 URL、换 Key 或切回原配置时均取消 DELETE 和本地清理', async () => {
+  for (const change of [
+    scope => { scope.apiUrl = 'https://new.example.test'; },
+    scope => { scope.adminToken = 'new-key'; },
+    scope => { scope.mailServiceRevisions.temp += 2; },
+  ]) {
+    let release;
+    const h = mailDeleteHarness(() => new Promise(resolve => { release = resolve; }));
+    const deleting = h.scope.deleteAddress('box@example.test', { style: {} });
+    change(h.scope);
+    release({ ok: true, json: async () => ({ results: [{ id: 7, address: 'box@example.test' }] }) });
+    await deleting;
+    assert.equal(h.calls.length, 1);
+    assert.deepEqual(h.scope.history, ['box@example.test']);
+    assert.deepEqual(h.store, {});
+    assert.match(h.notices[0], /配置已变化/);
+  }
+});
+
+test('删除请求进行中切换配置不会把成功响应用于清理新配置的本地状态', async () => {
+  let release;
+  const h = mailDeleteHarness((_url, init) => init.method === 'DELETE'
+    ? new Promise(resolve => { release = resolve; })
+    : { ok: true, json: async () => ({ results: [{ id: 7, address: 'box@example.test' }] }) });
+  const deleting = h.scope.deleteAddress('box@example.test', { style: {} });
+  await new Promise(resolve => setImmediate(resolve));
+  h.scope.apiUrl = 'https://new.example.test';
+  h.scope.adminToken = 'new-key';
+  release({ ok: true });
+  await deleting;
+  assert.equal(h.calls[1].url, 'https://old.example.test/admin/delete_address/7');
+  assert.equal(h.calls[1].init.headers['x-admin-auth'], 'old-key');
+  assert.deepEqual(h.store, {});
+});
+
+test('配置不变时仍可正常删除邮箱并清理本地历史', async () => {
+  const h = mailDeleteHarness((_url, init) => init.method === 'DELETE' ? { ok: true }
+    : { ok: true, json: async () => ({ results: [{ id: 7, address: 'box@example.test' }] }) });
+  await h.scope.deleteAddress('box@example.test', { style: {} });
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(h.store.emailHistory, []);
+});
+
+test('Moe 代理保留 JSON 解析失败语义，正常 JSON 和空 DELETE 响应仍可使用', async () => {
+  let payload = { ok: true, status: 200, text: '<html>Login required</html>', data: null };
+  const scope = { runtimeSendMessage: async () => ({ ok: true, data: payload }) };
+  runInNewContext(extractFunction('proxiedFetch'), scope);
+  await assert.rejects((await scope.proxiedFetch('https://moe.test/api/config')).json(), /有效 JSON/);
+  payload = { ok: true, status: 200, text: '{"email":"box@example.test"}', data: { email: 'box@example.test' } };
+  assert.deepEqual(plain(await (await scope.proxiedFetch('https://moe.test/api/emails/generate')).json()), payload.data);
+  payload = { ok: true, status: 204, text: '', data: null };
+  const deleted = await scope.proxiedFetch('https://moe.test/api/emails/1', { method: 'DELETE' });
+  assert.equal(deleted.ok, true);
+  assert.equal(await deleted.text(), '');
+  await assert.rejects(deleted.json(), /有效 JSON/);
+});
+
+test('Moe 响应结构缺失时报错，不把空对象或错误类型当成成功', () => {
+  const scope = {};
+  runInNewContext(['parseMoeDomains', 'parseMoeEmailList', 'parseMoeCreatedAddress'].map(extractFunction).join('\n'), scope);
+  for (const value of [null, {}, { email: '' }, { email: 123 }, { email: 'undefined' }]) {
+    assert.throws(() => scope.parseMoeCreatedAddress(value), /有效的邮箱地址/);
+  }
+  for (const value of [null, {}, { emails: {} }, { emails: [null] }, { emails: [{ address: 'a@test' }] }]) {
+    assert.throws(() => scope.parseMoeEmailList(value), /有效的 emails/);
+  }
+  assert.throws(() => scope.parseMoeDomains({}), /有效的 emailDomains/);
+  assert.deepEqual(plain(scope.parseMoeDomains({ emailDomains: '' })), []);
+  assert.deepEqual(plain(scope.parseMoeEmailList({ emails: [] })), []);
+  assert.equal(scope.parseMoeCreatedAddress({ email: ' a@test ' }), 'a@test');
+});
+
 // ── H2：保存设置必须落库独立提取 API 地址与 Key ─────────────────────
 test('H2 保存 AI 配置同步 mailInsightApiKey 并写入地址与 Key', () => {
   const start = source.indexOf("saveAiSettingsBtn.addEventListener('click'");

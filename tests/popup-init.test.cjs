@@ -246,6 +246,207 @@ async function initializedPopup(initial) {
   return env;
 }
 
+const settleMailPopup = () => new Promise(resolve => setImmediate(resolve));
+function changeMailConfig(env, values) {
+  const changes = Object.fromEntries(Object.entries(values).map(([key, newValue]) => [key, { oldValue: env.store[key], newValue }]));
+  Object.assign(env.store, values);
+  env.storageChanges.forEach(callback => callback(changes, 'local'));
+}
+async function mailRacePopup(initial = {}, respond = () => null) {
+  const env = loadPopup({ activeTab: 'settings', ...initial });
+  const batches = [];
+  const inboxes = [];
+  const module = env.scope.window.PopupMailInboxController;
+  const createBatch = module.createBatchSelectionController;
+  const createInbox = module.createInboxController;
+  module.createBatchSelectionController = options => { batches.push(options); return createBatch(options); };
+  module.createInboxController = options => {
+    const instance = createInbox(options);
+    inboxes.push({ ...options, instance });
+    return instance;
+  };
+  env.scope.chrome.runtime.sendMessage = (message, callback) => {
+    if (respond(message, callback, env) === true) return;
+    const data = message.type === 'get-moe-config' ? { emailDomains: 'example.test' }
+      : message.type === 'get-temp-domains' ? { domains: ['example.test'] }
+      : message.type === 'get-moe-email-list' ? { emails: [] } : {};
+    callback({ ok: true, data });
+  };
+  for (const callback of env.domReady) await callback();
+  await settleMailPopup();
+  return { ...env, batches, inboxes };
+}
+const moeListResponse = address => ({ ok: true, data: { emails: [{ id: address, address, expiresAt: '9999-01-01' }] } });
+
+test('Moe 列表切换服务后立即加载新配置，旧响应晚到不能覆盖新缓存', async () => {
+  const pending = [];
+  const env = await mailRacePopup({ activeTab: 'moe-mail', moeApiUrl: 'https://old.test', moeApiKey: 'key-a' }, (message, callback) => {
+    if (message.type === 'get-moe-email-list') { pending.push(callback); return true; }
+  });
+  assert.equal(pending.length, 1);
+  changeMailConfig(env, { moeApiUrl: 'https://new.test' });
+  await settleMailPopup();
+  assert.equal(pending.length, 2);
+  pending[1](moeListResponse('new@example.test'));
+  await settleMailPopup();
+  pending[0](moeListResponse('old@example.test'));
+  await settleMailPopup();
+  assert.equal(env.store.moeEmailCache[0].address, 'new@example.test');
+});
+
+test('Moe 仅换 Key 并切回原 Key 时也不复用旧请求，迟到错误不覆盖成功结果', async () => {
+  const pending = [];
+  const env = await mailRacePopup({ activeTab: 'moe-mail', moeApiUrl: 'https://moe.test', moeApiKey: 'key-a' }, (message, callback) => {
+    if (message.type === 'get-moe-email-list') { pending.push(callback); return true; }
+  });
+  changeMailConfig(env, { moeApiKey: 'key-b' }); await settleMailPopup();
+  changeMailConfig(env, { moeApiKey: 'key-a' }); await settleMailPopup();
+  assert.equal(pending.length, 3);
+  pending[0](moeListResponse('old-a@example.test')); await settleMailPopup();
+  assert.equal(env.store.moeEmailCache, undefined);
+  pending[2](moeListResponse('latest-a@example.test')); await settleMailPopup();
+  pending[1]({ ok: false, error: 'stale failure' }); await settleMailPopup();
+  assert.equal(env.store.moeEmailCache[0].address, 'latest-a@example.test');
+  assert.ok(!env.element('moe-email-list').children.some(child => child.textContent.includes('stale failure')));
+});
+
+test('Moe 强制刷新不搭车旧的普通请求，普通请求不能覆盖刷新结果', async () => {
+  const pending = [];
+  const env = await mailRacePopup({ activeTab: 'moe-mail', moeApiUrl: 'https://moe.test', moeApiKey: 'key' }, (message, callback) => {
+    if (message.type === 'get-moe-email-list') { pending.push({ message, callback }); return true; }
+  });
+  const refreshing = env.element('moe-refresh-btn').handlers.click();
+  await settleMailPopup();
+  assert.equal(pending.length, 2);
+  assert.equal(pending[1].message.forceRefresh, true);
+  pending[1].callback(moeListResponse('fresh@example.test')); await refreshing;
+  pending[0].callback(moeListResponse('old@example.test')); await settleMailPopup();
+  assert.equal(env.store.moeEmailCache[0].address, 'fresh@example.test');
+});
+
+test('切换到没有邮箱的服务也会清空持久化缓存，不能保留上一服务的邮箱', async () => {
+  const env = await mailRacePopup({ activeTab: 'moe-mail', moeApiUrl: 'https://old.test', moeApiKey: 'key' }, (message, callback, popup) => {
+    if (message.type === 'get-moe-email-list') {
+      callback(popup.store.moeApiUrl === 'https://old.test' ? moeListResponse('old@example.test') : { ok: true, data: { emails: [] } });
+      return true;
+    }
+  });
+  assert.equal(env.store.moeEmailCache.length, 1);
+  changeMailConfig(env, { moeApiUrl: 'https://empty.test' }); await settleMailPopup();
+  assert.deepEqual(env.store.moeEmailCache, []);
+});
+
+test('Moe 刷新返回错误结构时保留已有缓存并显示失败，不当作空列表成功', async () => {
+  let malformed = false;
+  const env = await mailRacePopup({ activeTab: 'moe-mail', moeApiUrl: 'https://moe.test', moeApiKey: 'key' }, (message, callback) => {
+    if (message.type === 'get-moe-email-list') {
+      callback(malformed ? { ok: true, data: { emails: {} } } : moeListResponse('saved@example.test'));
+      return true;
+    }
+  });
+  malformed = true;
+  await env.element('moe-refresh-btn').handlers.click();
+  assert.equal(env.store.moeEmailCache[0].address, 'saved@example.test');
+  assert.ok(env.element('moe-email-list').children.some(child => /加载失败.*emails/.test(child.textContent)));
+});
+
+test('快填同一来源切换 API 后只展示新域名，旧请求结束不清掉新请求', async () => {
+  const pending = [];
+  const env = await mailRacePopup({ activeTab: 'fast-fill', apiUrl: 'https://old.test', adminToken: 'key' }, (message, callback) => {
+    if (message.type === 'get-temp-domains') { pending.push(callback); return true; }
+  });
+  assert.equal(pending.length, 1);
+  changeMailConfig(env, { apiUrl: 'https://new.test' }); await settleMailPopup();
+  assert.equal(pending.length, 2);
+  pending[0]({ ok: true, data: { domains: ['old.test'] } }); await settleMailPopup();
+  pending[1]({ ok: true, data: { domains: ['new.test'] } }); await settleMailPopup();
+  const values = env.element('fast-fill-domain-select').children.map(child => child.value);
+  assert.ok(values.includes('new.test'));
+  assert.ok(!values.includes('old.test'));
+});
+
+test('Temp 批量删邮箱等待查询时换配置，取消剩余请求且不清本地历史', async () => {
+  const env = await mailRacePopup({ apiUrl: 'https://old.test', adminToken: 'old-key', emailHistory: ['a@test', 'b@test'] });
+  let release;
+  const calls = [];
+  env.scope.fetch = (url, init) => { calls.push({ url, init }); return new Promise(resolve => { release = resolve; }); };
+  const deleting = env.batches[0].deleteSelected(new Set(['a@test', 'b@test']));
+  changeMailConfig(env, { apiUrl: 'https://new.test', adminToken: 'new-key' });
+  release(new Response(JSON.stringify({ results: [{ id: 7, address: 'a@test' }] }), { status: 200 }));
+  await deleting;
+  assert.equal(calls.length, 1);
+  assert.deepEqual(env.store.emailHistory, ['a@test', 'b@test']);
+});
+
+test('Temp 批量删邮件过程中换配置，后续 ID 不发送到新后端', async () => {
+  const env = await mailRacePopup({ apiUrl: 'https://old.test', adminToken: 'old-key' });
+  let release;
+  const calls = [];
+  env.scope.fetch = (url, init) => { calls.push({ url, init }); return new Promise(resolve => { release = resolve; }); };
+  const deleting = env.inboxes.find(inbox => inbox.adapter.type === 'temp').batch.deleteSelected(new Set([1, 2]));
+  changeMailConfig(env, { apiUrl: 'https://new.test', adminToken: 'new-key' });
+  release(new Response(null, { status: 204 }));
+  await deleting;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://old.test/admin/mails/1');
+  assert.equal(calls[0].init.headers['x-admin-auth'], 'old-key');
+});
+
+test('Moe 批量删邮箱过程中换配置，停止剩余 DELETE 和未读清理', async () => {
+  const calls = [];
+  let release;
+  const env = await mailRacePopup({ moeApiUrl: 'https://old.test', moeApiKey: 'old-key' }, (message, callback) => {
+    calls.push(message);
+    if (message.type === 'proxy-fetch') { release = callback; return true; }
+  });
+  const deleting = env.batches[1].deleteSelected(new Set(['a', 'b']));
+  changeMailConfig(env, { moeApiUrl: 'https://new.test', moeApiKey: 'new-key' });
+  release({ ok: true, data: { ok: true, status: 204, text: '' } });
+  await deleting;
+  assert.equal(calls.filter(message => message.type === 'proxy-fetch').length, 1);
+  assert.equal(calls.filter(message => message.type === 'remove-mail-state').length, 0);
+});
+
+test('换配置后关闭旧邮件视图，旧邮件删除按钮不能使用新服务', async () => {
+  const env = await mailRacePopup({ activeTab: 'temp-email', apiUrl: 'https://old.test', adminToken: 'old-key' });
+  let requestCount = 0;
+  env.scope.fetch = async url => {
+    requestCount++;
+    const data = url.includes('?') ? { results: [{ id: 7, subject: 'test', source: 'sender@test' }] }
+      : { id: 7, raw: 'Content-Type: text/plain\n\nhello' };
+    return new Response(JSON.stringify(data), { status: 200 });
+  };
+  const controller = env.inboxes.find(inbox => inbox.adapter.type === 'temp');
+  // 通过真实收件箱入口建立旧视图，之后检查配置变更触发的关闭与按钮处理器。
+  controller.instance.open('a@test'); await settleMailPopup();
+  env.element('mail-list').children.at(-1).handlers.click(); await settleMailPopup();
+  assert.equal(controller.instance.getMode(), 'detail');
+  assert.equal(env.element('inbox-pane').classList.contains('hidden'), false);
+  changeMailConfig(env, { apiUrl: 'https://new.test' });
+  assert.equal(env.element('inbox-pane').classList.contains('hidden'), true);
+  const count = requestCount;
+  await env.element('delete-mail-btn').handlers.click();
+  assert.equal(requestCount, count);
+});
+
+test('Moe 创建接口返回 HTML 或缺少邮箱字段时显示失败，合法响应仍可成功', async () => {
+  let text = '<html>Login required</html>';
+  const env = await mailRacePopup({ moeApiUrl: 'https://moe.test', moeApiKey: 'key' }, (message, callback) => {
+    if (message.type === 'proxy-fetch') { callback({ ok: true, data: { ok: true, status: 200, text } }); return true; }
+  });
+  env.element('moe-domain-select').value = 'example.test';
+  env.element('moe-expiry-select').value = '86400000';
+  for (const invalid of [text, '{}', '{"email":123}', 'null']) {
+    text = invalid;
+    await env.element('moe-create-btn').handlers.click();
+    assert.match(env.element('moe-create-message').textContent, /创建失败/);
+    assert.doesNotMatch(env.element('moe-create-message').textContent, /创建成功/);
+  }
+  text = '{"email":"new@example.test"}';
+  await env.element('moe-create-btn').handlers.click();
+  assert.equal(env.element('moe-create-message').textContent, '创建成功: new@example.test');
+});
+
 function clefRow(env, index = 0) {
   const card = env.element('clef-accounts-list').children[index];
   return { card, name: card.children[1], accountId: card.children[2], apiToken: card.children[3], status: card.children[4],

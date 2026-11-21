@@ -117,6 +117,46 @@ function sendMessage(env, message) {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+test('Moe 超过 100 封旧邮件重复轮询不会新增未读，新邮件只通知一次', async () => {
+  let messages = Array.from({ length: 151 }, (_, index) => ({ id: String(index), subject: 'old', received_at: '2020-01-01T00:00:00Z' }));
+  const env = loadBackground({ moeApiUrl: 'https://moe.example.com', moeApiKey: 'test-key',
+    moeEmailCache: [{ id: 'box', address: 'box@example.com' }], activeInbox: { type: 'moe', emailId: 'box' } },
+  async () => jsonResponse({ messages }));
+  for (let index = 0; index < 3; index++) await env.context.pollMailNow();
+  assert.equal(env.store.moeKnownMailIds.box.length, 151);
+  assert.equal(env.store.moeUnreadCounts.box, 0);
+  assert.equal(env.notifications.length, 0);
+  messages.push({ id: 'new', subject: 'new', received_at: new Date().toISOString() });
+  await env.context.pollMailNow();
+  await env.context.pollMailNow();
+  assert.equal(env.store.moeUnreadCounts.box, 1);
+  assert.equal(env.notifications.length, 1);
+  await sendMessage(env, { type: 'clear-moe-unread', emailId: 'box', seenMailKeys: messages.map(mail => mail.id) });
+  await env.context.pollMailNow();
+  assert.equal(env.store.moeUnreadCounts.box, 0);
+  assert.equal(env.notifications.length, 1);
+  messages = messages.slice(100);
+  await env.context.pollMailNow();
+  assert.equal(env.store.moeKnownMailIds.box.length, messages.length, '已删除邮件的去重键应清理');
+});
+
+test('Moe 读信与轮询并发时保留完整已读集合，不受原 100 条上限影响', async () => {
+  let release;
+  const ids = Array.from({ length: 151 }, (_, index) => String(index));
+  const env = loadBackground({ moeApiUrl: 'https://moe.example.com', moeApiKey: 'test-key',
+    moeEmailCache: [{ id: 'box', address: 'box@example.com' }], moeKnownMailIds: { box: [] },
+    activeInbox: { type: 'moe', emailId: 'box' } },
+  () => new Promise(resolve => { release = resolve; }));
+  const polling = env.context.pollMailNow();
+  await flush();
+  await sendMessage(env, { type: 'clear-moe-unread', emailId: 'box', seenMailKeys: [...ids, 'just-read'] });
+  release(jsonResponse({ messages: ids.map(id => ({ id })) }));
+  await polling;
+  assert.equal(env.store.moeKnownMailIds.box.length, 152);
+  assert.equal(env.store.moeUnreadCounts.box, 0);
+  assert.equal(env.notifications.length, 0);
+});
+
 test('L10：十六进制形式的 IPv4 映射 IPv6 能识别为内网', () => {
   const { context } = loadBackground();
   const isPrivate = (url) => context.isPrivateNetworkHost(new URL(url).hostname);

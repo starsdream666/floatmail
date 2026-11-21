@@ -511,6 +511,46 @@ document.addEventListener('DOMContentLoaded', async () => {
   let moeApiKey = '';
   let currentMoeEmails = [];
   let moeUnreadCounts = {};
+  const mailServiceRevisions = { temp: 0, moe: 0 };
+
+  function getMailServiceConfig(source) {
+    const url = source === 'moe' ? moeApiUrl : apiUrl;
+    const key = source === 'moe' ? moeApiKey : adminToken;
+    const revision = mailServiceRevisions[source];
+    return { source, url, key, identity: JSON.stringify([url, key, revision]) };
+  }
+
+  function isMailServiceConfigCurrent(config) {
+    return getMailServiceConfig(config.source).identity === config.identity;
+  }
+
+  function assertMailServiceConfigCurrent(config) {
+    if (!isMailServiceConfigCurrent(config)) {
+      throw new Error('邮箱服务配置已变化，已取消旧操作，请在当前配置下重试');
+    }
+  }
+
+  function resetMailServiceState(source) {
+    mailServiceRevisions[source] += 1;
+    fastFillLoadedSources.delete(source);
+    fastFillDomainRequests.delete(source);
+    if (source === 'temp') {
+      tempDomainLoader.reset();
+      fastFillTempDomains = [];
+      if (tempInboxController?.isOpen()) tempInboxController.close();
+      tempHistoryBatchController?.setActive(false, { clearSelection: true });
+    } else {
+      moeDomainLoader.reset();
+      fastFillMoeDomains = [];
+      moeEmailListLoaded = false;
+      moeEmailListRequest = null;
+      currentMoeEmails = [];
+      if (moeInboxController?.isOpen()) moeInboxController.close();
+      moeHistoryBatchController?.setActive(false, { clearSelection: true });
+      scheduleStorageRender('moe');
+    }
+    fastFillRefreshDomainUI();
+  }
 
   // 书签状态
   let bookmarks = [];
@@ -1242,7 +1282,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
   let moeEmailListLoaded = false;
-  let moeEmailListLoadPromise = null;
+  let moeEmailListRequest = null;
+  let moeEmailListConfig = '';
 
   function createDomainLoader({ select, createButton, messageElement, fetchDomains }) {
     let loaded = false;
@@ -1322,6 +1363,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         loaded = false;
         loadPromise = null;
         loadPromiseForced = false;
+        select.innerHTML = '<option value="">域名未加载，请点击刷新</option>';
+        select.disabled = true;
+        createButton.disabled = true;
       }
     };
   }
@@ -1341,7 +1385,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     messageElement: moeCreateMessage,
     async fetchDomains(forceRefresh) {
       const response = await runtimeSendMessage({ type: 'get-moe-config', forceRefresh });
-      return String(response?.data?.emailDomains || '').split(',').map((domain) => domain.trim()).filter(Boolean);
+      return parseMoeDomains(response?.data);
     }
   });
   const loadDomains = tempDomainLoader.load;
@@ -1375,7 +1419,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       ok: Boolean(data.ok),
       status: data.status || 0,
       statusText: data.statusText || '',
-      json: async () => data.data ?? {},
+      json: async () => {
+        try {
+          return JSON.parse(data.text || '');
+        } catch {
+          throw new Error('接口未返回有效 JSON，请检查 API 地址或登录状态');
+        }
+      },
       text: async () => data.text || '',
     };
   }
@@ -2182,8 +2232,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let fastFillTempDomains = [];
   let fastFillMoeDomains = [];
   let fastFillDomainsLoaded = false;
-  let fastFillDomainLoadPromise = null;
-  let fastFillDomainLoadSource = '';
+  const fastFillDomainRequests = new Map();
   const fastFillLoadedSources = new Set();
   let fastFillGenerating = false;
   let fastFillHistory = [];
@@ -2232,50 +2281,55 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function fastFillLoadDomains(options = {}) {
     const forceRefresh = options.forceRefresh === true;
     const source = fastFillEmailSource === 'moe' ? 'moe' : 'temp';
+    const config = getMailServiceConfig(source);
     if (!forceRefresh && fastFillLoadedSources.has(source)) {
       fastFillDomainsLoaded = true;
       fastFillRefreshDomainUI();
       return;
     }
-    if (fastFillDomainLoadPromise) {
-      if (fastFillDomainLoadSource === source) {
-        return fastFillDomainLoadPromise;
-      }
-      await fastFillDomainLoadPromise;
-      return fastFillLoadDomains(options);
+    const pending = fastFillDomainRequests.get(source);
+    if (pending?.config === config.identity && (!forceRefresh || pending.forceRefresh)) {
+      return pending.promise;
     }
 
     fastFillDomainsLoaded = false;
     fastFillDomainStatus.textContent = '域名加载中...';
 
-    fastFillDomainLoadSource = source;
-    fastFillDomainLoadPromise = (async () => {
-      if (source === 'temp' && apiUrl) {
+    const request = { config: config.identity, forceRefresh };
+    const isCurrent = () => isMailServiceConfigCurrent(config) && fastFillDomainRequests.get(source) === request;
+    request.promise = Promise.resolve().then(async () => {
+      let domains = [];
+      if (source === 'temp' && config.url) {
         const response = await runtimeSendMessage({
           type: 'get-temp-domains',
           forceRefresh,
         });
-        fastFillTempDomains = Array.isArray(response?.data?.domains) ? response.data.domains : [];
-      } else if (source === 'moe' && moeApiUrl && moeApiKey) {
+        domains = Array.isArray(response?.data?.domains) ? response.data.domains : [];
+      } else if (source === 'moe' && config.url && config.key) {
         const response = await runtimeSendMessage({
           type: 'get-moe-config',
           forceRefresh,
         });
-        const domainStr = response?.data?.emailDomains || '';
-        fastFillMoeDomains = String(domainStr).split(',').map(d => d.trim()).filter(Boolean);
+        domains = parseMoeDomains(response?.data);
       }
+      if (!isCurrent()) return;
+      if (source === 'temp') fastFillTempDomains = domains;
+      else fastFillMoeDomains = domains;
       fastFillLoadedSources.add(source);
-      fastFillDomainsLoaded = true;
-      fastFillRefreshDomainUI();
-    })().catch(() => {
-      fastFillDomainsLoaded = true;
-      fastFillRefreshDomainUI();
+      if (fastFillEmailSource === source) {
+        fastFillDomainsLoaded = true;
+        fastFillRefreshDomainUI();
+      }
+    }).catch(() => {
+      if (isCurrent() && fastFillEmailSource === source) {
+        fastFillDomainsLoaded = true;
+        fastFillRefreshDomainUI();
+      }
     }).finally(() => {
-      fastFillDomainLoadPromise = null;
-      fastFillDomainLoadSource = '';
+      if (fastFillDomainRequests.get(source) === request) fastFillDomainRequests.delete(source);
     });
-
-    return fastFillDomainLoadPromise;
+    fastFillDomainRequests.set(source, request);
+    return request.promise;
   }
 
   function fastFillRefreshDomainUI() {
@@ -2518,7 +2572,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           throw new Error(errData.error || `创建失败 (${createRes.status})`);
         }
         const data = await createRes.json();
-        const newAddr = data.email || email;
+        const newAddr = parseMoeCreatedAddress(data);
         // Refresh email list then open inbox
         await moeLoadEmails({ forceRefresh: true });
         const found = currentMoeEmails.find(e => e.address === newAddr);
@@ -2679,7 +2733,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             throw new Error(errData.error || `Moe Mail 创建失败 (${res.status})`);
           }
           const data = await res.json();
-          emailAddr = data.email || '';
+          emailAddr = parseMoeCreatedAddress(data);
           // 快填创建的邮箱也必须立即进入本地缓存，后台轮询依赖 moeEmailCache。
           // 强制刷新可同时拿到邮箱 id，避免只保存地址后收不到角标和通知。
           await moeLoadEmails({ forceRefresh: true });
@@ -4490,6 +4544,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     };
     const timeoutError = () => new Error(`请求超时（${Math.round(AI_REQUEST_TIMEOUT_MS / 1000)} 秒无响应）`);
+    const checkCompletion = (data) => {
+      if (data?.error) {
+        throw new Error(data.error.message || (typeof data.error === 'string' ? data.error : '模型接口返回错误'));
+      }
+      const reason = data?.choices?.[0]?.finish_reason;
+      if (reason === 'length') throw new Error('模型输出被截断（length），请重试或调整模型输出上限');
+      if (reason === 'content_filter') throw new Error('模型输出被过滤（content_filter），结果不完整');
+      if (reason && reason !== 'stop') throw new Error(`模型未正常完成文本输出（${reason}）`);
+      return reason === 'stop';
+    };
     armIdleTimer();
 
     let response = null;
@@ -4512,16 +4576,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     // 非流式回退：服务端忽略 stream 参数时仍按普通 JSON 解析，兼容不支持流式的服务。
     if (!response.ok || !contentType.includes('text/event-stream') || !response.body) {
       let data = null;
+      let parseError = null;
       try {
         data = await response.json();
-      } catch {
-        data = null;
+      } catch (error) {
+        parseError = error;
+      } finally {
+        clearIdleTimer();
       }
-      clearIdleTimer();
       if (!response.ok) {
         const message = data?.error?.message || data?.message || `${response.status}`;
         throw new Error(message);
       }
+      if (parseError) {
+        throw parseError.name === 'AbortError' ? timeoutError() : new Error('接口未返回有效 JSON');
+      }
+      checkCompletion(data);
       return String(data?.choices?.[0]?.message?.content || '').trim();
     }
 
@@ -4529,43 +4599,56 @@ document.addEventListener('DOMContentLoaded', async () => {
     const decoder = new TextDecoder();
     let buffer = '';
     let text = '';
+    let streamDone = false;
+    let completed = false;
+    const consumeLine = line => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) return;
+      const payload = trimmed.slice(5).trim();
+      if (payload === '[DONE]') { streamDone = true; return; }
+      if (!payload) return;
+      let chunk = null;
+      try { chunk = JSON.parse(payload); } catch { throw new Error('流式响应包含无效 JSON，结果不完整'); }
+      if (checkCompletion(chunk)) completed = true;
+      const delta = chunk?.choices?.[0]?.delta?.content;
+      if (typeof delta === 'string' && delta) {
+        text += delta;
+        if (onDelta) {
+          try { onDelta(delta, text); } catch { /* 进度回调出错不影响主流程。 */ }
+        }
+      }
+    };
     try {
       for (;;) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          for (const line of buffer.split('\n')) {
+            consumeLine(line);
+            if (streamDone) break;
+          }
+          break;
+        }
         armIdleTimer();
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop();
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const payload = trimmed.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-          let chunk = null;
-          try {
-            chunk = JSON.parse(payload);
-          } catch {
-            continue;
-          }
-          const delta = chunk?.choices?.[0]?.delta?.content;
-          if (typeof delta === 'string' && delta) {
-            text += delta;
-            if (onDelta) {
-              try {
-                onDelta(delta, text);
-              } catch {
-                // 进度回调出错不影响主流程。
-              }
-            }
-          }
+          consumeLine(line);
+          if (streamDone) break;
         }
+        if (streamDone) break;
       }
     } catch (error) {
       throw error?.name === 'AbortError' ? timeoutError() : error;
     } finally {
       clearIdleTimer();
+      // 完成或失败都释放响应流，不能让异常后的网关连接继续生成。
+      await reader.cancel().catch(() => {});
+      reader.releaseLock?.();
     }
+    // 兼容仅发 DONE 的网关，以及以 finish_reason=stop 后 EOF 结束的服务。
+    if (!streamDone && !completed) throw new Error('流式响应提前结束，未收到完成标记，请重试');
     return text.trim();
   }
 
@@ -5528,13 +5611,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     moeApiUrl = newMoeUrl;
     moeApiKey = newMoeKey;
     if (tempConfigChanged) {
-      tempDomainLoader.reset();
-      fastFillLoadedSources.delete('temp');
+      resetMailServiceState('temp');
     }
     if (moeConfigChanged) {
-      moeDomainLoader.reset();
-      moeEmailListLoaded = false;
-      fastFillLoadedSources.delete('moe');
+      resetMailServiceState('moe');
     }
     mailPollingInterval = newMailPollingInterval;
     notificationsEnabled = newNotificationsEnabled;
@@ -5925,9 +6005,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     moeApiKey = targetKey;
     moeApiUrlInput.value = targetUrl;
     moeApiKeyInput.value = targetKey;
-    moeDomainLoader.reset();
-    moeEmailListLoaded = false;
-    fastFillLoadedSources.delete('moe');
+    resetMailServiceState('moe');
     await storageSet({ moeApiUrl, moeApiKey });
     return { ok: true, saved: true };
   }
@@ -5961,10 +6039,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.json();
-      const domains = String(data.emailDomains || '')
-        .split(',')
-        .map(domain => domain.trim())
-        .filter(Boolean);
+      const domains = parseMoeDomains(data);
       showMessage(moeConnectionMessage, `连接正常，可用域名 ${domains.length} 个`, 'success');
     } catch (error) {
       showMessage(moeConnectionMessage, `连接失败: ${error.message}`, 'error');
@@ -6388,27 +6463,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     render: renderHistory,
     confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 个邮箱吗？\n如果 API 配置正确，将尝试从服务器同步删除。`,
     deleteSelected: async (selected) => {
-      if (apiUrl && adminToken) {
+      const config = getMailServiceConfig('temp');
+      if (config.url && config.key) {
         for (const addr of selected) {
           try {
-            const queryRes = await fetchWithTimeout(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
-              headers: { 'x-admin-auth': adminToken }
-            });
-            if (queryRes.ok) {
-              const queryData = await queryRes.json();
-              const match = (queryData.results || []).find(a => matchesAddressRecord(a, addr));
-              if (match) {
-                await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
-                  method: 'DELETE',
-                  headers: { 'x-admin-auth': adminToken }
-                });
-              }
-            }
+            await deleteTempAddressOnServer(addr, config);
           } catch (error) {
+            if (!isMailServiceConfigCurrent(config)) return;
             console.warn('服务端批量删除失败:', error.message);
           }
         }
       }
+      if (!isMailServiceConfigCurrent(config)) return;
       history = history.filter((addr) => !selected.has(addr));
       selected.forEach((addr) => {
         delete verifyStatus[addr];
@@ -6583,31 +6649,41 @@ document.addEventListener('DOMContentLoaded', async () => {
     tempInboxController?.close();
   }
 
+  async function deleteTempAddressOnServer(addr, config) {
+    assertMailServiceConfigCurrent(config);
+    const headers = { 'x-admin-auth': config.key };
+    const queryRes = await fetchWithTimeout(`${config.url}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, { headers });
+    assertMailServiceConfigCurrent(config);
+    if (!queryRes.ok) return false;
+    const queryData = await queryRes.json();
+    assertMailServiceConfigCurrent(config);
+    const match = (queryData.results || []).find(record => matchesAddressRecord(record, addr));
+    if (!match) return false;
+    const response = await fetchWithTimeout(`${config.url}/admin/delete_address/${match.id}`, {
+      method: 'DELETE', headers
+    });
+    assertMailServiceConfigCurrent(config);
+    return response.ok;
+  }
+
   async function deleteAddress(addr, liElement) {
+    const config = getMailServiceConfig('temp');
     if (!confirm(`确定要删除邮箱 ${addr} 及其所有邮件吗？`)) return;
     let serverDeleted = false;
     try {
-      const queryRes = await fetchWithTimeout(`${apiUrl}/admin/address?query=${encodeURIComponent(addr)}&limit=10&offset=0`, {
-        headers: { 'x-admin-auth': adminToken }
-      });
-      if (queryRes.ok) {
-        const queryData = await queryRes.json();
-        const match = (queryData.results || []).find(a => matchesAddressRecord(a, addr));
-        if (match) {
-          const delRes = await fetchWithTimeout(`${apiUrl}/admin/delete_address/${match.id}`, {
-            method: 'DELETE',
-            headers: { 'x-admin-auth': adminToken }
-          });
-          serverDeleted = delRes.ok;
-        }
-      }
+      serverDeleted = await deleteTempAddressOnServer(addr, config);
     } catch(e) {
+      if (!isMailServiceConfigCurrent(config)) {
+        showMessage(createMessage, e.message, 'error');
+        return;
+      }
       console.warn('服务端删除失败:', e.message);
     }
 
     if (!serverDeleted) {
       if (!confirm('服务端删除失败。\n是否仅从本地历史记录中移除？')) return;
     }
+    if (!isMailServiceConfigCurrent(config)) return;
 
     history = history.filter(a => a !== addr);
     delete verifyStatus[addr];
@@ -6760,10 +6836,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       },
       confirmDeleteMessage: '确定要删除这封邮件吗？',
       deleteMessage: async (mail) => {
-        const res = await fetchWithTimeout(`${apiUrl}/admin/mails/${mail.id}`, {
+        const config = getMailServiceConfig('temp');
+        const res = await fetchWithTimeout(`${config.url}/admin/mails/${mail.id}`, {
           method: 'DELETE',
-          headers: { 'x-admin-auth': adminToken }
+          headers: { 'x-admin-auth': config.key }
         });
+        assertMailServiceConfigCurrent(config);
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       },
       setDeletePending: (pending) => setMailActionButtonState(deleteMailBtn, pending
@@ -6777,13 +6855,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       cancelButton: tempInboxBatchCancelBtn,
       confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 封邮件吗？`,
       deleteSelected: async (selected) => {
+        const config = getMailServiceConfig('temp');
         // 批删采用本地优先语义：部分后端会因邮箱后缀过长返回非 2xx，
         // 此时仍从当前面板移除；仅网络/调用异常记日志并继续处理其余项。
         for (const mailId of selected) {
+          if (!isMailServiceConfigCurrent(config)) return;
           try {
-            await fetchWithTimeout(`${apiUrl}/admin/mails/${mailId}`, {
+            await fetchWithTimeout(`${config.url}/admin/mails/${mailId}`, {
               method: 'DELETE',
-              headers: { 'x-admin-auth': adminToken }
+              headers: { 'x-admin-auth': config.key }
             });
           } catch (error) {
             console.warn('删除邮件失败:', error.message);
@@ -6801,6 +6881,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       'Content-Type': 'application/json',
       'X-API-Key': moeApiKey
     };
+  }
+
+  function parseMoeDomains(data) {
+    if (!data || typeof data.emailDomains !== 'string') {
+      throw new Error('MoeMail 响应缺少有效的 emailDomains');
+    }
+    return data.emailDomains.split(',').map(domain => domain.trim()).filter(Boolean);
+  }
+
+  function parseMoeEmailList(data) {
+    if (!Array.isArray(data?.emails) || data.emails.some(email => !email
+      || !['string', 'number'].includes(typeof email.id) || String(email.id).trim() === ''
+      || typeof email.address !== 'string' || !email.address.trim())) {
+      throw new Error('MoeMail 响应缺少有效的 emails 列表');
+    }
+    return data.emails;
+  }
+
+  function parseMoeCreatedAddress(data) {
+    if (typeof data?.email !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(data.email.trim())) {
+      throw new Error('MoeMail 创建响应缺少有效的邮箱地址');
+    }
+    return data.email.trim();
   }
 
   // ===================== MoeMail: 创建邮箱 =====================
@@ -6831,8 +6934,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       const data = await res.json();
-      showMessage(moeCreateMessage, `创建成功: ${data.email}`, 'success');
-      updateGeneratedProfile({ email: data.email || generatedProfile.email });
+      const address = parseMoeCreatedAddress(data);
+      showMessage(moeCreateMessage, `创建成功: ${address}`, 'success');
+      updateGeneratedProfile({ email: address });
       moeEmailNameInput.value = '';
       // 刷新邮箱列表
       moeLoadEmails({ forceRefresh: true });
@@ -6847,18 +6951,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ===================== MoeMail: 加载邮箱列表 =====================
   async function moeLoadEmails(options = {}) {
     const forceRefresh = options.forceRefresh === true;
-    if (!forceRefresh && moeEmailListLoaded) {
+    const config = getMailServiceConfig('moe');
+    if (!forceRefresh && moeEmailListLoaded && moeEmailListConfig === config.identity) {
       return;
     }
-    if (moeEmailListLoadPromise) {
-      await moeEmailListLoadPromise;
-      if (!forceRefresh) {
-        return;
-      }
+    if (moeEmailListRequest?.config === config.identity && (!forceRefresh || moeEmailListRequest.forceRefresh)) {
+      return moeEmailListRequest.promise;
     }
 
     moeEmailListDiv.innerHTML = '<div style="padding:12px; text-align:center; color:var(--text-muted);">加载中...</div>';
-    moeEmailListLoadPromise = (async () => {
+    const request = { config: config.identity, forceRefresh };
+    const isCurrent = () => isMailServiceConfigCurrent(config) && moeEmailListRequest === request;
+    request.promise = Promise.resolve().then(async () => {
       const previousCache = currentMoeEmails.map(email => ({
         id: email.id,
         address: email.address,
@@ -6871,7 +6975,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         forceRefresh,
       });
       const data = response?.data || {};
-      currentMoeEmails = data.emails || [];
+      if (!isCurrent()) return;
+      currentMoeEmails = parseMoeEmailList(data);
       const nextCache = currentMoeEmails.map(email => ({
         id: email.id,
         address: email.address,
@@ -6879,19 +6984,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         // 后台首轮轮询以创建时间为分界判断“新邮件”（M1），MoeMail 列表接口返回 createdAt。
         createdAt: email.createdAt
       }));
-      if (JSON.stringify(previousCache) !== JSON.stringify(nextCache)) {
+      if (moeEmailListConfig !== config.identity || JSON.stringify(previousCache) !== JSON.stringify(nextCache)) {
         chrome.storage.local.set({ moeEmailCache: nextCache });
       }
       moeEmailListLoaded = true;
+      moeEmailListConfig = config.identity;
       renderMoeEmails();
-    })().catch((e) => {
+    }).catch((e) => {
+      if (!isCurrent()) return;
       // SEC-13：错误串可能来自后端响应，用 textContent 渲染
       renderInlineNotice(moeEmailListDiv, `加载失败: ${getErrorText(e)}`, 'error');
     }).finally(() => {
-      moeEmailListLoadPromise = null;
+      if (moeEmailListRequest === request) moeEmailListRequest = null;
     });
-
-    return moeEmailListLoadPromise;
+    moeEmailListRequest = request;
+    return request.promise;
   }
 
   function renderMoeEmails() {
@@ -7045,17 +7152,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     render: renderMoeEmails,
     confirmDelete: (selected) => `确定要删除选中的 ${selected.size} 个邮箱吗？此操作不可恢复。`,
     deleteSelected: async (selected) => {
+      const config = getMailServiceConfig('moe');
       // 与 Temp 批删一致，服务端删除是尽力而为，不以 HTTP 状态阻断本地清理。
       for (const emailId of selected) {
+        if (!isMailServiceConfigCurrent(config)) return;
         try {
-          await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
+          await moeFetch(`${config.url}/api/emails/${emailId}`, {
             method: 'DELETE',
-            headers: moeHeaders()
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': config.key }
           });
         } catch (error) {
           console.warn('删除 MoeMail 失败:', error.message);
         }
       }
+      if (!isMailServiceConfigCurrent(config)) return;
       selected.forEach((emailId) => {
         delete moeUnreadCounts[String(emailId)];
       });
@@ -7069,12 +7179,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // ===================== MoeMail: 删除邮箱 =====================
   async function moeDeleteEmail(emailId, cardElement) {
+    const config = getMailServiceConfig('moe');
     if (!confirm('确定要删除此邮箱及其所有邮件吗？')) return;
     try {
-      const res = await moeFetch(`${moeApiUrl}/api/emails/${emailId}`, {
+      assertMailServiceConfigCurrent(config);
+      const res = await moeFetch(`${config.url}/api/emails/${emailId}`, {
         method: 'DELETE',
-        headers: moeHeaders()
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': config.key }
       });
+      assertMailServiceConfigCurrent(config);
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `${res.status}`);
@@ -7085,7 +7198,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       cardElement.style.transition = 'opacity 0.3s, transform 0.3s';
       cardElement.style.opacity = '0';
       cardElement.style.transform = 'translateX(20px)';
-      setTimeout(() => moeLoadEmails({ forceRefresh: true }), 300);
+      setTimeout(() => {
+        if (isMailServiceConfigCurrent(config)) moeLoadEmails({ forceRefresh: true });
+      }, 300);
     } catch (e) {
       alert('删除失败: ' + e.message);
     }
@@ -8219,7 +8334,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Temp Email 配置变动
-    const tempConfigChanged = Boolean(changes.apiUrl || changes.adminToken);
+    const tempConfigChanged = Boolean(
+      (changes.apiUrl && (changes.apiUrl.newValue || '') !== apiUrl)
+      || (changes.adminToken && (changes.adminToken.newValue || '') !== adminToken));
     if (changes.apiUrl) {
       apiUrl = changes.apiUrl.newValue || '';
       apiUrlInput.value = apiUrl;
@@ -8229,12 +8346,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       adminTokenInput.value = adminToken;
     }
     if (tempConfigChanged) {
-      tempDomainLoader.reset();
-      fastFillLoadedSources.delete('temp');
+      resetMailServiceState('temp');
     }
 
     // MoeMail 配置变动
-    const moeConfigChanged = Boolean(changes.moeApiUrl || changes.moeApiKey);
+    const moeConfigChanged = Boolean(
+      (changes.moeApiUrl && (changes.moeApiUrl.newValue || '') !== moeApiUrl)
+      || (changes.moeApiKey && (changes.moeApiKey.newValue || '') !== moeApiKey));
     if (changes.moeApiUrl) {
       moeApiUrl = changes.moeApiUrl.newValue || '';
       moeApiUrlInput.value = moeApiUrl;
@@ -8244,9 +8362,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       moeApiKeyInput.value = moeApiKey;
     }
     if (moeConfigChanged) {
-      moeDomainLoader.reset();
-      moeEmailListLoaded = false;
-      fastFillLoadedSources.delete('moe');
+      resetMailServiceState('moe');
     }
     if (tempConfigChanged || moeConfigChanged) {
       ensureRemoteDataForTab(activeTab);

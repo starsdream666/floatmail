@@ -429,7 +429,7 @@ function buildTempMailKey(mail) {
 
 // 用户在面板里已经看过的邮件并入 known 集合：首轮轮询（known 缺失时按创建时间判定新邮件）
 // 不会再把刚读过的验证邮件重新计为未读、再弹一次通知。返回是否有变化。
-function mergeSeenMailKeys(knownMap, mailboxKey, seenMailKeys) {
+function mergeSeenMailKeys(knownMap, mailboxKey, seenMailKeys, limit = 100) {
   if (!Array.isArray(seenMailKeys) || seenMailKeys.length === 0) {
     return false;
   }
@@ -437,7 +437,7 @@ function mergeSeenMailKeys(knownMap, mailboxKey, seenMailKeys) {
   const merged = Array.from(new Set([
     ...seenMailKeys.map((value) => String(value)),
     ...existing.map((value) => String(value)),
-  ])).slice(0, 100);
+  ])).slice(0, limit);
   if (Array.isArray(knownMap[mailboxKey])
     && merged.length === existing.length
     && merged.every((value, index) => value === String(existing[index]))) {
@@ -1246,6 +1246,7 @@ async function pollMailNow() {
   const initialMoeUnreadCounts = { ...moeUnreadCounts };
   const updatedTempAddresses = new Set();
   const updatedMoeIds = new Set();
+  const moeNewMailKeys = Object.create(null);
   const updatedPollStateKeys = new Set();
   const notifications = [];
 
@@ -1367,6 +1368,7 @@ async function pollMailNow() {
             basePollIntervalMs
           );
         }
+        moeNewMailKeys[emailId] = [...new Set(newMessages.map(buildMoeMailKey))];
         moeUnreadCounts[emailId] = (moeUnreadCounts[emailId] || 0) + newMessages.length;
         if (newMessages.length > 0) {
           notifications.push({
@@ -1377,7 +1379,7 @@ async function pollMailNow() {
           });
         }
 
-        moeKnownMailIds[emailId] = ids.slice(0, 50);
+        moeKnownMailIds[emailId] = [...new Set(ids)];
         updatedMoeIds.add(emailId);
         updateAddressPollState(mailPollState, stateKey, {
           hasNewMail: newMessages.length > 0,
@@ -1427,6 +1429,7 @@ async function pollMailNow() {
     const mergedMoeKnownMailIds = { ...(latest.moeKnownMailIds || {}) };
     const mergedTempUnreadCounts = { ...(latest.tempUnreadCounts || {}) };
     const mergedMoeUnreadCounts = { ...(latest.moeUnreadCounts || {}) };
+    const committedMoeDeltas = Object.create(null);
     const mergedMailPollState = { ...(latest.mailPollState || {}) };
     const tempConfigUnchanged = String(latest.apiUrl || '').trim().replace(/\/$/, '') === apiUrl
       && String(latest.adminToken || '').trim() === adminToken;
@@ -1477,12 +1480,15 @@ async function pollMailNow() {
     if (moeConfigUnchanged) {
       for (const emailId of updatedMoeIds) {
         if (!latestMoeIds.has(emailId)) continue;
-        const initialCount = Number(initialMoeUnreadCounts[emailId]) || 0;
-        const polledCount = Number(moeUnreadCounts[emailId]) || 0;
-        const delta = Math.max(0, polledCount - initialCount);
+        const latestKnown = Array.isArray(mergedMoeKnownMailIds[emailId]) ? mergedMoeKnownMailIds[emailId] : [];
+        const seen = new Set(latestKnown);
+        const delta = (moeNewMailKeys[emailId] || []).filter(key => !seen.has(key)).length;
         const latestCount = Number(mergedMoeUnreadCounts[emailId]) || 0;
-        mergedMoeKnownMailIds[emailId] = moeKnownMailIds[emailId];
+        const previousKnown = new Set(settings.moeKnownMailIds?.[emailId] || []);
+        const concurrentlySeen = latestKnown.filter(key => !previousKnown.has(key));
+        mergedMoeKnownMailIds[emailId] = [...new Set([...(moeKnownMailIds[emailId] || []), ...concurrentlySeen])];
         mergedMoeUnreadCounts[emailId] = latestCount + delta;
+        committedMoeDeltas[emailId] = delta;
       }
     }
     for (const stateKey of updatedPollStateKeys) {
@@ -1507,6 +1513,7 @@ async function pollMailNow() {
       latestMoeIds,
       tempConfigUnchanged,
       moeConfigUnchanged,
+      committedMoeDeltas,
       latestNotificationsEnabled: latest.notificationsEnabled !== false,
     };
   });
@@ -1515,10 +1522,14 @@ async function pollMailNow() {
     latestMoeIds,
     tempConfigUnchanged,
     moeConfigUnchanged,
+    committedMoeDeltas,
     latestNotificationsEnabled,
   } = mergeResult;
 
-  const activeNotifications = notifications.filter((notification) => {
+  const activeNotifications = notifications.map(notification => ({ ...notification,
+    count: notification.inbox?.type === 'moe' ? committedMoeDeltas[String(notification.inbox.emailId)] || 0 : notification.count,
+  })).filter(notification => {
+    if (notification.count <= 0) return false;
     if (notification.inbox?.type === 'temp') {
       return tempConfigUnchanged && latestTempAddresses.has(notification.inbox.address);
     }
@@ -2047,7 +2058,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           moeUnreadCounts[key] = 0;
           updates.moeUnreadCounts = moeUnreadCounts;
         }
-        if (mergeSeenMailKeys(moeKnownMailIds, key, message.seenMailKeys)) {
+        if (mergeSeenMailKeys(moeKnownMailIds, key, message.seenMailKeys, Infinity)) {
           updates.moeKnownMailIds = moeKnownMailIds;
         }
         if (Object.keys(updates).length > 0) {

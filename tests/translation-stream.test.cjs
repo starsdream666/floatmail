@@ -312,3 +312,40 @@ test('静态守卫：翻译请求必须走流式通道，不能再用 fetchWithT
   assert.match(helper, /stream: true/, '必须声明 stream:true');
   assert.match(helper, /text\/event-stream/, '必须识别 SSE 响应');
 });
+
+for (const [name, tail, expected] of [
+  ['输出达到上限', 'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n' + SSE_DONE, /输出被截断/],
+  ['内容被过滤', 'data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n' + SSE_DONE, /输出被过滤/],
+  ['流内错误', 'data: {"error":{"message":"upstream failed"}}\n\n', /upstream failed/],
+  ['缺少完成标记', '', /提前结束/],
+  ['非法 JSON 分片', 'data: {broken json}\n\n' + SSE_DONE, /无效 JSON/],
+]) {
+  test(`流式翻译${name}必须失败，不能返回半段译文`, async () => {
+    const { scope } = translationEngine(() => sseResponse([sseData('半段译文'), tail]));
+    await assert.rejects(scope.translateTextWithApi('Please translate the whole message.'), expected);
+  });
+}
+
+test('JSON 回退也拒绝截断、模型错误和非法 JSON', async () => {
+  for (const response of [
+    jsonResponse({ choices: [{ message: { content: '半段' }, finish_reason: 'length' }] }),
+    jsonResponse({ error: { message: 'upstream failed' } }),
+    { ...htmlErrorResponse(200), ok: true },
+  ]) {
+    const { scope } = translationEngine(() => response);
+    await assert.rejects(scope.translateTextWithApi('Please translate this message.'), /输出被截断|upstream failed|有效 JSON/);
+  }
+});
+
+test('stream error cancels its response reader', async () => {
+  let cancelled = 0;
+  const { scope } = translationEngine(() => ({
+    ok: true, headers: { get: () => 'text/event-stream' },
+    body: new ReadableStream({
+      start(controller) { controller.enqueue(encoder.encode(sseData('partial') + 'data: {\"error\":{\"message\":\"failed\"}}\n\n')); },
+      cancel() { cancelled++; },
+    }),
+  }));
+  await assert.rejects(scope.requestChatCompletion({ apiBase: 'https://api.test', messages: [] }), /failed/);
+  assert.equal(cancelled, 1);
+});
